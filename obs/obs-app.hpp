@@ -28,16 +28,25 @@ public:
 
 class OBSApp : public OBSAppBase {
 	ConfigFile globalConfig;
+	TextLookup textLookup;
 	wxFrame *dummyWindow;
 
 	bool InitGlobalConfig();
 	void InitGlobalConfigDefaults();
 	bool InitConfigDefaults();
+	bool InitLocale();
 
 public:
 	virtual bool OnInit();
 	virtual int  OnExit();
 	virtual void CleanUp();
+
+	inline const char *GetString(const char *lookupVal)
+	{
+		return textLookup.GetString(lookupVal);
+	}
 };
 
 wxDECLARE_APP(OBSApp);
+
+#define Str(lookupVal) wxGetApp().GetString(lookupVal)
