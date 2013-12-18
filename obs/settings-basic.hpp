@@ -27,6 +27,9 @@ protected:
 
 public:
 	inline BasicSettingsData(OBSBasicSettings *window) : window(window) {}
+
+	virtual void SetChanged();
+	virtual void SetSaved();
 };
 
 BasicSettingsData *CreateBasicGeneralSettings(OBSBasicSettings *window);
