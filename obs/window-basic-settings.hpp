@@ -21,11 +21,10 @@
 #include "settings-basic.hpp"
 
 #include <memory>
-using namespace std;
 
 class OBSBasicSettings : public OBSBasicSettingsBase {
 protected:
-	unique_ptr<BasicSettingsData> settings;
+	std::unique_ptr<BasicSettingsData> settings;
 
 	virtual void PageChanged(wxListbookEvent &event);
 	virtual void PageChanging(wxListbookEvent &event);
