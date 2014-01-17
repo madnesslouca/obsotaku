@@ -29,7 +29,7 @@
  * to a destination, whether that destination be a file, network, or other.
  *
  *   A module with outputs needs to export these functions:
- *       + enum_outputss
+ *       + enum_outputs
  *
  *   Each individual output is then exported by it's name.  For example, an
  * output named "myoutput" would have the following exports:
@@ -38,6 +38,7 @@
  *       + myoutput_destroy
  *       + myoutput_start
  *       + myoutput_stop
+ *       + myoutput_encoders
  *
  *       [and optionally]
  *       + myoutput_config
@@ -75,16 +76,46 @@
  *       settings: New settings of the output
  *
  * ---------------------------------------------------------
- *   void [name]_start(void *data)
+ *   bool [name]_start(void *data)
  *       Starts output
+ *
+ *       Return value: true if successful
  *
  * ---------------------------------------------------------
  *   void [name]_stop(void *data)
  *       Stops output
  *
+ * ---------------------------------------------------------
+ *   bool [name]_active(void *data)
+ *       Returns whether currently active or not
+ *
+ * ---------------------------------------------------------
+ *   uint32_t [name]_encoders(void *data)
+ *       Returns 0 or a combination of the following values:
+ *           + OUTPUT_VIDEO_ENCODER: requires a video encoder
+ *           + OUTPUT_AUDIO_ENCODER: requires an audio encoder
+ *
  * ===========================================
  *   Optional Output Exports
  * ===========================================
+ *   bool [name]_setencoder(void *data, obs_encoder_t encoder,
+ *                          enum obs_encoder_type type)
+ *       Sets the encoder for this output.
+ *
+ *       encoder: Encoder context
+ *       type: Type of encoder (ENCODER_VIDEO or ENCODER_AUDIO)
+ *
+ *       Returns true if successful and compatible
+ *
+ * ---------------------------------------------------------
+ *   obs_encoder_t [name]_getencoder(void *data, enum obs_encoder_type type)
+ *       Gets the encoder for this output
+ *
+ *       type: Type of encoder
+ *
+ *       Returns the encoder, or NULL if none.
+ *
+ * ---------------------------------------------------------
  *   void [name]_config(void *data, void *parent);
  *       Called to configure the output.
  *
@@ -105,18 +136,21 @@ struct output_info {
 	void *(*create)(const char *settings, struct obs_output *output);
 	void (*destroy)(void *data);
 
-	void (*start)(void *data);
+	bool (*start)(void *data);
 	void (*stop)(void *data);
 
+	bool (*active)(void *data);
+
 	/* optional */
-	void (*config)(void *data, void *parent);
+	void (*update)(void *data, const char *settings);
 	void (*pause)(void *data);
 };
 
 struct obs_output {
-	void *data;
+	char               *name;
+	void               *data;
 	struct output_info callbacks;
-	struct dstr settings;
+	struct dstr        settings;
 };
 
 extern bool load_output_info(void *module, const char *module_name,
