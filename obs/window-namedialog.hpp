@@ -17,22 +17,23 @@
 
 #pragma once
 
-#include "forms/OBSWindows.h"
-
+#include <QDialog>
 #include <string>
+#include <memory>
 
-class NameDialog : public NameDialogBase {
-protected:
-	virtual void OnClose(wxCloseEvent &event) override;
-	virtual void OKPressed(wxCommandEvent &event) override;
-	virtual void CancelPressed(wxCommandEvent &event) override;
+namespace Ui {
+	class NameDialog;
+};
+
+class NameDialog : public QDialog {
+	Q_OBJECT
+
+private:
+	std::unique_ptr<Ui::NameDialog> ui;
 
 public:
-	inline NameDialog(wxWindow *parent)
-		: NameDialogBase(parent)
-	{
-	}
+	NameDialog(QWidget *parent);
 
-	static int AskForName(wxWindow *parent, const char *title,
-			const char *text, std::string &str);
+	static bool AskForName(QWidget *parent, const QString &title,
+			const QString &text, std::string &str);
 };
