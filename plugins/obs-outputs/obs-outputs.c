@@ -1,12 +1,10 @@
-#include <string.h>
-#include "obs-outputs.h"
+#include <obs-module.h>
 
-static const char *outputs[] = {"rtmp_stream"};
+OBS_DECLARE_MODULE()
 
-const char *enum_outputs(size_t idx)
+
+bool obs_module_load(uint32_t libobs_ver)
 {
-	if (idx >= sizeof(outputs)/sizeof(const char*))
-		return NULL;
-
-	return outputs[idx];
+	UNUSED_PARAMETER(libobs_ver);
+	return true;
 }
