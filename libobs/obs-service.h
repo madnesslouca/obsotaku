@@ -22,15 +22,15 @@ struct obs_service_info {
 	char *id;
 
 	const char *(*getname)(const char *locale);
-#if 0
-	void *(*create)(obs_data_t settings, struct service_data *service);
+	void *(*create)(obs_data_t settings, obs_service_t service);
 	void (*destroy)(void *data);
 
 	/* optional */
 	void (*update)(void *data, obs_data_t settings);
 
 	/* get stream url/key */
-	/* get (viewers/etc) */
+	const char *(*get_url)(void *data);
+	const char *(*get_key)(void *data);
+
 	/* send (current game/title/activate commercial/etc) */
-#endif
 };
