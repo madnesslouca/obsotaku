@@ -26,6 +26,10 @@ extern "C" {
 enum obs_nix_platform_type {
 	OBS_NIX_PLATFORM_X11_GLX,
 	OBS_NIX_PLATFORM_X11_EGL,
+#ifdef ENABLE_WAYLAND
+	OBS_NIX_PLATFORM_WAYLAND,
+#endif
+
 };
 
 /**
