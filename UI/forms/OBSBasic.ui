@@ -365,7 +365,7 @@
               <normaloff>:/settings/images/settings/general.svg</normaloff>:/settings/images/settings/general.svg</iconset>
             </property>
             <property name="flat">
-             <bool>true</bool>
+             <bool>false</bool>
             </property>
             <property name="themeID2" stdset="0">
              <string notr="true">contextBarButton</string>
@@ -391,7 +391,7 @@
               <normaloff>:/res/images/filter.svg</normaloff>:/res/images/filter.svg</iconset>
             </property>
             <property name="flat">
-             <bool>true</bool>
+             <bool>false</bool>
             </property>
             <property name="themeID2" stdset="0">
              <string notr="true">contextBarButton</string>
@@ -417,7 +417,7 @@
               <normaloff>:/res/images/interact.svg</normaloff>:/res/images/interact.svg</iconset>
             </property>
             <property name="flat">
-             <bool>true</bool>
+             <bool>false</bool>
             </property>
             <property name="themeID2" stdset="0">
              <string notr="true">contextBarButton</string>
@@ -1251,12 +1251,6 @@
               <verstretch>0</verstretch>
              </sizepolicy>
             </property>
-            <property name="maximumSize">
-             <size>
-              <width>22</width>
-              <height>22</height>
-             </size>
-            </property>
             <property name="toolTip">
              <string>Basic.AddTransition</string>
             </property>
@@ -1271,7 +1265,7 @@
               <normaloff>:/res/images/add.png</normaloff>:/res/images/add.png</iconset>
             </property>
             <property name="flat">
-             <bool>true</bool>
+             <bool>false</bool>
             </property>
             <property name="themeID" stdset="0">
              <string notr="true">addIconSmall</string>
@@ -1285,12 +1279,6 @@
               <horstretch>0</horstretch>
               <verstretch>0</verstretch>
              </sizepolicy>
-            </property>
-            <property name="maximumSize">
-             <size>
-              <width>22</width>
-              <height>22</height>
-             </size>
             </property>
             <property name="toolTip">
              <string>Basic.RemoveTransition</string>
@@ -1306,7 +1294,7 @@
               <normaloff>:/res/images/list_remove.png</normaloff>:/res/images/list_remove.png</iconset>
             </property>
             <property name="flat">
-             <bool>true</bool>
+             <bool>false</bool>
             </property>
             <property name="themeID" stdset="0">
              <string notr="true">removeIconSmall</string>
@@ -1320,12 +1308,6 @@
               <horstretch>0</horstretch>
               <verstretch>0</verstretch>
              </sizepolicy>
-            </property>
-            <property name="maximumSize">
-             <size>
-              <width>22</width>
-              <height>22</height>
-             </size>
             </property>
             <property name="toolTip">
              <string>Basic.TransitionProperties</string>
@@ -1341,10 +1323,10 @@
               <normaloff>:/settings/images/settings/general.svg</normaloff>:/settings/images/settings/general.svg</iconset>
             </property>
             <property name="flat">
-             <bool>true</bool>
+             <bool>false</bool>
             </property>
             <property name="themeID" stdset="0">
-             <string notr="true">configIconSmall</string>
+             <string notr="true">menuIconSmall</string>
             </property>
            </widget>
           </item>
