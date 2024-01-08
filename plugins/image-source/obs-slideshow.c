@@ -234,7 +234,7 @@ static void add_file(struct slideshow *ss, image_file_array_t *new_files,
 	}
 }
 
-static bool valid_extension(const char *ext)
+bool valid_extension(const char *ext)
 {
 	if (!ext)
 		return false;
@@ -1091,7 +1091,8 @@ struct obs_source_info slideshow_info = {
 	.id = "slideshow",
 	.type = OBS_SOURCE_TYPE_INPUT,
 	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW |
-			OBS_SOURCE_COMPOSITE | OBS_SOURCE_CONTROLLABLE_MEDIA,
+			OBS_SOURCE_COMPOSITE | OBS_SOURCE_CONTROLLABLE_MEDIA |
+			OBS_SOURCE_CAP_OBSOLETE,
 	.get_name = ss_getname,
 	.create = ss_create,
 	.destroy = ss_destroy,
