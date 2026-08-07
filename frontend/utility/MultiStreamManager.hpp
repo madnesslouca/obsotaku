@@ -85,6 +85,15 @@ public:
 
 	bool Configure(std::vector<MultiStreamChannel> channels, std::string &error);
 
+	/* The channel already being sent by the application's main output. It is
+	 * skipped here, otherwise the same destination would receive two uploads. */
+	void SetPrimaryChannelId(const std::string &channelId);
+	std::string PrimaryChannelId() const;
+
+	/* First enabled channel with usable credentials, or an empty channel when
+	 * there is none. Used to fill the main output when it has no service. */
+	MultiStreamChannel FirstReadyChannel() const;
+
 	/* audioEncodersByTrack is indexed by OBS audio track, so entries may be
 	 * null. Compacting it would silently remap the track a channel selected. */
 	bool Start(obs_encoder_t *videoEncoder, obs_encoder_t *defaultAudioEncoder,
@@ -135,6 +144,7 @@ private:
 
 	mutable std::mutex mutex;
 	std::vector<MultiStreamChannel> channels;
+	std::string primaryChannelId;
 	std::vector<std::shared_ptr<Destination>> destinations;
 	std::vector<std::shared_ptr<Destination>> retiredDestinations;
 	StateCallback stateCallback;

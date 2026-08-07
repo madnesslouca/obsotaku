@@ -110,6 +110,7 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 	}
 
 	vector<MultiStreamChannel> configuredChannels;
+	string primaryId;
 	{
 		lock_guard lock(mutex);
 		if (active) {
@@ -118,6 +119,16 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 		}
 		CollectRetiredDestinations();
 		configuredChannels = channels;
+		primaryId = primaryChannelId;
+	}
+
+	/* The main output is already sending this one. */
+	if (!primaryId.empty()) {
+		configuredChannels.erase(remove_if(configuredChannels.begin(), configuredChannels.end(),
+						   [&primaryId](const MultiStreamChannel &channel) {
+							   return channel.id == primaryId;
+						   }),
+					 configuredChannels.end());
 	}
 
 	vector<MultiStreamChannel> enabledChannels;
@@ -315,6 +326,27 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 	return true;
 }
 
+void MultiStreamManager::SetPrimaryChannelId(const string &channelId)
+{
+	lock_guard lock(mutex);
+	primaryChannelId = channelId;
+}
+
+string MultiStreamManager::PrimaryChannelId() const
+{
+	lock_guard lock(mutex);
+	return primaryChannelId;
+}
+
+MultiStreamChannel MultiStreamManager::FirstReadyChannel() const
+{
+	lock_guard lock(mutex);
+	const auto ready = find_if(channels.begin(), channels.end(), [](const MultiStreamChannel &channel) {
+		return channel.enabled && !channel.server.empty() && !channel.streamKey.empty();
+	});
+	return ready != channels.end() ? *ready : MultiStreamChannel{};
+}
+
 bool MultiStreamManager::IsActive() const
 {
 	lock_guard lock(mutex);
@@ -324,8 +356,11 @@ bool MultiStreamManager::IsActive() const
 bool MultiStreamManager::HasEnabledChannels() const
 {
 	lock_guard lock(mutex);
-	return any_of(channels.begin(), channels.end(), [](const MultiStreamChannel &channel) {
-		return channel.enabled && !channel.server.empty() && !channel.streamKey.empty();
+	/* The primary channel does not count: it travels on the main output, so a
+	 * setup with only that one has nothing extra to fan out. */
+	return any_of(channels.begin(), channels.end(), [this](const MultiStreamChannel &channel) {
+		return channel.enabled && !channel.server.empty() && !channel.streamKey.empty() &&
+		       channel.id != primaryChannelId;
 	});
 }
 

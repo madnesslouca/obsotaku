@@ -692,6 +692,10 @@ private:
 	QTimer multistreamCredentialTimer;
 	void BindMultistreamManager();
 	void RestoreMultistreamAccounts();
+	/* Fills the main output with the first channel from the bar when Stream
+	 * settings has no service, so the multistream setup does not need the
+	 * classic configuration to go live. */
+	void PrepareMultistreamPrimaryService();
 	void AddMultistreamChannel();
 	void ManageMultistreamAccount(const QString &channelId);
 	void OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedChannels,
