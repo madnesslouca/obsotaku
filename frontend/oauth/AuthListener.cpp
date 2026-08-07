@@ -90,26 +90,36 @@ void AuthListener::NewConnection()
 				return;
 			}
 
+			/* The platform explains a refusal here. Passing it on turns
+			 * "authorization failed" into something actionable, such as
+			 * a redirect URI that is not registered. */
+			QString reason = query.queryItemValue(QStringLiteral("error_description"), QUrl::FullyDecoded);
+			const QString errorCode = query.queryItemValue(QStringLiteral("error"), QUrl::FullyDecoded);
+			if (reason.isEmpty())
+				reason = errorCode;
+			else if (!errorCode.isEmpty())
+				reason = QStringLiteral("%1 (%2)").arg(reason, errorCode);
+
 			if (!receivedState.isEmpty()) {
 				if (state == receivedState) {
 					code = query.queryItemValue(QStringLiteral("code"), QUrl::FullyDecoded);
-					if (code.isEmpty())
-						blog(LOG_DEBUG, "no 'code' in server redirect");
+					if (code.isEmpty() && reason.isEmpty())
+						reason = QStringLiteral("the callback carried no authorization code");
 				} else {
-					blog(LOG_WARNING, "state mismatch "
-							  "while handling "
-							  "redirect");
+					blog(LOG_WARNING, "state mismatch while handling redirect");
+					if (reason.isEmpty())
+						reason = QStringLiteral("the callback state did not match");
 				}
-			} else {
-				blog(LOG_DEBUG, "no 'state' in "
-						"server redirect");
+			} else if (reason.isEmpty()) {
+				reason = QStringLiteral("the callback carried no state");
 			}
 
 			if (code.isEmpty()) {
+				blog(LOG_WARNING, "OAuth callback refused: %s", QT_TO_UTF8(reason));
 				auto data = responseTemplate.arg(QTStr("YouTube.Auth.NoCode"));
 				socket->write(QT_TO_UTF8(data));
 				server->close();
-				emit fail();
+				emit fail(reason);
 			} else {
 				auto data = responseTemplate.arg(QTStr("YouTube.Auth.Ok"));
 				socket->write(QT_TO_UTF8(data));

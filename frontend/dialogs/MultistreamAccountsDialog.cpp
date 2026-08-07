@@ -792,9 +792,13 @@ void MultistreamAccountsDialog::StartPkceConnection(int index, const OAuthClient
 	}
 
 	loopback->SetState(FromStdString(session.state));
-	connect(loopback, &AuthListener::fail, this, [this, index]() {
+	connect(loopback, &AuthListener::fail, this, [this, index](const QString &reason) {
 		ClearLoopback();
-		FinishConnection(index, false, {}, {}, QTStr("Multistream.Accounts.AuthorizationRejected"));
+		/* Show what the platform said; the generic wording hides whether the
+		 * user refused or the redirect URI is simply not registered. */
+		FinishConnection(index, false, {}, {},
+				 reason.isEmpty() ? QTStr("Multistream.Accounts.AuthorizationRejected")
+						  : QTStr("Multistream.Accounts.AuthorizationFailedWith").arg(reason));
 	});
 	connect(loopback, &AuthListener::ok, this,
 		[this, index, platform, registration, session](const QString &code) mutable {

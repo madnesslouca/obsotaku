@@ -267,10 +267,8 @@ std::shared_ptr<Auth> YoutubeAuth::Login(QWidget *owner, const std::string &serv
 		auth_code = code;
 		dlg.accept();
 	});
-	connect(&server, &AuthListener::fail, &dlg, [&dlg]() {
-#ifdef _DEBUG
-		blog(LOG_DEBUG, "No access granted");
-#endif
+	connect(&server, &AuthListener::fail, &dlg, [&dlg](const QString &reason) {
+		blog(LOG_WARNING, "No access granted: %s", reason.isEmpty() ? "no reason given" : QT_TO_UTF8(reason));
 		dlg.reject();
 	});
 
