@@ -235,6 +235,9 @@ function(find_qt_plugins)
     iconengines
   )
   list(APPEND qt_plugins_Gui platforminputcontexts)
+  # Without the tls plugin QSslSocket cannot initialise, so every HTTPS request
+  # and every secure socket fails with "TLS initialization failed".
+  list(APPEND qt_plugins_Network tls networkinformation)
   list(APPEND qt_plugins_Sql sqldrivers)
   list(APPEND qt_plugins_3dRender sceneparsers geometryloaders)
   list(APPEND qt_plugins_3dQuickRender renderplugins)
