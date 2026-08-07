@@ -696,6 +696,10 @@ private:
 	 * settings has no service, so the multistream setup does not need the
 	 * classic configuration to go live. */
 	void PrepareMultistreamPrimaryService();
+	/* True while the current service is one this code promoted. Without it the
+	 * second stream of a session mistakes our own service for a user setup,
+	 * clears the primary channel and sends that destination twice. */
+	bool multistreamPromotedService = false;
 	void AddMultistreamChannel();
 	void ManageMultistreamAccount(const QString &channelId);
 	void OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedChannels,
