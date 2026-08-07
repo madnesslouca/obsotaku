@@ -584,15 +584,8 @@ void MultistreamAccountsDialog::ResolveChannelInBackground(int index)
 					return;
 				/* Keep what the user chose here; take only what the
 				 * platform resolved. */
-				const size_t audioMixIndex = target->channel.audioMixIndex;
-				const bool vodTrackEnabled = target->channel.vodTrackEnabled;
-				const size_t vodTrackIndex = target->channel.vodTrackIndex;
-				const bool enabled = target->channel.enabled;
+				ConnectedAccountManager::PreserveUserSettings(target->channel, resolvedChannel);
 				target->channel = std::move(resolvedChannel);
-				target->channel.audioMixIndex = audioMixIndex;
-				target->channel.vodTrackEnabled = vodTrackEnabled;
-				target->channel.vodTrackIndex = vodTrackIndex;
-				target->channel.enabled = enabled;
 				target->credentialsResolved =
 					!target->channel.server.empty() && !target->channel.streamKey.empty();
 			},
@@ -1060,14 +1053,11 @@ void MultistreamAccountsDialog::FinishConnection(int index, bool success, Connec
 			return;
 		}
 
-		const size_t audioMixIndex = row->channel.audioMixIndex;
-		const bool vodTrackEnabled = row->channel.vodTrackEnabled;
-		const size_t vodTrackIndex = row->channel.vodTrackIndex;
+		ConnectedAccountManager::PreserveUserSettings(row->channel, channel);
 		row->account = std::move(account);
 		row->channel = std::move(channel);
-		row->channel.audioMixIndex = audioMixIndex;
-		row->channel.vodTrackEnabled = vodTrackEnabled;
-		row->channel.vodTrackIndex = vodTrackIndex;
+		/* A freshly connected account starts enabled regardless of what the
+		 * empty placeholder row carried. */
 		row->channel.enabled = true;
 		row->connected = true;
 		row->removed = false;

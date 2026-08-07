@@ -687,6 +687,9 @@ private:
 private:
 	std::unique_ptr<BasicOutputHandler> outputHandler;
 	MultistreamChannelBar *multistreamChannelBar = nullptr;
+	/* Ingest credentials expire; resolving them only at boot leaves a long
+	 * session going live with a stale key. */
+	QTimer multistreamCredentialTimer;
 	void BindMultistreamManager();
 	void RestoreMultistreamAccounts();
 	void AddMultistreamChannel();

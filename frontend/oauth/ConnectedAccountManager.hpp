@@ -30,4 +30,10 @@ public:
 	static bool ResolveChannel(const ConnectedStreamAccount &account, const OAuthClientRegistration &registration,
 				   const std::string &redirectUri, MultiStreamChannel &channel, std::string &error);
 	static bool Disconnect(const ConnectedStreamAccount &account, std::string &error);
+
+	/* ResolveChannel rebuilds a channel from what the platform returns, which
+	 * knows nothing about the user's own settings. This copies those back, so
+	 * resolving credentials never silently resets the audio track, the VOD
+	 * track, the broadcast metadata or the enabled state. */
+	static void PreserveUserSettings(const MultiStreamChannel &stored, MultiStreamChannel &resolved);
 };
