@@ -53,8 +53,13 @@ class OBSBasicStats : public QFrame {
 	};
 
 	QList<OutputLabels> outputLabels;
+	/* Channel ids of the multistream rows, in the order they are laid out, so
+	 * the table is only rebuilt when the set of destinations actually changes. */
+	QStringList multistreamRowIds;
 
 	void AddOutputLabels(QString name);
+	/* Keeps one row per multistream destination below the fixed two. */
+	void UpdateMultistreamRows();
 	void Update();
 
 	virtual void closeEvent(QCloseEvent *event) override;

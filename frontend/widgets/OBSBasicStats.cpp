@@ -5,6 +5,7 @@
 #include <qt-wrappers.hpp>
 
 #include <QGridLayout>
+#include <QStringList>
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
@@ -421,10 +422,52 @@ void OBSBasicStats::Update()
 	outputLabels[0].Update(strOutput, false);
 	outputLabels[1].Update(recOutput, true);
 
+	/* The main output carries one of the multistream channels when the user
+	 * has no service of their own, so name it: otherwise two rows would read
+	 * as unrelated and the user could not tell which destination is which. */
+	const QString primaryName = main->MultistreamPrimaryChannelName();
+	outputLabels[0].name->setText(primaryName.isEmpty()
+					      ? QTStr("Basic.Stats.Output.Stream")
+					      : QTStr("Basic.Stats.Output.Stream") + " — " + primaryName);
+
+	UpdateMultistreamRows();
+
 	if (obs_output_active(recOutput)) {
 		long double kbps = outputLabels[1].kbps;
 		bitrates.push_back(kbps);
 	}
+}
+
+void OBSBasicStats::UpdateMultistreamRows()
+{
+	/* The two fixed rows the window is built with. */
+	constexpr int FIXED_ROWS = 2;
+
+	OBSBasic *main = OBSBasic::Get();
+	auto outputs = main ? main->MultistreamChannelOutputs() : std::vector<MultiStreamManager::ChannelOutput>{};
+
+	QStringList ids;
+	ids.reserve(static_cast<qsizetype>(outputs.size()));
+	for (const auto &entry : outputs)
+		ids << QString::fromStdString(entry.id);
+
+	if (ids != multistreamRowIds) {
+		while (outputLabels.size() > FIXED_ROWS) {
+			OutputLabels &row = outputLabels.back();
+			delete row.name;
+			delete row.status;
+			delete row.droppedFrames;
+			delete row.megabytesSent;
+			delete row.bitrate;
+			outputLabels.pop_back();
+		}
+		for (const auto &entry : outputs)
+			AddOutputLabels(QString::fromStdString(entry.displayName));
+		multistreamRowIds = ids;
+	}
+
+	for (qsizetype index = 0; index < ids.size(); ++index)
+		outputLabels[FIXED_ROWS + index].Update(outputs[static_cast<size_t>(index)].output, false);
 }
 
 void OBSBasicStats::StartRecTimeLeft()

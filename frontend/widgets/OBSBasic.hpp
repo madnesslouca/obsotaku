@@ -814,6 +814,14 @@ public:
 
 	const char *GetCurrentOutputPath();
 
+	/* Live outputs of the multistream destinations, for the statistics window.
+	 * The promoted channel is not among them: it is sent by the main output
+	 * and already has a row of its own there. */
+	std::vector<MultiStreamManager::ChannelOutput> MultistreamChannelOutputs() const;
+	/* Name of the channel filling the main output, empty when the user's own
+	 * service is in charge. */
+	QString MultistreamPrimaryChannelName() const;
+
 private slots:
 	void ResizeOutputSizeOfSource();
 

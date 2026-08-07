@@ -112,6 +112,16 @@ public:
 	bool HasEnabledChannels() const;
 	std::vector<MultiStreamChannel> ConfiguredChannels() const;
 	std::vector<MultiStreamChannelSnapshot> Snapshot() const;
+
+	/* One entry per destination that currently owns an output, so the
+	 * statistics window can read bitrate and dropped frames straight from
+	 * libobs. Each output carries a reference of its own. */
+	struct ChannelOutput {
+		std::string id;
+		std::string displayName;
+		OBSOutputAutoRelease output;
+	};
+	std::vector<ChannelOutput> ChannelOutputs() const;
 	void SetStateCallback(StateCallback callback);
 
 private:
