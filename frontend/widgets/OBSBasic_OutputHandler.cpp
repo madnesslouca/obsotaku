@@ -93,16 +93,31 @@ void OBSBasic::RestoreMultistreamAccounts()
 	if (!outputHandler || !multistreamChannelBar)
 		return;
 
+	/* Ingest keys and access tokens go stale during a long session, and the
+	 * boot resolve may have failed with no network. Refreshing on a timer
+	 * keeps the destinations ready without delaying the go-live click. */
+	if (!multistreamCredentialTimer.isActive()) {
+		multistreamCredentialTimer.setInterval(20 * 60 * 1000);
+		connect(&multistreamCredentialTimer, &QTimer::timeout, this, [this]() {
+			if (!outputHandler || outputHandler->multiStreamManager->IsActive())
+				return;
+			RestoreMultistreamAccounts();
+		});
+		multistreamCredentialTimer.start();
+	}
+
 	/* Manual destinations already carry their stream key, so they go live
 	 * immediately; only the OAuth ones need a network round trip. */
 	std::vector<MultiStreamChannel> storedChannels = MultistreamChannelStore::Load();
 	std::vector<MultiStreamChannel> readyChannels;
-	std::vector<ConnectedStreamAccount> accounts;
+	/* The stored channel travels with the account: resolving credentials must
+	 * not reset the track selection or the broadcast metadata the user set. */
+	std::vector<MultiStreamChannel> oauthChannels;
 	for (auto &channel : storedChannels) {
 		if (GetStreamPlatformInfo(channel.platform).ingestMode == StreamIngestMode::ManualStreamKey)
 			readyChannels.emplace_back(std::move(channel));
 		else
-			accounts.push_back({channel.platform, channel.accountId, channel.displayName, channel.enabled});
+			oauthChannels.emplace_back(std::move(channel));
 	}
 
 	if (!readyChannels.empty()) {
@@ -112,7 +127,7 @@ void OBSBasic::RestoreMultistreamAccounts()
 		BindMultistreamManager();
 	}
 
-	if (accounts.empty())
+	if (oauthChannels.empty())
 		return;
 
 	if (readyChannels.empty())
@@ -120,31 +135,33 @@ void OBSBasic::RestoreMultistreamAccounts()
 	QPointer<OBSBasic> guard(this);
 	const QString incompleteRegistration = QTStr("Multistream.Accounts.IntegrationPending");
 	MultistreamTaskPool().start([guard, incompleteRegistration, readyChannels = std::move(readyChannels),
-				     accounts = std::move(accounts)]() mutable {
+				     oauthChannels = std::move(oauthChannels)]() mutable {
 		std::vector<MultiStreamChannel> channels = std::move(readyChannels);
 		std::ostringstream failures;
-		for (const auto &account : accounts) {
-			const auto registration =
-				MultistreamAccountsDialog::RegistrationForPlatform(account.platform);
-			if (!MultistreamAccountsDialog::RegistrationReadyForPlatform(account.platform)) {
-				failures << GetStreamPlatformInfo(account.platform).displayName << ": "
+		for (const auto &stored : oauthChannels) {
+			const auto registration = MultistreamAccountsDialog::RegistrationForPlatform(stored.platform);
+			if (!MultistreamAccountsDialog::RegistrationReadyForPlatform(stored.platform)) {
+				failures << GetStreamPlatformInfo(stored.platform).displayName << ": "
 					 << QT_TO_UTF8(incompleteRegistration) << '\n';
 				continue;
 			}
 
 			const std::string redirectUri =
-				account.platform == StreamPlatform::Kick
+				stored.platform == StreamPlatform::Kick
 					? QStringLiteral("http://127.0.0.1:%1/")
 						  .arg(MultistreamAccountsDialog::KickCallbackPortForPlatform())
 						  .toStdString()
 					: std::string{};
+			const ConnectedStreamAccount account{stored.platform, stored.accountId, stored.displayName,
+							     stored.enabled};
 			MultiStreamChannel channel;
 			std::string error;
 			if (ConnectedAccountManager::ResolveChannel(account, registration, redirectUri, channel,
 							    error)) {
+				ConnectedAccountManager::PreserveUserSettings(stored, channel);
 				channels.emplace_back(std::move(channel));
 			} else {
-				failures << GetStreamPlatformInfo(account.platform).displayName << ": " << error << '\n';
+				failures << GetStreamPlatformInfo(stored.platform).displayName << ": " << error << '\n';
 			}
 		}
 

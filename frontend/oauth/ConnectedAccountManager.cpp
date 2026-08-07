@@ -88,6 +88,25 @@ bool ConnectedAccountManager::ResolveChannel(const ConnectedStreamAccount &accou
 	return true;
 }
 
+void ConnectedAccountManager::PreserveUserSettings(const MultiStreamChannel &stored, MultiStreamChannel &resolved)
+{
+	if (!stored.id.empty())
+		resolved.id = stored.id;
+	/* A name the user edited outranks whatever the platform reports. */
+	if (!stored.displayName.empty())
+		resolved.displayName = stored.displayName;
+	resolved.audioMixIndex = stored.audioMixIndex;
+	resolved.vodTrackEnabled = stored.vodTrackEnabled;
+	resolved.vodTrackIndex = stored.vodTrackIndex;
+	resolved.enabled = stored.enabled;
+	resolved.title = stored.title;
+	resolved.categoryId = stored.categoryId;
+	resolved.categoryName = stored.categoryName;
+	/* Keep the cached avatar when the platform did not return one. */
+	if (resolved.avatarUrl.empty())
+		resolved.avatarUrl = stored.avatarUrl;
+}
+
 bool ConnectedAccountManager::Disconnect(const ConnectedStreamAccount &account, string &error)
 {
 	if (account.accountId.empty() || account.platform == StreamPlatform::CustomRtmp) {
