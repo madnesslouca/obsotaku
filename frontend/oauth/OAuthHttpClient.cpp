@@ -176,6 +176,34 @@ bool OAuthHttpClient::PostForm(const string &url, const Fields &fields, const He
 	}
 }
 
+bool OAuthHttpClient::SendJson(const string &method, const string &url, const string &json, const Headers &headers,
+			       OAuthHttpResponse &response, string &error)
+{
+	CurlHandle curl(curl_easy_init());
+	if (!curl) {
+		error = "Could not initialize the OAuth HTTP client.";
+		return false;
+	}
+
+	Headers requestHeaders = headers;
+	requestHeaders.emplace_back("Content-Type: application/json");
+
+	for (int attempt = 1;; ++attempt) {
+		response = {};
+		CurlHeaders nativeHeaders;
+		if (!Configure(curl.get(), url, requestHeaders, response, nativeHeaders, error))
+			return false;
+		curl_easy_setopt(curl.get(), CURLOPT_CUSTOMREQUEST, method.c_str());
+		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, json.c_str());
+		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE, static_cast<long>(json.size()));
+		if (!Perform(curl.get(), response, error))
+			return false;
+		if (attempt >= MAX_ATTEMPTS || !ShouldRetry(response))
+			return true;
+		this_thread::sleep_for(chrono::seconds(attempt));
+	}
+}
+
 string OAuthHttpClient::UrlEncode(const string &value)
 {
 	CurlHandle curl(curl_easy_init());

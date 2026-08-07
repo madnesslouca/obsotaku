@@ -15,6 +15,8 @@ target_sources(
     oauth/OAuthPkce.hpp
     oauth/OAuthTokenSet.cpp
     oauth/OAuthTokenSet.hpp
+    oauth/PlatformMetadataClient.cpp
+    oauth/PlatformMetadataClient.hpp
     oauth/PlatformOAuthClient.cpp
     oauth/PlatformOAuthClient.hpp
 )

@@ -17,6 +17,8 @@ target_sources(
     "${PRODUCT_FRONTEND_DIR}/oauth/OAuthPkce.hpp"
     "${PRODUCT_FRONTEND_DIR}/oauth/OAuthTokenSet.cpp"
     "${PRODUCT_FRONTEND_DIR}/oauth/OAuthTokenSet.hpp"
+    "${PRODUCT_FRONTEND_DIR}/oauth/PlatformMetadataClient.cpp"
+    "${PRODUCT_FRONTEND_DIR}/oauth/PlatformMetadataClient.hpp"
     "${PRODUCT_FRONTEND_DIR}/oauth/PlatformOAuthClient.cpp"
     "${PRODUCT_FRONTEND_DIR}/oauth/PlatformOAuthClient.hpp"
     "${PRODUCT_FRONTEND_DIR}/utility/SecureTokenStore.hpp"
