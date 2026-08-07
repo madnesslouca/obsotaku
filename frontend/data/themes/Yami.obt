@@ -2811,16 +2811,7 @@ MultistreamAccountsDialog #infoBanner {
     font-size: var(--font_small);
 }
 
-MultistreamAccountsDialog QFrame#platformCard {
-    background-color: var(--grey6);
-    border: 1px solid var(--grey5);
-    border-radius: 10px;
-}
 
-MultistreamAccountsDialog QFrame#platformCard:hover {
-    border-color: var(--grey3);
-    background-color: var(--grey5);
-}
 
 MultistreamAccountsDialog QLabel#platformName {
     color: var(--text);
@@ -2967,26 +2958,37 @@ UnifiedChatDock QTextBrowser#unifiedChatView {
     color: var(--text);
     border: 1px solid var(--grey5);
     border-radius: 6px;
+    padding: 4px;
 }
 
-UnifiedChatDock QLabel#unifiedChatStatus {
+UnifiedChatDock QLabel#unifiedChatStatus,
+UnifiedChatDock QLabel#unifiedChatSendHint {
     color: var(--text_muted);
     font-size: var(--font_small);
 }
 
-UnifiedChatDock QCheckBox#chatFilterTwitch {
-    color: #9146FF;
-    font-weight: bold;
+UnifiedChatDock QLineEdit#unifiedChatSendInput {
+    background-color: var(--grey7);
+    color: var(--text);
+    border: 1px solid var(--grey5);
+    border-radius: 6px;
+    padding: 6px 8px;
+    min-height: 28px;
 }
 
-UnifiedChatDock QCheckBox#chatFilterYouTube {
-    color: #FF0000;
-    font-weight: bold;
+UnifiedChatDock QComboBox#unifiedChatSendPlatform {
+    background-color: var(--grey7);
+    color: var(--text);
+    border: 1px solid var(--grey5);
+    border-radius: 6px;
+    padding: 4px 8px;
+    min-height: 28px;
 }
 
-UnifiedChatDock QCheckBox#chatFilterKick {
-    color: #53FC18;
-    font-weight: bold;
+UnifiedChatDock QPushButton#unifiedChatSendButton {
+    min-height: 28px;
+    padding: 4px 12px;
+    border-radius: 6px;
 }
 
 MultistreamChannelBar#multistreamChannelBar QLabel#channelState {
@@ -3174,4 +3176,74 @@ AddChannelDialog QToolButton#channelTile[platform="x"]:hover {
 
 AddChannelDialog QToolButton#channelTile[platform="trovo"]:hover {
     border-color: #1ec160;
+}
+MultistreamAccountsDialog QFrame#platformGroup {
+    background-color: var(--grey6);
+    border: 1px solid var(--grey5);
+    border-radius: 10px;
+}
+
+MultistreamAccountsDialog QLabel#platformName {
+    color: var(--text);
+    font-size: var(--font_large);
+    font-weight: bold;
+}
+
+MultistreamAccountsDialog QLabel#groupHint {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+MultistreamAccountsDialog QFrame#accountRow {
+    background-color: var(--grey7);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+}
+
+MultistreamAccountsDialog QLabel#accountName {
+    color: var(--text);
+    font-weight: 600;
+}
+
+MultistreamAccountsDialog QLabel#accountStatus {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+MultistreamAccountsDialog QLabel#accountStatus[statusState="connected"] {
+    color: #4ade80;
+}
+
+MultistreamAccountsDialog QLabel#accountStatus[statusState="pending"] {
+    color: #fbbf24;
+}
+
+MultistreamAccountsDialog QLabel#trackLabel {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+MultistreamAccountsDialog QCheckBox {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+MultistreamAccountsDialog QPushButton#btnAddAccount {
+    background-color: var(--grey5);
+    border: 1px solid var(--grey4);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 12px;
+}
+
+MultistreamAccountsDialog QPushButton#btnAddAccount:hover {
+    background-color: var(--grey4);
+}
+
+MultistreamAccountsDialog QLabel#accountInstructions {
+    color: var(--text);
+    background-color: var(--grey6);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+    padding: 8px 10px;
 }

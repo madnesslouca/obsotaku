@@ -57,7 +57,10 @@ const vector<StreamPlatformInfo> &SupportedStreamPlatforms()
 			"#9146ff",
 			/* Twitch ingest guide: 1080p60, 6000 kbps for non-partners. */
 			{1920, 1080, 60, 6000, 160, StreamOrientation::Landscape},
-			{"channel:read:stream_key", "channel:manage:broadcast"},
+			/* chat:read / chat:edit let the unified dock join IRC as the
+			 * streamer and reply from OBS. Existing connections must
+			 * reconnect once to pick up the new scopes. */
+			{"channel:read:stream_key", "channel:manage:broadcast", "chat:read", "chat:edit"},
 			false,
 			true,
 			false,

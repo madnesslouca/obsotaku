@@ -58,6 +58,29 @@ QString CurrentTimestamp()
 {
 	return QDateTime::currentDateTime().toString(QStringLiteral("hh:mm"));
 }
+
+QStringList BuildRoleBadges(const ChatMessage &msg)
+{
+	QStringList badges;
+	if (msg.isBroadcaster)
+		badges << QStringLiteral("HOST");
+	if (msg.isModerator)
+		badges << QStringLiteral("MOD");
+	if (msg.isVip)
+		badges << QStringLiteral("VIP");
+	if (msg.isSubscriber)
+		badges << QStringLiteral("SUB");
+	return badges;
+}
+
+const ChatChannelRef *FirstOf(const std::vector<ChatChannelRef> &channels, StreamPlatform platform)
+{
+	for (const auto &channel : channels) {
+		if (channel.platform == platform && !channel.address.trimmed().isEmpty())
+			return &channel;
+	}
+	return nullptr;
+}
 } // namespace
 
 MultiStreamChatAggregator::MultiStreamChatAggregator(QObject *parent) : QObject(parent)
@@ -82,15 +105,43 @@ MultiStreamChatAggregator::~MultiStreamChatAggregator()
 	DisconnectAll();
 }
 
+QString MultiStreamChatAggregator::ChannelIdFor(StreamPlatform platform) const
+{
+	switch (platform) {
+	case StreamPlatform::Twitch:
+		return twitchChannelId;
+	case StreamPlatform::Kick:
+		return kickChannelId;
+	case StreamPlatform::YouTube:
+		return ytChannelId;
+	default:
+		break;
+	}
+	return {};
+}
+
+QString MultiStreamChatAggregator::DisplayNameFor(StreamPlatform platform) const
+{
+	switch (platform) {
+	case StreamPlatform::Twitch:
+		return twitchDisplayName.isEmpty() ? twitchChannel : twitchDisplayName;
+	case StreamPlatform::Kick:
+		return kickDisplayName.isEmpty() ? kickChannel : kickDisplayName;
+	case StreamPlatform::YouTube:
+		return ytDisplayName.isEmpty() ? QStringLiteral("YouTube") : ytDisplayName;
+	default:
+		break;
+	}
+	return {};
+}
+
 void MultiStreamChatAggregator::EmitStatus(StreamPlatform platform, ChatConnectionState state, const QString &detail)
 {
-	emit statusChanged(platform, state, detail);
+	emit statusChanged(ChannelIdFor(platform), platform, state, detail);
 }
 
 void MultiStreamChatAggregator::ScheduleReconnect(StreamPlatform platform)
 {
-	/* Exponential backoff, capped: chat is a convenience feature and must
-	 * never turn into a reconnect storm against a platform. */
 	if (platform == StreamPlatform::Twitch) {
 		if (twitchChannel.isEmpty())
 			return;
@@ -104,97 +155,75 @@ void MultiStreamChatAggregator::ScheduleReconnect(StreamPlatform platform)
 	}
 }
 
-void MultiStreamChatAggregator::ConnectPlatform(StreamPlatform platform, const QString &channelNameOrId)
+void MultiStreamChatAggregator::SetChannels(const std::vector<ChatChannelRef> &channels)
 {
-	const QString value = channelNameOrId.trimmed();
-	if (value.isEmpty()) {
-		EmitStatus(platform, ChatConnectionState::MissingCredential);
-		return;
-	}
+	const ChatChannelRef *twitch = FirstOf(channels, StreamPlatform::Twitch);
+	const ChatChannelRef *kick = FirstOf(channels, StreamPlatform::Kick);
+	const ChatChannelRef *youtube = FirstOf(channels, StreamPlatform::YouTube);
 
-	switch (platform) {
-	case StreamPlatform::Twitch:
-		DisconnectPlatform(StreamPlatform::Twitch);
-		twitchChannel = value.toLower();
+	const bool sameTwitch = twitch && twitch->address.trimmed().toLower() == twitchChannel &&
+				twitch->channelId == twitchChannelId;
+	const bool sameKick =
+		kick && kick->address.trimmed().toLower() == kickChannel && kick->channelId == kickChannelId;
+	const bool sameYouTube = youtube &&
+				 (youtube->accountId.isEmpty() ? youtube->address : youtube->accountId).trimmed() ==
+					 ytAccountId &&
+				 youtube->channelId == ytChannelId;
+
+	if (!twitch) {
+		if (!twitchChannel.isEmpty() || twitchConnected)
+			DisconnectAllTwitch();
+	} else if (!sameTwitch) {
+		DisconnectAllTwitch();
+		twitchChannelId = twitch->channelId;
+		twitchChannel = twitch->address.trimmed().toLower();
 		if (twitchChannel.startsWith('#'))
 			twitchChannel.remove(0, 1);
+		twitchDisplayName = twitch->displayName;
+		twitchAccountId = twitch->accountId;
 		twitchReconnectDelayMs = 5000;
 		StartTwitch();
-		break;
-	case StreamPlatform::Kick:
-		DisconnectPlatform(StreamPlatform::Kick);
-		kickChannel = value.toLower();
+	}
+
+	if (!kick) {
+		if (!kickChannel.isEmpty() || kickConnected)
+			DisconnectAllKick();
+	} else if (!sameKick) {
+		DisconnectAllKick();
+		kickChannelId = kick->channelId;
+		kickChannel = kick->address.trimmed().toLower();
+		kickDisplayName = kick->displayName;
 		kickChatroomId.clear();
 		kickReconnectDelayMs = 5000;
 		StartKick();
-		break;
-	case StreamPlatform::YouTube:
-		DisconnectPlatform(StreamPlatform::YouTube);
-		ytAccountId = value;
+	}
+
+	if (!youtube) {
+		if (!ytAccountId.isEmpty() || ytConnected)
+			DisconnectAllYouTube();
+	} else if (!sameYouTube) {
+		DisconnectAllYouTube();
+		ytChannelId = youtube->channelId;
+		ytAccountId = youtube->accountId.trimmed().isEmpty() ? youtube->address.trimmed()
+								     : youtube->accountId.trimmed();
+		ytDisplayName = youtube->displayName;
 		ytLiveChatId.clear();
 		ytNextPageToken.clear();
 		ytPrimed = false;
 		StartYouTube();
-		break;
-	default:
-		/* Platforms without a public chat API are reported as unsupported
-		 * so the dock can say so instead of silently showing nothing. */
-		EmitStatus(platform, ChatConnectionState::Unsupported);
-		break;
 	}
-}
 
-void MultiStreamChatAggregator::DisconnectPlatform(StreamPlatform platform)
-{
-	switch (platform) {
-	case StreamPlatform::Twitch:
-		twitchReconnectTimer->stop();
-		twitchChannel.clear();
-		if (twitchSocket) {
-			twitchSocket->disconnect(this);
-			twitchSocket->abort();
-			twitchSocket->deleteLater();
-			twitchSocket = nullptr;
-		}
-		twitchConnected = false;
-		EmitStatus(StreamPlatform::Twitch, ChatConnectionState::Disconnected);
-		break;
-	case StreamPlatform::Kick:
-		kickReconnectTimer->stop();
-		kickChannel.clear();
-		kickChatroomId.clear();
-		kickBuffer.clear();
-		kickFragment.clear();
-		kickHandshakeComplete = false;
-		if (kickSocket) {
-			kickSocket->disconnect(this);
-			kickSocket->abort();
-			kickSocket->deleteLater();
-			kickSocket = nullptr;
-		}
-		kickConnected = false;
-		EmitStatus(StreamPlatform::Kick, ChatConnectionState::Disconnected);
-		break;
-	case StreamPlatform::YouTube:
-		ytPollTimer->stop();
-		ytAccountId.clear();
-		ytLiveChatId.clear();
-		ytNextPageToken.clear();
-		ytAccessToken.clear();
-		ytAccessTokenExpiresAt = 0;
-		ytConnected = false;
-		EmitStatus(StreamPlatform::YouTube, ChatConnectionState::Disconnected);
-		break;
-	default:
-		break;
+	for (const auto &channel : channels) {
+		if (!GetStreamPlatformInfo(channel.platform).supportsChat)
+			emit statusChanged(channel.channelId, channel.platform, ChatConnectionState::Unsupported, {});
 	}
 }
 
 void MultiStreamChatAggregator::DisconnectAll()
 {
-	DisconnectPlatform(StreamPlatform::Twitch);
-	DisconnectPlatform(StreamPlatform::Kick);
-	DisconnectPlatform(StreamPlatform::YouTube);
+	DisconnectAllTwitch();
+	DisconnectAllKick();
+	DisconnectAllYouTube();
 }
 
 bool MultiStreamChatAggregator::IsConnected(StreamPlatform platform) const
@@ -212,11 +241,145 @@ bool MultiStreamChatAggregator::IsConnected(StreamPlatform platform) const
 	return false;
 }
 
+bool MultiStreamChatAggregator::CanSend(StreamPlatform platform) const
+{
+	switch (platform) {
+	case StreamPlatform::Twitch:
+		return twitchConnected && twitchAuthenticated && twitchSocket;
+	case StreamPlatform::YouTube:
+		return ytConnected && !ytLiveChatId.isEmpty();
+	default:
+		return false;
+	}
+}
+
+bool MultiStreamChatAggregator::SendText(StreamPlatform platform, const QString &text, QString &error)
+{
+	const QString trimmed = text.trimmed();
+	if (trimmed.isEmpty()) {
+		error = "empty";
+		return false;
+	}
+
+	if (platform == StreamPlatform::Twitch) {
+		if (!CanSend(StreamPlatform::Twitch)) {
+			error = "twitch-anonymous";
+			return false;
+		}
+		const QByteArray line =
+			QStringLiteral("PRIVMSG #%1 :%2\r\n").arg(twitchChannel, trimmed).toUtf8();
+		twitchSocket->write(line);
+		twitchSocket->flush();
+
+		ChatMessage echo;
+		echo.channelId = twitchChannelId;
+		echo.platform = StreamPlatform::Twitch;
+		echo.channelName = DisplayNameFor(StreamPlatform::Twitch);
+		echo.senderName = twitchIrcNick.isEmpty() ? QStringLiteral("me") : twitchIrcNick;
+		echo.messageText = trimmed;
+		echo.timestamp = CurrentTimestamp();
+		echo.isBroadcaster = true;
+		echo.roleBadges = BuildRoleBadges(echo);
+		emit messageReceived(echo);
+		error.clear();
+		return true;
+	}
+
+	if (platform == StreamPlatform::YouTube) {
+		if (!CanSend(StreamPlatform::YouTube)) {
+			error = "youtube-not-live";
+			return false;
+		}
+		/* Network result is async; failures surface via statusChanged. */
+		SendYouTubeText(trimmed, error);
+		error.clear();
+		return true;
+	}
+
+	error = "unsupported";
+	return false;
+}
+
 // ----------------------------------------------------------------------------
 // Twitch IRC
 // ----------------------------------------------------------------------------
 
+void MultiStreamChatAggregator::DisconnectAllTwitch()
+{
+	twitchReconnectTimer->stop();
+	const QString id = twitchChannelId;
+	if (twitchSocket) {
+		twitchSocket->disconnect(this);
+		twitchSocket->abort();
+		twitchSocket->deleteLater();
+		twitchSocket = nullptr;
+	}
+	twitchChannelId.clear();
+	twitchChannel.clear();
+	twitchDisplayName.clear();
+	twitchAccountId.clear();
+	twitchOauthToken.clear();
+	twitchIrcNick.clear();
+	twitchAuthenticated = false;
+	twitchConnected = false;
+	if (!id.isEmpty())
+		emit statusChanged(id, StreamPlatform::Twitch, ChatConnectionState::Disconnected, {});
+}
+
 void MultiStreamChatAggregator::StartTwitch()
+{
+	if (twitchChannel.isEmpty())
+		return;
+	EmitStatus(StreamPlatform::Twitch, ChatConnectionState::Connecting);
+	LoadTwitchAuthAndStart();
+}
+
+void MultiStreamChatAggregator::LoadTwitchAuthAndStart()
+{
+	/* Prefer an authenticated IRC session so the streamer can reply. Without
+	 * a stored token (or without chat scopes) fall back to justinfan. */
+	if (twitchAccountId.isEmpty()) {
+		twitchOauthToken.clear();
+		twitchAuthenticated = false;
+		OpenTwitchSocket();
+		return;
+	}
+
+	const std::string accountId = twitchAccountId.toStdString();
+	QPointer<MultiStreamChatAggregator> guard(this);
+	MultistreamTaskPool().start([guard, accountId]() {
+		std::string error;
+		auto tokens = OAuthTokenSet::Load(StreamPlatform::Twitch, accountId, error);
+		if (tokens && tokens->AccessTokenExpired()) {
+			const auto registration =
+				MultistreamAccountsDialog::RegistrationForPlatform(StreamPlatform::Twitch);
+			OAuthTokenSet refreshed;
+			if (PlatformOAuthClient::RefreshTokens(StreamPlatform::Twitch, registration, {}, *tokens,
+							       refreshed, error)) {
+				refreshed.Save(StreamPlatform::Twitch, accountId, error);
+				*tokens = std::move(refreshed);
+			} else {
+				tokens.reset();
+			}
+		}
+
+		const QString token = tokens ? QString::fromStdString(tokens->accessToken) : QString();
+		if (!guard)
+			return;
+		QMetaObject::invokeMethod(
+			guard.data(),
+			[guard, token]() {
+				if (!guard || guard->twitchChannel.isEmpty())
+					return;
+				guard->twitchOauthToken = token;
+				guard->twitchAuthenticated = !token.isEmpty();
+				guard->OpenTwitchSocket();
+			},
+			Qt::QueuedConnection);
+	});
+}
+
+void MultiStreamChatAggregator::OpenTwitchSocket()
 {
 	if (twitchChannel.isEmpty())
 		return;
@@ -226,7 +389,6 @@ void MultiStreamChatAggregator::StartTwitch()
 		twitchSocket->deleteLater();
 	}
 
-	EmitStatus(StreamPlatform::Twitch, ChatConnectionState::Connecting);
 	twitchSocket = new QSslSocket(this);
 	connect(twitchSocket, &QSslSocket::connected, this, &MultiStreamChatAggregator::OnTwitchConnected);
 	connect(twitchSocket, &QSslSocket::readyRead, this, &MultiStreamChatAggregator::OnTwitchReadyRead);
@@ -240,20 +402,31 @@ void MultiStreamChatAggregator::OnTwitchConnected()
 	if (!twitchSocket)
 		return;
 
-	/* Anonymous read-only login. Twitch expects the literal SCHMOOPIIE
-	 * password for justinfan nicknames; a fake oauth token is rejected. */
-	const quint32 randomId = QRandomGenerator::global()->bounded(10000, 99999);
-	const QString nick = QStringLiteral("justinfan%1").arg(randomId);
-
 	twitchSocket->write("CAP REQ :twitch.tv/tags twitch.tv/commands\r\n");
-	twitchSocket->write("PASS SCHMOOPIIE\r\n");
-	twitchSocket->write(QStringLiteral("NICK %1\r\n").arg(nick).toUtf8());
+
+	if (twitchAuthenticated && !twitchOauthToken.isEmpty()) {
+		/* IRC nick is the streamer's login. Prefer the stored display name
+		 * (usually the login) and fall back to the channel being joined. */
+		twitchIrcNick = twitchDisplayName.trimmed().toLower();
+		if (twitchIrcNick.isEmpty())
+			twitchIrcNick = twitchChannel;
+		twitchSocket->write(QStringLiteral("PASS oauth:%1\r\n").arg(twitchOauthToken).toUtf8());
+		twitchSocket->write(QStringLiteral("NICK %1\r\n").arg(twitchIrcNick).toUtf8());
+	} else {
+		const quint32 randomId = QRandomGenerator::global()->bounded(10000, 99999);
+		twitchIrcNick = QStringLiteral("justinfan%1").arg(randomId);
+		twitchAuthenticated = false;
+		/* Anonymous read-only login. Twitch expects SCHMOOPIIE for justinfan. */
+		twitchSocket->write("PASS SCHMOOPIIE\r\n");
+		twitchSocket->write(QStringLiteral("NICK %1\r\n").arg(twitchIrcNick).toUtf8());
+	}
+
 	twitchSocket->write(QStringLiteral("JOIN #%1\r\n").arg(twitchChannel).toUtf8());
 	twitchSocket->flush();
 
 	twitchConnected = true;
 	twitchReconnectDelayMs = 5000;
-	EmitStatus(StreamPlatform::Twitch, ChatConnectionState::Connected, twitchChannel);
+	EmitStatus(StreamPlatform::Twitch, ChatConnectionState::Connected, DisplayNameFor(StreamPlatform::Twitch));
 }
 
 void MultiStreamChatAggregator::OnTwitchReadyRead()
@@ -264,7 +437,6 @@ void MultiStreamChatAggregator::OnTwitchReadyRead()
 	while (twitchSocket->canReadLine()) {
 		const QString line = QString::fromUtf8(twitchSocket->readLine()).trimmed();
 		if (line.startsWith(QStringLiteral("PING"))) {
-			/* Echo the token the server sent instead of a constant. */
 			const QString token = line.mid(4).trimmed();
 			twitchSocket->write(QStringLiteral("PONG %1\r\n")
 						    .arg(token.isEmpty() ? QStringLiteral(":tmi.twitch.tv") : token)
@@ -272,6 +444,14 @@ void MultiStreamChatAggregator::OnTwitchReadyRead()
 			twitchSocket->flush();
 		} else if (line.contains(QStringLiteral("PRIVMSG"))) {
 			ParseTwitchIrcLine(line);
+		} else if (line.contains(QStringLiteral("Login authentication failed")) ||
+			   line.contains(QStringLiteral("Login unsuccessful"))) {
+			/* Token missing chat scopes or revoked: drop to anonymous. */
+			twitchAuthenticated = false;
+			twitchOauthToken.clear();
+			EmitStatus(StreamPlatform::Twitch, ChatConnectionState::Failed,
+				   QStringLiteral("auth"));
+			ScheduleReconnect(StreamPlatform::Twitch);
 		}
 	}
 }
@@ -293,10 +473,10 @@ void MultiStreamChatAggregator::OnTwitchDisconnected()
 
 void MultiStreamChatAggregator::ParseTwitchIrcLine(const QString &line)
 {
-	// @tags :nick!user@host PRIVMSG #channel :text
 	ChatMessage msg;
+	msg.channelId = twitchChannelId;
 	msg.platform = StreamPlatform::Twitch;
-	msg.channelName = twitchChannel;
+	msg.channelName = DisplayNameFor(StreamPlatform::Twitch);
 	msg.timestamp = CurrentTimestamp();
 
 	const int privmsgIdx = line.indexOf(QStringLiteral("PRIVMSG"));
@@ -331,6 +511,10 @@ void MultiStreamChatAggregator::ParseTwitchIrcLine(const QString &line)
 				msg.isSubscriber = true;
 			else if (key == QStringLiteral("vip") && value == QStringLiteral("1"))
 				msg.isVip = true;
+			else if (key == QStringLiteral("badges") && value.contains(QStringLiteral("broadcaster/")))
+				msg.isBroadcaster = true;
+			else if (key == QStringLiteral("badges") && value.contains(QStringLiteral("vip/")))
+				msg.isVip = true;
 		}
 	}
 
@@ -343,12 +527,35 @@ void MultiStreamChatAggregator::ParseTwitchIrcLine(const QString &line)
 	if (msg.senderName.isEmpty())
 		return;
 
+	msg.roleBadges = BuildRoleBadges(msg);
 	emit messageReceived(msg);
 }
 
 // ----------------------------------------------------------------------------
 // Kick chat over the Pusher WebSocket
 // ----------------------------------------------------------------------------
+
+void MultiStreamChatAggregator::DisconnectAllKick()
+{
+	kickReconnectTimer->stop();
+	const QString id = kickChannelId;
+	if (kickSocket) {
+		kickSocket->disconnect(this);
+		kickSocket->abort();
+		kickSocket->deleteLater();
+		kickSocket = nullptr;
+	}
+	kickChannelId.clear();
+	kickChannel.clear();
+	kickDisplayName.clear();
+	kickChatroomId.clear();
+	kickBuffer.clear();
+	kickFragment.clear();
+	kickHandshakeComplete = false;
+	kickConnected = false;
+	if (!id.isEmpty())
+		emit statusChanged(id, StreamPlatform::Kick, ChatConnectionState::Disconnected, {});
+}
 
 void MultiStreamChatAggregator::StartKick()
 {
@@ -392,8 +599,6 @@ void MultiStreamChatAggregator::ResolveKickChatroom()
 		}
 
 		if (kickChatroomId.isEmpty()) {
-			/* Without a numeric chatroom id there is no channel to
-			 * subscribe to; guessing one just fails silently. */
 			EmitStatus(StreamPlatform::Kick, ChatConnectionState::Failed, kickChannel);
 			ScheduleReconnect(StreamPlatform::Kick);
 			return;
@@ -466,8 +671,6 @@ bool MultiStreamChatAggregator::ProcessKickHandshake()
 		QCryptographicHash::hash(kickHandshakeKey + WEBSOCKET_GUID, QCryptographicHash::Sha1).toBase64();
 
 	if (!header.startsWith("HTTP/1.1 101") || !header.contains(expectedAccept)) {
-		/* Either the upgrade was refused or the server did not prove it
-		 * saw our key: both mean this is not a usable WebSocket. */
 		EmitStatus(StreamPlatform::Kick, ChatConnectionState::Failed,
 			   QString::fromLatin1(header.left(header.indexOf("\r\n"))));
 		kickSocket->abort();
@@ -477,7 +680,7 @@ bool MultiStreamChatAggregator::ProcessKickHandshake()
 	kickHandshakeComplete = true;
 	kickConnected = true;
 	kickReconnectDelayMs = 5000;
-	EmitStatus(StreamPlatform::Kick, ChatConnectionState::Connected, kickChannel);
+	EmitStatus(StreamPlatform::Kick, ChatConnectionState::Connected, DisplayNameFor(StreamPlatform::Kick));
 
 	QJsonObject subData;
 	subData[QStringLiteral("auth")] = QString();
@@ -495,10 +698,8 @@ void MultiStreamChatAggregator::SendKickFrame(quint8 opcode, const QByteArray &p
 		return;
 
 	QByteArray frame;
-	frame.append(static_cast<char>(0x80 | opcode)); // FIN + opcode
+	frame.append(static_cast<char>(0x80 | opcode));
 
-	/* RFC 6455 §5.3: every client frame must be masked, otherwise the server
-	 * closes the connection with protocol error 1002. */
 	const qsizetype length = payload.size();
 	if (length <= 125) {
 		frame.append(static_cast<char>(0x80 | length));
@@ -562,7 +763,7 @@ void MultiStreamChatAggregator::ProcessKickFrames()
 			return;
 		}
 		if (static_cast<quint64>(kickBuffer.size()) < static_cast<quint64>(offset) + length)
-			return; // wait for the rest of the frame
+			return;
 
 		QByteArray payload = kickBuffer.mid(offset, static_cast<qsizetype>(length));
 		kickBuffer.remove(0, offset + static_cast<qsizetype>(length));
@@ -572,7 +773,7 @@ void MultiStreamChatAggregator::ProcessKickFrames()
 		}
 
 		switch (opcode) {
-		case 0x0: // continuation
+		case 0x0:
 			kickFragment.append(payload);
 			if (fin) {
 				if (kickFragmentOpcode == 0x1)
@@ -581,8 +782,8 @@ void MultiStreamChatAggregator::ProcessKickFrames()
 				kickFragmentOpcode = 0;
 			}
 			break;
-		case 0x1: // text
-		case 0x2: // binary
+		case 0x1:
+		case 0x2:
 			if (fin) {
 				if (opcode == 0x1)
 					HandleKickPayload(payload);
@@ -591,13 +792,13 @@ void MultiStreamChatAggregator::ProcessKickFrames()
 				kickFragment = payload;
 			}
 			break;
-		case 0x8: // close
+		case 0x8:
 			kickSocket->close();
 			return;
-		case 0x9: // ping
+		case 0x9:
 			SendKickFrame(0xA, payload);
 			break;
-		case 0xA: // pong
+		case 0xA:
 			break;
 		default:
 			break;
@@ -630,14 +831,29 @@ void MultiStreamChatAggregator::HandleKickPayload(const QByteArray &payload)
 
 	const QJsonObject dataObj = eventDoc.object();
 	ChatMessage msg;
+	msg.channelId = kickChannelId;
 	msg.platform = StreamPlatform::Kick;
-	msg.channelName = kickChannel;
+	msg.channelName = DisplayNameFor(StreamPlatform::Kick);
 	msg.timestamp = CurrentTimestamp();
 	msg.messageText = dataObj[QStringLiteral("content")].toString();
 
 	const QJsonObject sender = dataObj[QStringLiteral("sender")].toObject();
 	msg.senderName = sender[QStringLiteral("username")].toString();
 	msg.userColor = sender[QStringLiteral("identity")].toObject()[QStringLiteral("color")].toString();
+
+	const QJsonArray badges = sender[QStringLiteral("identity")].toObject()[QStringLiteral("badges")].toArray();
+	for (const QJsonValue &badge : badges) {
+		const QString type = badge.toObject()[QStringLiteral("type")].toString().toLower();
+		if (type.contains(QStringLiteral("mod")))
+			msg.isModerator = true;
+		else if (type.contains(QStringLiteral("sub")))
+			msg.isSubscriber = true;
+		else if (type.contains(QStringLiteral("vip")))
+			msg.isVip = true;
+		else if (type.contains(QStringLiteral("broadcaster")) || type.contains(QStringLiteral("host")))
+			msg.isBroadcaster = true;
+	}
+	msg.roleBadges = BuildRoleBadges(msg);
 
 	if (!msg.senderName.isEmpty() && !msg.messageText.isEmpty())
 		emit messageReceived(msg);
@@ -664,6 +880,24 @@ void MultiStreamChatAggregator::OnKickDisconnected()
 // YouTube live chat
 // ----------------------------------------------------------------------------
 
+void MultiStreamChatAggregator::DisconnectAllYouTube()
+{
+	ytPollTimer->stop();
+	const QString id = ytChannelId;
+	ytChannelId.clear();
+	ytAccountId.clear();
+	ytDisplayName.clear();
+	ytLiveChatId.clear();
+	ytNextPageToken.clear();
+	ytAccessToken.clear();
+	ytAccessTokenExpiresAt = 0;
+	ytConnected = false;
+	ytPrimed = false;
+	ytRequestInFlight = false;
+	if (!id.isEmpty())
+		emit statusChanged(id, StreamPlatform::YouTube, ChatConnectionState::Disconnected, {});
+}
+
 void MultiStreamChatAggregator::StartYouTube()
 {
 	if (ytAccountId.isEmpty())
@@ -681,8 +915,6 @@ void MultiStreamChatAggregator::ScheduleYouTubeRetry(int milliseconds)
 
 void MultiStreamChatAggregator::WithYouTubeAccessToken(std::function<void(const QString &)> continuation)
 {
-	/* A valid token is required: the live chat endpoints reject unauthenticated
-	 * requests, and an API key alone cannot read another account's chat. */
 	if (!ytAccessToken.isEmpty() && CurrentUnixTime() + 60 < ytAccessTokenExpiresAt) {
 		continuation(ytAccessToken);
 		return;
@@ -770,8 +1002,6 @@ void MultiStreamChatAggregator::ResolveYouTubeLiveChat()
 			}
 
 			if (ytLiveChatId.isEmpty()) {
-				/* No live broadcast yet; keep checking at a slow pace
-				 * instead of burning quota on chat polling. */
 				ytConnected = false;
 				EmitStatus(StreamPlatform::YouTube, ChatConnectionState::WaitingForBroadcast);
 				ScheduleYouTubeRetry(YOUTUBE_BROADCAST_RETRY_MS);
@@ -781,7 +1011,8 @@ void MultiStreamChatAggregator::ResolveYouTubeLiveChat()
 			ytConnected = true;
 			ytPrimed = false;
 			ytNextPageToken.clear();
-			EmitStatus(StreamPlatform::YouTube, ChatConnectionState::Connected);
+			EmitStatus(StreamPlatform::YouTube, ChatConnectionState::Connected,
+				   DisplayNameFor(StreamPlatform::YouTube));
 			PollYouTubeChat();
 		});
 	});
@@ -832,8 +1063,6 @@ void MultiStreamChatAggregator::PollYouTubeChat()
 				const int status =
 					reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 				if (status == 403 || status == 404) {
-					/* The broadcast ended or the chat is gone: go
-					 * back to looking for an active broadcast. */
 					ytLiveChatId.clear();
 					ytConnected = false;
 					EmitStatus(StreamPlatform::YouTube,
@@ -850,36 +1079,123 @@ void MultiStreamChatAggregator::PollYouTubeChat()
 			const QJsonObject obj = doc.object();
 			ytNextPageToken = obj[QStringLiteral("nextPageToken")].toString();
 
-			/* The first page is chat backlog. Showing it would dump
-			 * hundreds of old messages into the dock at once. */
 			const bool emitMessages = ytPrimed;
 			ytPrimed = true;
 
 			if (emitMessages) {
 				for (const QJsonValue &value : obj[QStringLiteral("items")].toArray()) {
 					const QJsonObject item = value.toObject();
-					ChatMessage msg;
-					msg.platform = StreamPlatform::YouTube;
-					msg.channelName = QStringLiteral("YouTube");
-					msg.timestamp = CurrentTimestamp();
-					msg.messageText = item[QStringLiteral("snippet")]
-								  .toObject()[QStringLiteral("displayMessage")]
-								  .toString();
-
+					const QJsonObject snippet = item[QStringLiteral("snippet")].toObject();
 					const QJsonObject author = item[QStringLiteral("authorDetails")].toObject();
+
+					ChatMessage msg;
+					msg.channelId = ytChannelId;
+					msg.platform = StreamPlatform::YouTube;
+					msg.channelName = DisplayNameFor(StreamPlatform::YouTube);
+					msg.timestamp = CurrentTimestamp();
+					msg.messageText = snippet[QStringLiteral("displayMessage")].toString();
 					msg.senderName = author[QStringLiteral("displayName")].toString();
 					msg.isModerator = author[QStringLiteral("isChatModerator")].toBool();
 					msg.isSubscriber = author[QStringLiteral("isChatSponsor")].toBool();
+					msg.isBroadcaster = author[QStringLiteral("isChatOwner")].toBool();
+
+					const QString type = snippet[QStringLiteral("type")].toString();
+					if (type == QStringLiteral("superChatEvent")) {
+						msg.kind = ChatMessageKind::SuperChat;
+						const QJsonObject details =
+							snippet[QStringLiteral("superChatDetails")].toObject();
+						msg.paidAmount = details[QStringLiteral("amountDisplayString")].toString();
+						if (msg.paidAmount.isEmpty())
+							msg.paidAmount =
+								QString::number(details[QStringLiteral("amountMicros")]
+											.toVariant()
+											.toLongLong() /
+										1000000.0,
+										'f', 2);
+						msg.paidCurrency = details[QStringLiteral("currency")].toString();
+						if (msg.messageText.isEmpty())
+							msg.messageText = details[QStringLiteral("userComment")].toString();
+					} else if (type == QStringLiteral("superStickerEvent")) {
+						msg.kind = ChatMessageKind::SuperChat;
+						const QJsonObject details =
+							snippet[QStringLiteral("superStickerDetails")].toObject();
+						msg.paidAmount = details[QStringLiteral("amountDisplayString")].toString();
+						msg.paidCurrency = details[QStringLiteral("currency")].toString();
+						if (msg.messageText.isEmpty())
+							msg.messageText = QStringLiteral("Super Sticker");
+					} else if (type == QStringLiteral("memberMilestoneChatEvent") ||
+						   type == QStringLiteral("newSponsorEvent") ||
+						   type == QStringLiteral("membershipGiftingEvent") ||
+						   type == QStringLiteral("giftMembershipReceivedEvent")) {
+						msg.kind = ChatMessageKind::Membership;
+					}
+
+					msg.roleBadges = BuildRoleBadges(msg);
+					if (msg.kind == ChatMessageKind::SuperChat && !msg.paidAmount.isEmpty())
+						msg.roleBadges.prepend(msg.paidAmount);
 
 					if (!msg.senderName.isEmpty() && !msg.messageText.isEmpty())
 						emit messageReceived(msg);
 				}
 			}
 
-			/* Respect the interval the API asks for; a fixed 3 s poll
-			 * exhausts the daily quota in under two hours. */
 			const int suggested = obj[QStringLiteral("pollingIntervalMillis")].toInt(YOUTUBE_MIN_POLL_MS);
 			ScheduleYouTubeRetry(std::max(suggested, YOUTUBE_MIN_POLL_MS));
+		});
+	});
+}
+
+void MultiStreamChatAggregator::SendYouTubeText(const QString &text, QString &error)
+{
+	error.clear();
+	QPointer<MultiStreamChatAggregator> guard(this);
+	const QString liveChatId = ytLiveChatId;
+	const QString bodyText = text;
+
+	WithYouTubeAccessToken([this, guard, liveChatId, bodyText](const QString &token) {
+		if (!guard || liveChatId.isEmpty() || token.isEmpty())
+			return;
+
+		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
+		QUrlQuery query;
+		query.addQueryItem(QStringLiteral("part"), QStringLiteral("snippet"));
+		url.setQuery(query);
+
+		QJsonObject snippet;
+		snippet[QStringLiteral("liveChatId")] = liveChatId;
+		snippet[QStringLiteral("type")] = QStringLiteral("textMessageEvent");
+		QJsonObject textDetails;
+		textDetails[QStringLiteral("messageText")] = bodyText;
+		snippet[QStringLiteral("textMessageDetails")] = textDetails;
+		QJsonObject root;
+		root[QStringLiteral("snippet")] = snippet;
+
+		QNetworkRequest request(url);
+		request.setRawHeader("Authorization", QStringLiteral("Bearer %1").arg(token).toUtf8());
+		request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+
+		QNetworkReply *reply =
+			netManager->post(request, QJsonDocument(root).toJson(QJsonDocument::Compact));
+		connect(reply, &QNetworkReply::finished, this, [this, guard, reply, bodyText]() {
+			reply->deleteLater();
+			if (!guard)
+				return;
+			if (reply->error() != QNetworkReply::NoError) {
+				EmitStatus(StreamPlatform::YouTube, ChatConnectionState::Failed,
+					   reply->errorString());
+				return;
+			}
+
+			ChatMessage echo;
+			echo.channelId = ytChannelId;
+			echo.platform = StreamPlatform::YouTube;
+			echo.channelName = DisplayNameFor(StreamPlatform::YouTube);
+			echo.senderName = QStringLiteral("You");
+			echo.messageText = bodyText;
+			echo.timestamp = CurrentTimestamp();
+			echo.isBroadcaster = true;
+			echo.roleBadges = BuildRoleBadges(echo);
+			emit messageReceived(echo);
 		});
 	});
 }

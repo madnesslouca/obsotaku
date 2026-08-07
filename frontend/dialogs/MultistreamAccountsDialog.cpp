@@ -21,8 +21,8 @@
 
 #include <util/config-file.h>
 
-#include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QFrame>
@@ -33,7 +33,6 @@
 #include <QMessageBox>
 #include <QPointer>
 #include <QPushButton>
-#include <QRadioButton>
 #include <QStyle>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -139,7 +138,7 @@ bool RegistrationReady(StreamPlatform platform)
 		!registration.clientSecret.empty());
 }
 
-QString RegistrationStatusText(StreamPlatform platform)
+QString RegistrationBlockedReason(StreamPlatform platform)
 {
 	const auto registration = RegistrationFor(platform);
 	if (registration.clientId.empty())
@@ -147,7 +146,7 @@ QString RegistrationStatusText(StreamPlatform platform)
 	if (platform == StreamPlatform::Kick && registration.tokenExchangeEndpoint.empty() &&
 	    registration.clientSecret.empty())
 		return QTStr("Multistream.Accounts.KickProxyPending");
-	return QTStr("Multistream.Accounts.NotConnected");
+	return {};
 }
 
 QString RegistrationToolTip(StreamPlatform platform)
@@ -184,6 +183,18 @@ QString FromStdString(const string &value)
 {
 	return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
 }
+
+QComboBox *MakeTrackCombo(QWidget *parent)
+{
+	/* Six radio buttons per row was most of the old dialog's height; a combo
+	 * says the same thing in one control. */
+	auto *combo = new QComboBox(parent);
+	combo->setObjectName(QStringLiteral("trackCombo"));
+	for (int i = 0; i < AUDIO_TRACK_COUNT; ++i)
+		combo->addItem(QString::number(i + 1), i);
+	combo->setFixedWidth(58);
+	return combo;
+}
 } // namespace
 
 OAuthClientRegistration MultistreamAccountsDialog::RegistrationForPlatform(StreamPlatform platform)
@@ -209,7 +220,7 @@ MultistreamAccountsDialog::MultistreamAccountsDialog(QWidget *parent, vector<Mul
 			       ? QTStr("Multistream.Accounts.SingleTitle").arg(
 					 StreamPlatformDisplayName(*newAccountPlatform))
 			       : QTStr("Multistream.Accounts.Title"));
-	setMinimumWidth(640);
+	setMinimumWidth(660);
 	setModal(true);
 	/* Styling lives in the theme files (see Yami.obt). A widget stylesheet
 	 * here would take precedence over the active theme and break light mode. */
@@ -219,46 +230,50 @@ MultistreamAccountsDialog::MultistreamAccountsDialog(QWidget *parent, vector<Mul
 	/* The device-code instructions appear mid-flow; without this the dialog
 	 * keeps its original height and the rows overlap. */
 	layout->setSizeConstraint(QLayout::SetMinimumSize);
+	layout->setSpacing(10);
 
 	auto *subtitle = new QLabel(QTStr("Multistream.Accounts.Subtitle"), this);
 	subtitle->setObjectName(QStringLiteral("infoBanner"));
 	subtitle->setWordWrap(true);
 	layout->addWidget(subtitle);
 
-	/* One card per connected account, so a platform can hold several. */
+	/* One row per connected account, so a platform can hold several. */
 	for (auto &channel : existingChannels) {
 		if (GetStreamPlatformInfo(channel.platform).ingestMode != StreamIngestMode::ResolvedByApi)
 			continue;
 		if (newAccountPlatform && channel.platform != *newAccountPlatform)
 			continue;
 
-		AccountCard card;
-		card.platform = channel.platform;
-		card.account = {channel.platform, channel.accountId, channel.displayName, channel.enabled};
-		card.connected = !channel.accountId.empty();
-		card.credentialsResolved = !channel.server.empty() && !channel.streamKey.empty();
-		card.channel = std::move(channel);
-		cards.push_back(std::move(card));
+		auto row = make_unique<AccountRow>();
+		row->platform = channel.platform;
+		row->account = {channel.platform, channel.accountId, channel.displayName, channel.enabled};
+		row->connected = !channel.accountId.empty();
+		row->credentialsResolved = !channel.server.empty() && !channel.streamKey.empty();
+		row->channel = std::move(channel);
+		rows.push_back(std::move(row));
 	}
 
-	/* An empty card for connecting another account on this platform. */
+	/* Focused on one platform, only that group is shown; otherwise every
+	 * platform gets a group so a first account can be added from here. */
+	vector<StreamPlatform> platforms;
 	if (newAccountPlatform) {
-		AccountCard card;
-		card.platform = *newAccountPlatform;
-		card.channel.platform = *newAccountPlatform;
-		cards.push_back(std::move(card));
+		platforms.push_back(*newAccountPlatform);
+	} else {
+		for (const auto platform : {StreamPlatform::YouTube, StreamPlatform::Twitch, StreamPlatform::Kick})
+			platforms.push_back(platform);
 	}
 
-	for (int index = 0; index < static_cast<int>(cards.size()); ++index)
-		AddAccountCard(index, layout);
-
-	emptyHint = new QLabel(QTStr("Multistream.Accounts.NoAccounts"), this);
-	emptyHint->setObjectName(QStringLiteral("infoBanner"));
-	emptyHint->setWordWrap(true);
-	emptyHint->setVisible(cards.empty());
-	layout->addWidget(emptyHint);
+	for (const auto platform : platforms) {
+		vector<int> rowIndexes;
+		for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+			if (rows[static_cast<size_t>(index)]->platform == platform)
+				rowIndexes.push_back(index);
+		}
+		BuildPlatformGroup(platform, rowIndexes, layout);
+	}
 
 	instructions = new QLabel(this);
+	instructions->setObjectName(QStringLiteral("accountInstructions"));
 	instructions->setWordWrap(true);
 	instructions->setTextInteractionFlags(Qt::TextSelectableByMouse);
 	instructions->setVisible(false);
@@ -284,266 +299,273 @@ MultistreamAccountsDialog::MultistreamAccountsDialog(QWidget *parent, vector<Mul
 		FinishConnection(busyIndex, false, {}, {}, QTStr("Multistream.Accounts.TimedOut"));
 	});
 
-	for (int index = 0; index < static_cast<int>(cards.size()); ++index) {
-		if (cards[index].connected && !cards[index].credentialsResolved)
+	for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+		if (rows[static_cast<size_t>(index)]->connected &&
+		    !rows[static_cast<size_t>(index)]->credentialsResolved)
 			ResolveChannelInBackground(index);
 	}
 }
 
-MultistreamAccountsDialog::AccountCard *MultistreamAccountsDialog::CardAt(int index)
+MultistreamAccountsDialog::AccountRow *MultistreamAccountsDialog::RowAt(int index)
 {
-	if (index < 0 || index >= static_cast<int>(cards.size()))
+	if (index < 0 || index >= static_cast<int>(rows.size()))
 		return nullptr;
-	return &cards[static_cast<size_t>(index)];
+	return rows[static_cast<size_t>(index)].get();
 }
 
-MultistreamAccountsDialog::AccountCard *MultistreamAccountsDialog::CardForPlatform(StreamPlatform platform)
+void MultistreamAccountsDialog::BuildPlatformGroup(StreamPlatform platform, const vector<int> &rowIndexes,
+						   QVBoxLayout *layout)
 {
-	auto card = find_if(cards.begin(), cards.end(),
-			    [platform](const AccountCard &item) { return item.platform == platform; });
-	return card != cards.end() ? &*card : nullptr;
-}
-
-vector<MultiStreamChannel> MultistreamAccountsDialog::Channels() const
-{
-	vector<MultiStreamChannel> channels;
-	for (const auto &card : cards) {
-		if (card.removed || !card.connected || card.account.accountId.empty())
-			continue;
-
-		MultiStreamChannel channel = card.channel;
-		if (channel.id.empty()) {
-			const auto &info = GetStreamPlatformInfo(card.platform);
-			channel.id = string(info.id) + ":" + card.account.accountId;
-			channel.platform = card.platform;
-			channel.accountId = card.account.accountId;
-		}
-		if (channel.displayName.empty()) {
-			channel.displayName = card.account.displayName.empty()
-						      ? StreamPlatformDisplayName(card.platform).toStdString()
-						      : card.account.displayName;
-		}
-
-		/* A channel whose ingest credentials are still being resolved would
-		 * be rejected by MultiStreamManager::Configure and take every other
-		 * channel down with it, so hand it over disabled instead. */
-		if (!card.credentialsResolved) {
-			channel.server.clear();
-			channel.streamKey.clear();
-			channel.enabled = false;
-		}
-		channels.emplace_back(std::move(channel));
-	}
-	return channels;
-}
-
-vector<string> MultistreamAccountsDialog::ManagedChannelIds() const
-{
-	vector<string> ids;
-	for (const auto &card : cards) {
-		if (!card.channel.id.empty())
-			ids.push_back(card.channel.id);
-		else if (!card.account.accountId.empty())
-			ids.push_back(string(GetStreamPlatformInfo(card.platform).id) + ":" + card.account.accountId);
-	}
-	return ids;
-}
-
-void MultistreamAccountsDialog::reject()
-{
-	if (busy) {
-		QMessageBox::information(this, windowTitle(), QTStr("Multistream.Accounts.WaitForConnection"));
-		return;
-	}
-	QDialog::reject();
-}
-
-void MultistreamAccountsDialog::AddAccountCard(int index, QVBoxLayout *layout)
-{
-	AccountCard *cardPtr = CardAt(index);
-	if (!cardPtr)
-		return;
-	AccountCard &card = *cardPtr;
-	const StreamPlatform platform = card.platform;
-
 	auto *frame = new QFrame(this);
-	frame->setObjectName("platformCard");
+	frame->setObjectName(QStringLiteral("platformGroup"));
 	frame->setProperty("platform", StreamPlatformId(platform));
 
-	auto *cardLayout = new QVBoxLayout(frame);
-	cardLayout->setContentsMargins(18, 16, 18, 16);
-	cardLayout->setSpacing(14);
+	auto *groupLayout = new QVBoxLayout(frame);
+	groupLayout->setContentsMargins(14, 12, 14, 12);
+	groupLayout->setSpacing(8);
 
-	auto *row = new QHBoxLayout();
-	row->setContentsMargins(0, 0, 0, 0);
-	row->setSpacing(16);
+	auto *header = new QHBoxLayout();
+	header->setContentsMargins(0, 0, 0, 0);
+	header->setSpacing(10);
 
-	/* Same badge the channel bar and the platform picker use, so a platform
-	 * looks identical everywhere in the application. */
-	auto *iconLabel = new QLabel(frame);
-	iconLabel->setObjectName(QStringLiteral("platformIcon"));
-	iconLabel->setFixedSize(48, 48);
-	iconLabel->setAlignment(Qt::AlignCenter);
-	iconLabel->setPixmap(PlatformIconProvider::Badge(platform, 48));
-	row->addWidget(iconLabel);
-
-	auto *textLayout = new QVBoxLayout();
-	textLayout->setSpacing(6);
+	auto *icon = new QLabel(frame);
+	icon->setObjectName(QStringLiteral("platformIcon"));
+	icon->setFixedSize(28, 28);
+	icon->setPixmap(PlatformIconProvider::Badge(platform, 28));
+	header->addWidget(icon);
 
 	auto *name = new QLabel(StreamPlatformDisplayName(platform), frame);
-	name->setObjectName("platformName");
+	name->setObjectName(QStringLiteral("platformName"));
+	header->addWidget(name);
+	header->addStretch(1);
 
-	card.status = new QLabel(QTStr("Multistream.Accounts.NotConnected"), frame);
-	card.status->setObjectName("platformStatusPill");
-	card.status->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
-
-	auto *statusContainer = new QHBoxLayout();
-	statusContainer->setContentsMargins(0, 0, 0, 0);
-	statusContainer->addWidget(card.status);
-	statusContainer->addStretch();
-
-	textLayout->addWidget(name);
-	textLayout->addLayout(statusContainer);
-	row->addLayout(textLayout, 1);
-
-	auto *btnLayout = new QHBoxLayout();
-	btnLayout->setSpacing(8);
-
-	card.connectButton = new QPushButton(QTStr("Multistream.Accounts.Connect"), frame);
-	card.connectButton->setObjectName(QStringLiteral("btnConnect_%1").arg(StreamPlatformId(platform)));
 	if (platform == StreamPlatform::Kick) {
-		card.configureButton = new QPushButton(QTStr("Multistream.Accounts.Configure"), frame);
-		card.configureButton->setObjectName(QStringLiteral("btnConfigure_kick"));
-		connect(card.configureButton, &QPushButton::clicked, this,
-			[this]() { ConfigureKickRegistration(); });
-	}
-	card.disconnectButton = new QPushButton(QTStr("Multistream.Accounts.Disconnect"), frame);
-	card.disconnectButton->setObjectName("btnDisconnect");
-	card.disconnectButton->setVisible(false);
-
-	connect(card.connectButton, &QPushButton::clicked, this, [this, index]() { ConnectAccount(index); });
-	connect(card.disconnectButton, &QPushButton::clicked, this, [this, index]() { DisconnectAccount(index); });
-
-	if (card.configureButton)
-		btnLayout->addWidget(card.configureButton);
-	btnLayout->addWidget(card.connectButton);
-	btnLayout->addWidget(card.disconnectButton);
-	row->addLayout(btnLayout);
-
-	cardLayout->addLayout(row);
-
-	auto *settingsBox = new QFrame(frame);
-	settingsBox->setObjectName(QStringLiteral("platformSettings"));
-
-	auto *settingsLayout = new QVBoxLayout(settingsBox);
-	settingsLayout->setContentsMargins(4, 4, 4, 4);
-	settingsLayout->setSpacing(10);
-
-	auto *settingsTitle = new QLabel(QTStr("Multistream.Accounts.StreamSettings"), settingsBox);
-	settingsTitle->setObjectName(QStringLiteral("platformSettingsTitle"));
-	settingsLayout->addWidget(settingsTitle);
-
-	auto *audioRow = new QHBoxLayout();
-	audioRow->setContentsMargins(0, 0, 0, 0);
-	audioRow->setSpacing(12);
-	audioRow->addWidget(new QLabel(QTStr("Multistream.Accounts.AudioTrack"), settingsBox));
-
-	card.audioTrackGroup = new QButtonGroup(settingsBox);
-	for (int i = 0; i < AUDIO_TRACK_COUNT; i++) {
-		/* Button id is the zero-based track index; the label is the track
-		 * number the rest of OBS shows. */
-		auto *radio = new QRadioButton(QString::number(i + 1), settingsBox);
-		card.audioTrackRadios[i] = radio;
-		card.audioTrackGroup->addButton(radio, i);
-		audioRow->addWidget(radio);
-	}
-	audioRow->addStretch();
-	settingsLayout->addLayout(audioRow);
-
-	auto *vodRow = new QHBoxLayout();
-	vodRow->setContentsMargins(0, 0, 0, 0);
-	vodRow->setSpacing(12);
-
-	/* Only built where the platform actually honours it: offering the control
-	 * elsewhere invites the user to configure something that never takes
-	 * effect. The rest of the dialog treats these pointers as optional. */
-	if (GetStreamPlatformInfo(platform).supportsVodTrack) {
-		card.vodTrackCheckBox = new QCheckBox(QTStr("Multistream.Accounts.VodTrack"), settingsBox);
-		vodRow->addWidget(card.vodTrackCheckBox);
-
-		card.vodTrackGroup = new QButtonGroup(settingsBox);
-		for (int i = 0; i < AUDIO_TRACK_COUNT; i++) {
-			auto *radio = new QRadioButton(QString::number(i + 1), settingsBox);
-			radio->setEnabled(false);
-			card.vodTrackRadios[i] = radio;
-			card.vodTrackGroup->addButton(radio, i);
-			vodRow->addWidget(radio);
-		}
-		vodRow->addStretch();
-		settingsLayout->addLayout(vodRow);
-	} else {
-		delete vodRow;
+		auto *configure = new QPushButton(QTStr("Multistream.Accounts.Configure"), frame);
+		configure->setObjectName(QStringLiteral("btnConfigure_kick"));
+		connect(configure, &QPushButton::clicked, this, [this]() { ConfigureKickRegistration(); });
+		header->addWidget(configure);
 	}
 
-	cardLayout->addWidget(settingsBox);
-	layout->addWidget(frame);
-
-	/* Restore the stored selection for this channel. */
-	const size_t audioIndex = card.channel.audioMixIndex < AUDIO_TRACK_COUNT ? card.channel.audioMixIndex : 0;
-	if (card.audioTrackRadios[audioIndex])
-		card.audioTrackRadios[audioIndex]->setChecked(true);
-	if (card.vodTrackCheckBox) {
-		card.vodTrackCheckBox->setChecked(card.channel.vodTrackEnabled);
-		const size_t vodIndex = card.channel.vodTrackIndex < AUDIO_TRACK_COUNT ? card.channel.vodTrackIndex : 1;
-		if (card.vodTrackRadios[vodIndex])
-			card.vodTrackRadios[vodIndex]->setChecked(true);
-		for (auto *radio : card.vodTrackRadios) {
-			if (radio)
-				radio->setEnabled(card.channel.vodTrackEnabled);
-		}
-	}
-	UpdateCard(card);
-
-	connect(card.audioTrackGroup, &QButtonGroup::idClicked, this, [this, index](int id) {
-		AccountCard *targetCard = CardAt(index);
-		if (!targetCard || id < 0 || id >= AUDIO_TRACK_COUNT)
-			return;
-		targetCard->channel.audioMixIndex = static_cast<size_t>(id);
+	auto *addButton = new QPushButton(QTStr("Multistream.Accounts.AddAccount"), frame);
+	addButton->setObjectName(QStringLiteral("btnAddAccount"));
+	addButton->setEnabled(platform == StreamPlatform::Kick || RegistrationReady(platform));
+	addButton->setToolTip(RegistrationToolTip(platform));
+	connect(addButton, &QPushButton::clicked, this, [this, platform]() {
+		const int index = AddPendingAccount(platform);
+		if (index >= 0)
+			ConnectAccount(index);
 	});
+	header->addWidget(addButton);
 
-	if (!card.vodTrackCheckBox)
+	groupLayout->addLayout(header);
+
+	/* Rows live in their own layout so a new account can be appended without
+	 * rebuilding the group. */
+	auto *list = new QVBoxLayout();
+	list->setContentsMargins(0, 0, 0, 0);
+	list->setSpacing(6);
+	groupLayout->addLayout(list);
+	groupLayouts.insert(static_cast<int>(platform), list);
+
+	auto *hint = new QLabel(frame);
+	hint->setObjectName(QStringLiteral("groupHint"));
+	hint->setWordWrap(true);
+	groupLayout->addWidget(hint);
+	groupHints.insert(static_cast<int>(platform), hint);
+
+	for (const int index : rowIndexes)
+		list->addWidget(BuildAccountRow(index));
+
+	UpdateGroupHint(platform);
+	layout->addWidget(frame);
+}
+
+QWidget *MultistreamAccountsDialog::BuildAccountRow(int index)
+{
+	AccountRow *rowPtr = RowAt(index);
+	if (!rowPtr)
+		return nullptr;
+	AccountRow &row = *rowPtr;
+
+	auto *widget = new QFrame(this);
+	widget->setObjectName(QStringLiteral("accountRow"));
+	row.widget = widget;
+
+	auto *outer = new QVBoxLayout(widget);
+	outer->setContentsMargins(10, 8, 10, 8);
+	outer->setSpacing(6);
+
+	auto *top = new QHBoxLayout();
+	top->setContentsMargins(0, 0, 0, 0);
+	top->setSpacing(10);
+
+	auto *names = new QVBoxLayout();
+	names->setContentsMargins(0, 0, 0, 0);
+	names->setSpacing(0);
+
+	row.nameLabel = new QLabel(widget);
+	row.nameLabel->setObjectName(QStringLiteral("accountName"));
+	row.statusLabel = new QLabel(widget);
+	row.statusLabel->setObjectName(QStringLiteral("accountStatus"));
+
+	names->addWidget(row.nameLabel);
+	names->addWidget(row.statusLabel);
+	top->addLayout(names, 1);
+
+	row.connectButton = new QPushButton(widget);
+	row.connectButton->setObjectName(QStringLiteral("btnConnect_%1").arg(StreamPlatformId(row.platform)));
+	connect(row.connectButton, &QPushButton::clicked, this, [this, index]() { ConnectAccount(index); });
+	top->addWidget(row.connectButton);
+
+	row.disconnectButton = new QPushButton(QTStr("Multistream.Accounts.Disconnect"), widget);
+	row.disconnectButton->setObjectName(QStringLiteral("btnDisconnect"));
+	connect(row.disconnectButton, &QPushButton::clicked, this, [this, index]() { DisconnectAccount(index); });
+	top->addWidget(row.disconnectButton);
+
+	outer->addLayout(top);
+
+	auto *settings = new QHBoxLayout();
+	settings->setContentsMargins(0, 0, 0, 0);
+	settings->setSpacing(8);
+
+	auto *audioLabel = new QLabel(QTStr("Multistream.Accounts.AudioTrack"), widget);
+	audioLabel->setObjectName(QStringLiteral("trackLabel"));
+	settings->addWidget(audioLabel);
+
+	row.audioTrackCombo = MakeTrackCombo(widget);
+	const int audioIndex = static_cast<int>(row.channel.audioMixIndex);
+	row.audioTrackCombo->setCurrentIndex(audioIndex >= 0 && audioIndex < AUDIO_TRACK_COUNT ? audioIndex : 0);
+	connect(row.audioTrackCombo, &QComboBox::currentIndexChanged, this, [this, index](int value) {
+		if (AccountRow *target = RowAt(index); target && value >= 0)
+			target->channel.audioMixIndex = static_cast<size_t>(value);
+	});
+	settings->addWidget(row.audioTrackCombo);
+
+	/* Only built where the platform honours it: offering the control elsewhere
+	 * invites the user to configure something that never takes effect. */
+	if (GetStreamPlatformInfo(row.platform).supportsVodTrack) {
+		settings->addSpacing(10);
+
+		row.vodTrackCheckBox = new QCheckBox(QTStr("Multistream.Accounts.VodTrack"), widget);
+		row.vodTrackCheckBox->setChecked(row.channel.vodTrackEnabled);
+		settings->addWidget(row.vodTrackCheckBox);
+
+		row.vodTrackCombo = MakeTrackCombo(widget);
+		const int vodIndex = static_cast<int>(row.channel.vodTrackIndex);
+		row.vodTrackCombo->setCurrentIndex(vodIndex >= 0 && vodIndex < AUDIO_TRACK_COUNT ? vodIndex : 1);
+		row.vodTrackCombo->setEnabled(row.channel.vodTrackEnabled);
+		settings->addWidget(row.vodTrackCombo);
+
+		connect(row.vodTrackCheckBox, &QCheckBox::toggled, this, [this, index](bool checked) {
+			AccountRow *target = RowAt(index);
+			if (!target)
+				return;
+			target->channel.vodTrackEnabled = checked;
+			if (target->vodTrackCombo)
+				target->vodTrackCombo->setEnabled(checked);
+		});
+		connect(row.vodTrackCombo, &QComboBox::currentIndexChanged, this, [this, index](int value) {
+			if (AccountRow *target = RowAt(index); target && value >= 0)
+				target->channel.vodTrackIndex = static_cast<size_t>(value);
+		});
+	}
+
+	settings->addStretch(1);
+	outer->addLayout(settings);
+
+	UpdateRow(row);
+	return widget;
+}
+
+int MultistreamAccountsDialog::AddPendingAccount(StreamPlatform platform)
+{
+	auto *list = groupLayouts.value(static_cast<int>(platform), nullptr);
+	if (!list)
+		return -1;
+
+	/* Reuse a row that is already waiting to be connected instead of stacking
+	 * empty ones every time the button is pressed. */
+	for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
+		AccountRow *existing = rows[static_cast<size_t>(index)].get();
+		if (existing->platform == platform && !existing->connected && !existing->removed)
+			return index;
+	}
+
+	auto row = make_unique<AccountRow>();
+	row->platform = platform;
+	row->channel.platform = platform;
+	rows.push_back(std::move(row));
+
+	const int index = static_cast<int>(rows.size()) - 1;
+	if (QWidget *widget = BuildAccountRow(index))
+		list->addWidget(widget);
+	UpdateGroupHint(platform);
+	return index;
+}
+
+void MultistreamAccountsDialog::UpdateRow(AccountRow &row)
+{
+	const QString platformName = StreamPlatformDisplayName(row.platform);
+
+	if (row.connected) {
+		row.nameLabel->setText(row.account.displayName.empty() ? platformName
+								       : FromStdString(row.account.displayName));
+		row.statusLabel->setText(QStringLiteral("%1  %2").arg(QChar(0x25cf),
+								     QTStr("Multistream.Accounts.Connected")));
+		row.statusLabel->setProperty("statusState", "connected");
+	} else {
+		const QString blocked = RegistrationBlockedReason(row.platform);
+		row.nameLabel->setText(QTStr("Multistream.Accounts.NewAccount"));
+		row.statusLabel->setText(blocked.isEmpty()
+						 ? QStringLiteral("%1  %2").arg(QChar(0x25cb),
+										QTStr("Multistream.Accounts.NotConnected"))
+						 : QStringLiteral("%1  %2").arg(QChar(0x26a0), blocked));
+		row.statusLabel->setProperty("statusState", blocked.isEmpty() ? "disconnected" : "pending");
+	}
+
+	if (row.statusLabel->style()) {
+		row.statusLabel->style()->unpolish(row.statusLabel);
+		row.statusLabel->style()->polish(row.statusLabel);
+	}
+
+	row.connectButton->setText(row.connected ? QTStr("Multistream.Accounts.Refresh")
+						 : QTStr("Multistream.Accounts.Connect"));
+	row.connectButton->setEnabled(row.platform == StreamPlatform::Kick || RegistrationReady(row.platform));
+	row.connectButton->setToolTip(RegistrationToolTip(row.platform));
+	row.disconnectButton->setVisible(row.connected);
+
+	/* Track selection only means something once the account exists. */
+	row.audioTrackCombo->setEnabled(row.connected);
+	if (row.vodTrackCheckBox)
+		row.vodTrackCheckBox->setEnabled(row.connected);
+	if (row.vodTrackCombo)
+		row.vodTrackCombo->setEnabled(row.connected && row.channel.vodTrackEnabled);
+}
+
+void MultistreamAccountsDialog::UpdateGroupHint(StreamPlatform platform)
+{
+	QLabel *hint = groupHints.value(static_cast<int>(platform), nullptr);
+	if (!hint)
 		return;
 
-	connect(card.vodTrackCheckBox, &QCheckBox::toggled, this, [this, index](bool checked) {
-		AccountCard *targetCard = CardAt(index);
-		if (!targetCard)
-			return;
-		targetCard->channel.vodTrackEnabled = checked;
-		for (auto *radio : targetCard->vodTrackRadios) {
-			if (radio)
-				radio->setEnabled(checked);
-		}
+	const bool hasRow = any_of(rows.begin(), rows.end(), [platform](const unique_ptr<AccountRow> &row) {
+		return row->platform == platform && row->widget;
 	});
-
-	connect(card.vodTrackGroup, &QButtonGroup::idClicked, this, [this, index](int id) {
-		AccountCard *targetCard = CardAt(index);
-		if (!targetCard || id < 0 || id >= AUDIO_TRACK_COUNT)
-			return;
-		targetCard->channel.vodTrackIndex = static_cast<size_t>(id);
-	});
+	hint->setText(QTStr("Multistream.Accounts.GroupEmpty"));
+	hint->setVisible(!hasRow);
 }
 
 void MultistreamAccountsDialog::ResolveChannelInBackground(int index)
 {
-	AccountCard *card = CardAt(index);
-	if (!card || !card->connected || !RegistrationReady(card->platform))
+	AccountRow *row = RowAt(index);
+	if (!row || !row->connected || !RegistrationReady(row->platform))
 		return;
 
 	QPointer<MultistreamAccountsDialog> guard(this);
-	const ConnectedStreamAccount account = card->account;
-	const auto registration = RegistrationFor(card->platform);
-	const string redirectUri = RedirectUriFor(card->platform);
-	MultiStreamChannel pending = card->channel;
+	const ConnectedStreamAccount account = row->account;
+	const auto registration = RegistrationFor(row->platform);
+	const string redirectUri = RedirectUriFor(row->platform);
+	MultiStreamChannel pending = row->channel;
 
 	MultistreamTaskPool().start([guard, index, account, registration, redirectUri, pending]() mutable {
 		string error;
@@ -556,60 +578,80 @@ void MultistreamAccountsDialog::ResolveChannelInBackground(int index)
 			[guard, index, resolved, resolvedChannel = std::move(pending)]() mutable {
 				if (!guard || !resolved)
 					return;
-				AccountCard *targetCard = guard->CardAt(index);
-				if (!targetCard || !targetCard->connected ||
-				    targetCard->account.accountId != resolvedChannel.accountId)
+				AccountRow *target = guard->RowAt(index);
+				if (!target || !target->connected ||
+				    target->account.accountId != resolvedChannel.accountId)
 					return;
-				const size_t audioMixIndex = targetCard->channel.audioMixIndex;
-				const bool vodTrackEnabled = targetCard->channel.vodTrackEnabled;
-				const size_t vodTrackIndex = targetCard->channel.vodTrackIndex;
-				const bool enabled = targetCard->channel.enabled;
-				targetCard->channel = std::move(resolvedChannel);
-				targetCard->channel.audioMixIndex = audioMixIndex;
-				targetCard->channel.vodTrackEnabled = vodTrackEnabled;
-				targetCard->channel.vodTrackIndex = vodTrackIndex;
-				targetCard->channel.enabled = enabled;
-				targetCard->credentialsResolved = !targetCard->channel.server.empty() &&
-								  !targetCard->channel.streamKey.empty();
+				/* Keep what the user chose here; take only what the
+				 * platform resolved. */
+				const size_t audioMixIndex = target->channel.audioMixIndex;
+				const bool vodTrackEnabled = target->channel.vodTrackEnabled;
+				const size_t vodTrackIndex = target->channel.vodTrackIndex;
+				const bool enabled = target->channel.enabled;
+				target->channel = std::move(resolvedChannel);
+				target->channel.audioMixIndex = audioMixIndex;
+				target->channel.vodTrackEnabled = vodTrackEnabled;
+				target->channel.vodTrackIndex = vodTrackIndex;
+				target->channel.enabled = enabled;
+				target->credentialsResolved =
+					!target->channel.server.empty() && !target->channel.streamKey.empty();
 			},
 			Qt::QueuedConnection);
 	});
 }
 
-void MultistreamAccountsDialog::UpdateCard(AccountCard &card)
+vector<MultiStreamChannel> MultistreamAccountsDialog::Channels() const
 {
-	if (card.connected) {
-		const QString name = card.account.displayName.empty() ? StreamPlatformDisplayName(card.platform)
-								     : FromStdString(card.account.displayName);
-		card.status->setText(QStringLiteral("%1  %2").arg(QChar(0x25cf),
-								 QTStr("Multistream.Accounts.ConnectedAs").arg(name)));
-		card.status->setProperty("statusState", "connected");
-	} else {
-		const QString statusMsg = RegistrationStatusText(card.platform);
-		if (!RegistrationReady(card.platform)) {
-			card.status->setText(QStringLiteral("%1  %2").arg(QChar(0x26a0), statusMsg));
-			card.status->setProperty("statusState", "pending");
-		} else {
-			card.status->setText(QStringLiteral("%1  %2").arg(QChar(0x25cb), statusMsg));
-			card.status->setProperty("statusState", "disconnected");
+	vector<MultiStreamChannel> channels;
+	for (const auto &row : rows) {
+		if (row->removed || !row->connected || row->account.accountId.empty())
+			continue;
+
+		MultiStreamChannel channel = row->channel;
+		if (channel.id.empty()) {
+			const auto &info = GetStreamPlatformInfo(row->platform);
+			channel.id = string(info.id) + ":" + row->account.accountId;
+			channel.platform = row->platform;
+			channel.accountId = row->account.accountId;
 		}
-	}
+		if (channel.displayName.empty()) {
+			channel.displayName = row->account.displayName.empty()
+						      ? StreamPlatformDisplayName(row->platform).toStdString()
+						      : row->account.displayName;
+		}
 
-	if (card.status->style()) {
-		card.status->style()->unpolish(card.status);
-		card.status->style()->polish(card.status);
+		/* A channel whose ingest credentials are still being resolved would
+		 * be rejected by MultiStreamManager::Configure and take every other
+		 * channel down with it, so hand it over disabled instead. */
+		if (!row->credentialsResolved) {
+			channel.server.clear();
+			channel.streamKey.clear();
+			channel.enabled = false;
+		}
+		channels.emplace_back(std::move(channel));
 	}
+	return channels;
+}
 
-	card.connectButton->setText(card.connected ? QTStr("Multistream.Accounts.Refresh")
-						   : QTStr("Multistream.Accounts.Connect"));
-	card.connectButton->setVisible(true);
-	card.connectButton->setEnabled(card.platform == StreamPlatform::Kick || RegistrationReady(card.platform));
-	card.connectButton->setToolTip(RegistrationToolTip(card.platform));
-	if (card.configureButton) {
-		card.configureButton->setVisible(true);
-		card.configureButton->setEnabled(true);
+vector<string> MultistreamAccountsDialog::ManagedChannelIds() const
+{
+	vector<string> ids;
+	for (const auto &row : rows) {
+		if (!row->channel.id.empty())
+			ids.push_back(row->channel.id);
+		else if (!row->account.accountId.empty())
+			ids.push_back(string(GetStreamPlatformInfo(row->platform).id) + ":" + row->account.accountId);
 	}
-	card.disconnectButton->setVisible(card.connected);
+	return ids;
+}
+
+void MultistreamAccountsDialog::reject()
+{
+	if (busy) {
+		QMessageBox::information(this, windowTitle(), QTStr("Multistream.Accounts.WaitForConnection"));
+		return;
+	}
+	QDialog::reject();
 }
 
 void MultistreamAccountsDialog::ConfigureKickRegistration()
@@ -663,17 +705,19 @@ void MultistreamAccountsDialog::ConfigureKickRegistration()
 		}
 	}
 
-	if (AccountCard *card = CardForPlatform(StreamPlatform::Kick))
-		UpdateCard(*card);
+	for (auto &row : rows) {
+		if (row->platform == StreamPlatform::Kick)
+			UpdateRow(*row);
+	}
 }
 
 void MultistreamAccountsDialog::ConnectAccount(int index)
 {
-	AccountCard *card = CardAt(index);
-	if (!card)
+	AccountRow *row = RowAt(index);
+	if (!row)
 		return;
 
-	const StreamPlatform platform = card->platform;
+	const StreamPlatform platform = row->platform;
 	OAuthClientRegistration registration = RegistrationFor(platform);
 	if (registration.clientId.empty()) {
 		if (platform == StreamPlatform::Kick) {
@@ -686,7 +730,7 @@ void MultistreamAccountsDialog::ConnectAccount(int index)
 			return;
 		}
 	}
-	if (card->connected) {
+	if (row->connected) {
 		RefreshConnectedAccount(index, registration);
 		return;
 	}
@@ -699,12 +743,12 @@ void MultistreamAccountsDialog::ConnectAccount(int index)
 
 void MultistreamAccountsDialog::RefreshConnectedAccount(int index, const OAuthClientRegistration &registration)
 {
-	AccountCard *card = CardAt(index);
-	if (!card)
+	AccountRow *row = RowAt(index);
+	if (!row)
 		return;
 
-	const ConnectedStreamAccount account = card->account;
-	const string redirectUri = RedirectUriFor(card->platform);
+	const ConnectedStreamAccount account = row->account;
+	const string redirectUri = RedirectUriFor(row->platform);
 	SetBusy(index, QTStr("Multistream.Accounts.Refreshing"));
 	QPointer<MultistreamAccountsDialog> guard(this);
 	MultistreamTaskPool().start([guard, index, account, registration, redirectUri]() {
@@ -730,10 +774,10 @@ void MultistreamAccountsDialog::RefreshConnectedAccount(int index, const OAuthCl
 
 void MultistreamAccountsDialog::StartPkceConnection(int index, const OAuthClientRegistration &registration)
 {
-	AccountCard *card = CardAt(index);
-	if (!card)
+	AccountRow *row = RowAt(index);
+	if (!row)
 		return;
-	const StreamPlatform platform = card->platform;
+	const StreamPlatform platform = row->platform;
 
 	ClearLoopback();
 	const quint16 preferredPort = platform == StreamPlatform::Kick ? KickCallbackPort() : 0;
@@ -762,8 +806,8 @@ void MultistreamAccountsDialog::StartPkceConnection(int index, const OAuthClient
 	connect(loopback, &AuthListener::ok, this,
 		[this, index, platform, registration, session](const QString &code) mutable {
 			ClearLoopback();
-			if (AccountCard *target = CardAt(index))
-				target->status->setText(QTStr("Multistream.Accounts.Finishing"));
+			if (AccountRow *target = RowAt(index))
+				target->statusLabel->setText(QTStr("Multistream.Accounts.Finishing"));
 			QPointer<MultistreamAccountsDialog> guard(this);
 			MultistreamTaskPool().start([guard, index, platform, registration, session,
 						     code = code.toStdString()]() mutable {
@@ -829,8 +873,8 @@ void MultistreamAccountsDialog::StartTwitchConnection(int index, const OAuthClie
 						.arg(FromStdString(guard->twitchAuthorization.verificationUri),
 						     FromStdString(guard->twitchAuthorization.userCode)));
 				guard->instructions->setVisible(true);
-				if (AccountCard *card = guard->CardAt(index))
-					card->status->setText(QTStr("Multistream.Accounts.WaitingForApproval"));
+				if (AccountRow *row = guard->RowAt(index))
+					row->statusLabel->setText(QTStr("Multistream.Accounts.WaitingForApproval"));
 				QDesktopServices::openUrl(
 					QUrl(FromStdString(guard->twitchAuthorization.verificationUri)));
 				guard->twitchPollTimer.start(guard->twitchPollIntervalSeconds * 1000);
@@ -898,45 +942,62 @@ void MultistreamAccountsDialog::PollTwitch()
 
 void MultistreamAccountsDialog::DisconnectAccount(int index)
 {
-	AccountCard *card = CardAt(index);
-	if (!card || !card->connected)
+	AccountRow *row = RowAt(index);
+	if (!row || !row->connected)
 		return;
+
+	const QString name = row->account.displayName.empty() ? StreamPlatformDisplayName(row->platform)
+							      : FromStdString(row->account.displayName);
 	if (QMessageBox::question(this, QTStr("Multistream.Accounts.Disconnect"),
-				  QTStr("Multistream.Accounts.ConfirmDisconnect")
-					  .arg(StreamPlatformDisplayName(card->platform))) != QMessageBox::Yes)
+				  QTStr("Multistream.Accounts.ConfirmDisconnect").arg(name)) != QMessageBox::Yes)
 		return;
 
 	string error;
-	if (!ConnectedAccountManager::Disconnect(card->account, error)) {
+	if (!ConnectedAccountManager::Disconnect(row->account, error)) {
 		QMessageBox::critical(this, QTStr("Multistream.Accounts.ConnectionFailed"), FromStdString(error));
 		return;
 	}
 
-	/* Kept in the list but marked removed, so the caller knows to drop this
-	 * exact channel from the store instead of guessing by platform. */
-	card->removed = true;
-	card->account = {};
-	card->connected = false;
-	card->credentialsResolved = false;
-	UpdateCard(*card);
+	/* The row disappears from the dialog and, because its id stays in
+	 * ManagedChannelIds(), the caller drops exactly this channel. */
+	row->removed = true;
+	row->connected = false;
+	row->credentialsResolved = false;
+	row->account = {};
+	if (row->widget) {
+		row->widget->hide();
+		row->widget->deleteLater();
+		row->widget = nullptr;
+	}
+	UpdateGroupHint(row->platform);
+}
+
+void MultistreamAccountsDialog::SetControlsEnabled(bool enabled)
+{
+	for (auto &row : rows) {
+		if (!row->widget)
+			continue;
+		row->connectButton->setEnabled(enabled && (row->platform == StreamPlatform::Kick ||
+							   RegistrationReady(row->platform)));
+		row->disconnectButton->setEnabled(enabled);
+	}
+	for (auto *button : findChildren<QPushButton *>(QStringLiteral("btnAddAccount")))
+		button->setEnabled(enabled);
+	for (auto *button : findChildren<QPushButton *>(QStringLiteral("btnConfigure_kick")))
+		button->setEnabled(enabled);
 }
 
 void MultistreamAccountsDialog::SetBusy(int index, const QString &status)
 {
 	busy = true;
 	busyIndex = index;
-	for (auto &card : cards) {
-		card.connectButton->setEnabled(false);
-		card.disconnectButton->setEnabled(false);
-		if (card.configureButton)
-			card.configureButton->setEnabled(false);
-	}
+	SetControlsEnabled(false);
 	closeButton->setEnabled(false);
 	cancelButton->setVisible(true);
 	cancelButton->setEnabled(true);
 	connectionTimeout.start(CONNECTION_TIMEOUT_MS);
-	if (AccountCard *card = CardAt(index))
-		card->status->setText(status);
+	if (AccountRow *row = RowAt(index))
+		row->statusLabel->setText(status);
 }
 
 void MultistreamAccountsDialog::CancelPendingConnection()
@@ -953,9 +1014,10 @@ void MultistreamAccountsDialog::CancelPendingConnection()
 	instructions->setVisible(false);
 	closeButton->setEnabled(true);
 	cancelButton->setVisible(false);
-	for (auto &card : cards) {
-		UpdateCard(card);
-		card.disconnectButton->setEnabled(true);
+	SetControlsEnabled(true);
+	for (auto &row : rows) {
+		if (row->widget)
+			UpdateRow(*row);
 	}
 }
 
@@ -969,47 +1031,58 @@ void MultistreamAccountsDialog::FinishConnection(int index, bool success, Connec
 	instructions->setVisible(false);
 	closeButton->setEnabled(true);
 	cancelButton->setVisible(false);
-	for (auto &card : cards) {
-		UpdateCard(card);
-		card.disconnectButton->setEnabled(true);
+	SetControlsEnabled(true);
+
+	AccountRow *row = RowAt(index);
+	if (!row) {
+		for (auto &item : rows) {
+			if (item->widget)
+				UpdateRow(*item);
+		}
+		return;
 	}
 
-	AccountCard *card = CardAt(index);
-	if (!card)
-		return;
-
 	if (success) {
-		/* Connecting an account that is already in the list would create a
-		 * duplicate channel with the same id. */
-		const bool duplicate = any_of(cards.begin(), cards.end(), [&](const AccountCard &other) {
-			return &other != card && !other.removed && other.connected &&
-			       other.platform == card->platform && other.account.accountId == account.accountId;
+		/* Connecting an account that is already listed would create a second
+		 * channel with the same id. */
+		const bool duplicate = any_of(rows.begin(), rows.end(), [&](const unique_ptr<AccountRow> &other) {
+			return other.get() != row && !other->removed && other->connected &&
+			       other->platform == row->platform && other->account.accountId == account.accountId;
 		});
 		if (duplicate) {
-			QMessageBox::information(this, QTStr("Multistream.Accounts.Title"),
+			QMessageBox::information(this, windowTitle(),
 						 QTStr("Multistream.Accounts.AlreadyConnected")
 							 .arg(FromStdString(account.displayName)));
+			for (auto &item : rows) {
+				if (item->widget)
+					UpdateRow(*item);
+			}
 			return;
 		}
 
-		const size_t audioMixIndex = card->channel.audioMixIndex;
-		const bool vodTrackEnabled = card->channel.vodTrackEnabled;
-		const size_t vodTrackIndex = card->channel.vodTrackIndex;
-		card->account = std::move(account);
-		card->channel = std::move(channel);
-		card->channel.audioMixIndex = audioMixIndex;
-		card->channel.vodTrackEnabled = vodTrackEnabled;
-		card->channel.vodTrackIndex = vodTrackIndex;
-		card->channel.enabled = true;
-		card->connected = true;
-		card->removed = false;
-		card->credentialsResolved = !card->channel.server.empty() && !card->channel.streamKey.empty();
-		UpdateCard(*card);
-		return;
+		const size_t audioMixIndex = row->channel.audioMixIndex;
+		const bool vodTrackEnabled = row->channel.vodTrackEnabled;
+		const size_t vodTrackIndex = row->channel.vodTrackIndex;
+		row->account = std::move(account);
+		row->channel = std::move(channel);
+		row->channel.audioMixIndex = audioMixIndex;
+		row->channel.vodTrackEnabled = vodTrackEnabled;
+		row->channel.vodTrackIndex = vodTrackIndex;
+		row->channel.enabled = true;
+		row->connected = true;
+		row->removed = false;
+		row->credentialsResolved = !row->channel.server.empty() && !row->channel.streamKey.empty();
 	}
 
-	QMessageBox::critical(this, QTStr("Multistream.Accounts.ConnectionFailed"),
-			      error.isEmpty() ? QTStr("Multistream.Accounts.UnknownError") : error);
+	for (auto &item : rows) {
+		if (item->widget)
+			UpdateRow(*item);
+	}
+
+	if (!success) {
+		QMessageBox::critical(this, QTStr("Multistream.Accounts.ConnectionFailed"),
+				      error.isEmpty() ? QTStr("Multistream.Accounts.UnknownError") : error);
+	}
 }
 
 void MultistreamAccountsDialog::ClearLoopback()

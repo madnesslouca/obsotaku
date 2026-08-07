@@ -15,28 +15,31 @@
 
 #include <QDialog>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QPointer>
 #include <QTimer>
 
-#include <array>
+#include <memory>
 #include <optional>
 #include <vector>
 
 class AuthListener;
+class QCheckBox;
+class QComboBox;
 class QLabel;
 class QPushButton;
 class QVBoxLayout;
 
-/* Connects and manages OAuth accounts. It works on channels, not platforms, so
- * the same platform can hold several accounts: each connection produces its own
- * channel keyed by the account id the platform returned. */
+/* Connects and manages OAuth accounts. Accounts are grouped under their
+ * platform, one compact row each, so a platform can hold several without the
+ * dialog turning into a stack of identical cards. */
 class MultistreamAccountsDialog : public QDialog {
 	Q_OBJECT
 
 public:
 	/* existingChannels are the OAuth channels to manage. Pass newAccountPlatform
-	 * to also offer an empty card for connecting another account on that
-	 * platform, which is what picking it in the add-channel grid means. */
+	 * to focus a single platform, which is what picking it in the add-channel
+	 * grid means. */
 	MultistreamAccountsDialog(QWidget *parent, std::vector<MultiStreamChannel> existingChannels,
 				  std::optional<StreamPlatform> newAccountPlatform = std::nullopt);
 
@@ -55,16 +58,16 @@ protected:
 	void reject() override;
 
 private:
-	struct AccountCard {
+	/* Held by pointer so rows added at runtime never invalidate the others. */
+	struct AccountRow {
 		StreamPlatform platform = StreamPlatform::CustomRtmp;
-		QLabel *status = nullptr;
-		class QButtonGroup *audioTrackGroup = nullptr;
-		class QCheckBox *vodTrackCheckBox = nullptr;
-		class QButtonGroup *vodTrackGroup = nullptr;
-		std::array<class QRadioButton *, 6> audioTrackRadios{};
-		std::array<class QRadioButton *, 6> vodTrackRadios{};
+		QWidget *widget = nullptr;
+		QLabel *nameLabel = nullptr;
+		QLabel *statusLabel = nullptr;
+		QComboBox *audioTrackCombo = nullptr;
+		QCheckBox *vodTrackCheckBox = nullptr;
+		QComboBox *vodTrackCombo = nullptr;
 		QPushButton *connectButton = nullptr;
-		QPushButton *configureButton = nullptr;
 		QPushButton *disconnectButton = nullptr;
 		ConnectedStreamAccount account;
 		MultiStreamChannel channel;
@@ -76,10 +79,13 @@ private:
 		bool removed = false;
 	};
 
-	AccountCard *CardAt(int index);
-	AccountCard *CardForPlatform(StreamPlatform platform);
-	void AddAccountCard(int index, QVBoxLayout *layout);
-	void UpdateCard(AccountCard &card);
+	AccountRow *RowAt(int index);
+
+	void BuildPlatformGroup(StreamPlatform platform, const std::vector<int> &rowIndexes, QVBoxLayout *layout);
+	QWidget *BuildAccountRow(int index);
+	int AddPendingAccount(StreamPlatform platform);
+	void UpdateRow(AccountRow &row);
+	void UpdateGroupHint(StreamPlatform platform);
 	void ResolveChannelInBackground(int index);
 
 	void ConnectAccount(int index);
@@ -91,14 +97,17 @@ private:
 	void DisconnectAccount(int index);
 
 	void SetBusy(int index, const QString &status);
+	void SetControlsEnabled(bool enabled);
 	void CancelPendingConnection();
 	void FinishConnection(int index, bool success, ConnectedStreamAccount account, MultiStreamChannel channel,
 			      const QString &error);
 	void ClearLoopback();
 
-	std::vector<AccountCard> cards;
+	std::vector<std::unique_ptr<AccountRow>> rows;
+	/* Where new rows are inserted, and the label shown when a group is empty. */
+	QHash<int, QVBoxLayout *> groupLayouts;
+	QHash<int, QLabel *> groupHints;
 	QLabel *instructions = nullptr;
-	QLabel *emptyHint = nullptr;
 	QPushButton *closeButton = nullptr;
 	QPushButton *cancelButton = nullptr;
 	QPointer<AuthListener> loopback;
@@ -109,6 +118,6 @@ private:
 	OAuthClientRegistration twitchRegistration;
 	int twitchPollIntervalSeconds = 5;
 	bool busy = false;
-	/* Index of the card currently connecting, or -1. */
+	/* Index of the row currently connecting, or -1. */
 	int busyIndex = -1;
 };
