@@ -281,11 +281,16 @@ void UnifiedChatDock::AutoConnectAccounts()
 		ref.platform = channel.platform;
 		ref.displayName = QString::fromStdString(channel.displayName);
 		ref.accountId = QString::fromStdString(channel.accountId);
-		/* Twitch/Kick chats are addressed by channel name; YouTube by account id. */
-		if (channel.platform == StreamPlatform::YouTube)
+		/* Twitch/Kick chats are addressed by the platform handle; YouTube by
+		 * account id. The handle is stored separately so renaming a channel
+		 * in the interface cannot point chat at a channel that does not exist. */
+		if (channel.platform == StreamPlatform::YouTube) {
 			ref.address = ref.accountId;
-		else
-			ref.address = ref.displayName;
+		} else {
+			ref.address = QString::fromStdString(channel.chatAddress);
+			if (ref.address.isEmpty())
+				ref.address = ref.displayName;
+		}
 		if (ref.address.isEmpty())
 			continue;
 		targets.push_back(std::move(ref));

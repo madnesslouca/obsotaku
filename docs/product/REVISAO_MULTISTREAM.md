@@ -497,6 +497,17 @@ e que nenhuma compilação teria mostrado:
 | A cor de marca do X (`#e7e9ea`) é quase branca e sumiria em tema claro. | Trocada pelo cinza neutro `#71767b`, legível nos dois temas. |
 | A barra vazia dizia a mesma coisa duas vezes: "nenhum canal ainda" no subtítulo e "Conecte um canal…" no lugar dos cartões. | O subtítulo fica vazio quando não há canais. |
 
+### Chat da Kick não aparecia (2026-08-07)
+
+Três defeitos empilhados, cada um suficiente para deixar o chat mudo. Nenhum aparecia no log, porque o
+agregador não registrava nada — a instrumentação foi a primeira coisa a entrar.
+
+| Defeito | Correção |
+| --- | --- |
+| O endereço do chat vinha de `displayName`, que é editável e ganha o nome da plataforma como reserva. Um canal rotulado "Kick" fazia o chat se conectar ao canal `kick.com/kick` — o canal oficial da própria Kick, que existe e responde. | `MultiStreamChannel::chatAddress` guarda o handle que a plataforma informa (slug da Kick, login da Twitch), separado do rótulo. `MultistreamChannelStore::UpdateIdentity()` grava o que a resolução de credenciais descobriu, e o dock lê dali. |
+| `https://kick.com/api/v2/channels/<slug>/chatroom` fica atrás do Cloudflare, que devolve 403 para quem não parece navegador. O `User-Agent` era `OBS-Multistream/0.1`. | Cabeçalhos completos de navegador (UA do Chrome, `Accept`, `Accept-Language`, `Referer`) e HTTP/2 desligado. |
+| A app key do Pusher estava desatualizada. O servidor aceitava o WebSocket e logo respondia `pusher:error` 4001 — "App key … not in this cluster" — e fechava. | Key atualizada para a que o site usa hoje. Ela não é segredo (está no JavaScript da página), mas muda: quando o chat parar, releia numa requisição WebSocket de `kick.com`. |
+
 ### Como validar
 
 ```bash

@@ -32,6 +32,10 @@ struct MultiStreamChannel {
 	std::string displayName;
 	StreamPlatform platform = StreamPlatform::CustomRtmp;
 	std::string accountId;
+	/* Handle the platform's chat is addressed by: the Twitch login, the Kick
+	 * slug. Kept apart from displayName because the user may rename a channel
+	 * and that must not break chat. */
+	std::string chatAddress;
 	std::string server;
 	std::string streamKey;
 	/* Remote profile picture URL; the channel bar caches it on disk. */

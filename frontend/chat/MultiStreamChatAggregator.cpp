@@ -14,6 +14,8 @@
 #include <oauth/PlatformOAuthClient.hpp>
 #include <utility/MultistreamTaskPool.hpp>
 
+#include <qt-wrappers.hpp>
+
 #include <util/base.h>
 
 #include <QCryptographicHash>
@@ -37,7 +39,10 @@
 namespace {
 constexpr const char *WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 constexpr const char *KICK_PUSHER_HOST = "ws-us2.pusher.com";
-constexpr const char *KICK_PUSHER_APP = "eb1d5f28b26d2f4da0e5";
+/* Kick's chat runs on a Pusher app the site itself connects to. The key is not
+ * a secret — it is in the page's JavaScript — but it does change: when chat
+ * stops arriving, read it back from a kick.com WebSocket request. */
+constexpr const char *KICK_PUSHER_APP = "32cbd69e4b950bf97679";
 constexpr int MAX_RECONNECT_DELAY_MS = 60000;
 constexpr int YOUTUBE_MIN_POLL_MS = 5000;
 constexpr int YOUTUBE_BROADCAST_RETRY_MS = 30000;
@@ -570,10 +575,20 @@ void MultiStreamChatAggregator::StartKick()
 
 void MultiStreamChatAggregator::ResolveKickChatroom()
 {
-	QNetworkRequest request(
-		QUrl(QStringLiteral("https://kick.com/api/v2/channels/%1/chatroom").arg(kickChannel)));
-	request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("OBS-Multistream/0.1"));
-	request.setRawHeader("Accept", "application/json");
+	const QUrl url(QStringLiteral("https://kick.com/api/v2/channels/%1/chatroom").arg(kickChannel));
+	QNetworkRequest request(url);
+	/* This endpoint sits behind Cloudflare, which turns away clients that do
+	 * not look like a browser. Anything less than a full set of browser
+	 * headers comes back as 403 and chat never connects. */
+	request.setHeader(QNetworkRequest::UserAgentHeader,
+			  QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+					 "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"));
+	request.setRawHeader("Accept", "application/json, text/plain, */*");
+	request.setRawHeader("Accept-Language", "en-US,en;q=0.9");
+	request.setRawHeader("Referer", QStringLiteral("https://kick.com/%1").arg(kickChannel).toUtf8());
+	request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+
+	blog(LOG_INFO, "[multistream chat] resolving Kick chatroom for '%s'", QT_TO_UTF8(kickChannel));
 
 	QNetworkReply *reply = netManager->get(request);
 	QPointer<MultiStreamChatAggregator> guard(this);
@@ -582,8 +597,12 @@ void MultiStreamChatAggregator::ResolveKickChatroom()
 		if (!guard || kickChannel.isEmpty())
 			return;
 
+		const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 		if (reply->error() != QNetworkReply::NoError) {
-			EmitStatus(StreamPlatform::Kick, ChatConnectionState::Failed, reply->errorString());
+			blog(LOG_WARNING, "[multistream chat] Kick chatroom lookup for '%s' failed: HTTP %d, %s",
+			     QT_TO_UTF8(kickChannel), status, QT_TO_UTF8(reply->errorString()));
+			EmitStatus(StreamPlatform::Kick, ChatConnectionState::Failed,
+				   status == 404 ? kickChannel : reply->errorString());
 			ScheduleReconnect(StreamPlatform::Kick);
 			return;
 		}
@@ -599,10 +618,14 @@ void MultiStreamChatAggregator::ResolveKickChatroom()
 		}
 
 		if (kickChatroomId.isEmpty()) {
+			blog(LOG_WARNING, "[multistream chat] Kick returned no chatroom id for '%s'",
+			     QT_TO_UTF8(kickChannel));
 			EmitStatus(StreamPlatform::Kick, ChatConnectionState::Failed, kickChannel);
 			ScheduleReconnect(StreamPlatform::Kick);
 			return;
 		}
+		blog(LOG_INFO, "[multistream chat] Kick chatroom %s resolved for '%s'", QT_TO_UTF8(kickChatroomId),
+		     QT_TO_UTF8(kickChannel));
 		OpenKickSocket();
 	});
 }
@@ -625,6 +648,7 @@ void MultiStreamChatAggregator::OpenKickSocket()
 	connect(kickSocket, &QSslSocket::readyRead, this, &MultiStreamChatAggregator::OnKickReadyRead);
 	connect(kickSocket, &QSslSocket::errorOccurred, this, &MultiStreamChatAggregator::OnKickError);
 	connect(kickSocket, &QSslSocket::disconnected, this, &MultiStreamChatAggregator::OnKickDisconnected);
+	blog(LOG_INFO, "[multistream chat] opening the Kick chat socket to %s", KICK_PUSHER_HOST);
 	kickSocket->connectToHostEncrypted(QString::fromLatin1(KICK_PUSHER_HOST), 443);
 }
 
@@ -671,6 +695,8 @@ bool MultiStreamChatAggregator::ProcessKickHandshake()
 		QCryptographicHash::hash(kickHandshakeKey + WEBSOCKET_GUID, QCryptographicHash::Sha1).toBase64();
 
 	if (!header.startsWith("HTTP/1.1 101") || !header.contains(expectedAccept)) {
+		blog(LOG_WARNING, "[multistream chat] Kick WebSocket upgrade refused: %s",
+		     header.left(header.indexOf("\r\n")).constData());
 		EmitStatus(StreamPlatform::Kick, ChatConnectionState::Failed,
 			   QString::fromLatin1(header.left(header.indexOf("\r\n"))));
 		kickSocket->abort();
@@ -680,6 +706,8 @@ bool MultiStreamChatAggregator::ProcessKickHandshake()
 	kickHandshakeComplete = true;
 	kickConnected = true;
 	kickReconnectDelayMs = 5000;
+	blog(LOG_INFO, "[multistream chat] Kick chat socket open, subscribing to chatroom %s",
+	     QT_TO_UTF8(kickChatroomId));
 	EmitStatus(StreamPlatform::Kick, ChatConnectionState::Connected, DisplayNameFor(StreamPlatform::Kick));
 
 	QJsonObject subData;
@@ -815,6 +843,11 @@ void MultiStreamChatAggregator::HandleKickPayload(const QByteArray &payload)
 	const QJsonObject obj = doc.object();
 	const QString event = obj[QStringLiteral("event")].toString();
 
+	if (event == QStringLiteral("pusher:error")) {
+		blog(LOG_WARNING, "[multistream chat] Kick chat socket refused the subscription: %s",
+		     payload.constData());
+		return;
+	}
 	if (event == QStringLiteral("pusher:ping")) {
 		QJsonObject pong;
 		pong[QStringLiteral("event")] = QStringLiteral("pusher:pong");
@@ -864,12 +897,14 @@ void MultiStreamChatAggregator::OnKickError(QAbstractSocket::SocketError)
 	kickConnected = false;
 	kickHandshakeComplete = false;
 	const QString detail = kickSocket ? kickSocket->errorString() : QString();
+	blog(LOG_WARNING, "[multistream chat] Kick chat socket error: %s", QT_TO_UTF8(detail));
 	EmitStatus(StreamPlatform::Kick, ChatConnectionState::Failed, detail);
 	ScheduleReconnect(StreamPlatform::Kick);
 }
 
 void MultiStreamChatAggregator::OnKickDisconnected()
 {
+	blog(LOG_INFO, "[multistream chat] Kick chat socket closed");
 	kickConnected = false;
 	kickHandshakeComplete = false;
 	EmitStatus(StreamPlatform::Kick, ChatConnectionState::Disconnected);

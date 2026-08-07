@@ -61,6 +61,10 @@ vector<MultiStreamChannel> LoadLegacyAccounts(config_t *config)
 		channel.displayName = displayName && *displayName ? displayName : string(info.displayName);
 		channel.platform = platform;
 		channel.accountId = accountId;
+		/* The old layout had no separate field: back then the display name was
+		 * still the platform handle, so it is the best seed available. */
+		if (displayName && *displayName)
+			channel.chatAddress = displayName;
 		channel.audioMixIndex = ClampTrack(config_get_int(config, section.c_str(), "AudioTrack"), 0);
 		channel.vodTrackEnabled = config_get_bool(config, section.c_str(), "VodTrackEnabled");
 		channel.vodTrackIndex = ClampTrack(config_get_int(config, section.c_str(), "VodTrackIndex"), 1);
@@ -106,6 +110,7 @@ vector<MultiStreamChannel> MultistreamChannelStore::Load()
 		channel.platform = *platform;
 		channel.displayName = StringValue(config, Key(index, "DisplayName"));
 		channel.accountId = StringValue(config, Key(index, "AccountId"));
+		channel.chatAddress = StringValue(config, Key(index, "ChatAddress"));
 		channel.server = StringValue(config, Key(index, "Server"));
 		channel.avatarUrl = StringValue(config, Key(index, "AvatarUrl"));
 		channel.title = StringValue(config, Key(index, "Title"));
@@ -155,9 +160,9 @@ bool MultistreamChannelStore::Save(const vector<MultiStreamChannel> &channels, s
 	 * entries that Load() would read back. */
 	const int previousCount = static_cast<int>(config_get_int(config, SECTION, "Count"));
 	for (int index = 0; index < min(previousCount, MAX_STORED_CHANNELS); ++index) {
-		for (const char *name : {"Id", "Platform", "DisplayName", "AccountId", "Server", "AvatarUrl", "Title",
-					 "CategoryId", "CategoryName", "AudioTrack", "VodTrackEnabled",
-					 "VodTrackIndex", "Enabled"})
+		for (const char *name : {"Id", "Platform", "DisplayName", "AccountId", "ChatAddress", "Server",
+					 "AvatarUrl", "Title", "CategoryId", "CategoryName", "AudioTrack",
+					 "VodTrackEnabled", "VodTrackIndex", "Enabled"})
 			config_remove_value(config, SECTION, Key(index, name).c_str());
 	}
 
@@ -168,6 +173,7 @@ bool MultistreamChannelStore::Save(const vector<MultiStreamChannel> &channels, s
 		config_set_string(config, SECTION, Key(index, "Platform").c_str(), string(info.id).c_str());
 		config_set_string(config, SECTION, Key(index, "DisplayName").c_str(), channel.displayName.c_str());
 		config_set_string(config, SECTION, Key(index, "AccountId").c_str(), channel.accountId.c_str());
+		config_set_string(config, SECTION, Key(index, "ChatAddress").c_str(), channel.chatAddress.c_str());
 		config_set_string(config, SECTION, Key(index, "Server").c_str(), channel.server.c_str());
 		config_set_string(config, SECTION, Key(index, "AvatarUrl").c_str(), channel.avatarUrl.c_str());
 		config_set_string(config, SECTION, Key(index, "Title").c_str(), channel.title.c_str());
@@ -228,6 +234,33 @@ bool MultistreamChannelStore::Remove(const string &channelId, string &error)
 	string keyError;
 	if (!SecureTokenStore::Remove(MANUAL_KEY_STORE, channelId, keyError))
 		blog(LOG_WARNING, "Could not remove the stored stream key: %s", keyError.c_str());
+	return Save(channels, error);
+}
+
+bool MultistreamChannelStore::UpdateIdentity(const vector<MultiStreamChannel> &resolved, string &error)
+{
+	auto channels = Load();
+	bool changed = false;
+	for (const auto &source : resolved) {
+		auto item = find_if(channels.begin(), channels.end(),
+				    [&](const MultiStreamChannel &channel) { return channel.id == source.id; });
+		if (item == channels.end())
+			continue;
+		const auto adopt = [&changed](string &target, const string &value) {
+			if (value.empty() || target == value)
+				return;
+			target = value;
+			changed = true;
+		};
+		adopt(item->displayName, source.displayName);
+		adopt(item->chatAddress, source.chatAddress);
+		adopt(item->avatarUrl, source.avatarUrl);
+	}
+
+	if (!changed) {
+		error.clear();
+		return true;
+	}
 	return Save(channels, error);
 }
 
