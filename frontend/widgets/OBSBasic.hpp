@@ -700,6 +700,12 @@ private:
 	 * second stream of a session mistakes our own service for a user setup,
 	 * clears the primary channel and sends that destination twice. */
 	bool multistreamPromotedService = false;
+	/* Unix time the main output went live, so the promoted channel's card can
+	 * count up like every other destination. Zero while nothing is sending. */
+	int64_t multistreamPrimaryLiveSince = 0;
+	/* Paints the promoted channel's card from the main output, which the
+	 * manager knows nothing about. */
+	void RefreshMultistreamPrimaryState();
 	void AddMultistreamChannel();
 	void ManageMultistreamAccount(const QString &channelId);
 	void OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedChannels,

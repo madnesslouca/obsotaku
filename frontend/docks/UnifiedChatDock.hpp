@@ -52,6 +52,7 @@ private:
 	void UpdateStatusSummary();
 	bool PlatformFilterEnabled(StreamPlatform platform) const;
 	void AppendHtml(const QString &html);
+	void RegisterPlatformIcons();
 
 	MultiStreamChatAggregator *aggregator = nullptr;
 

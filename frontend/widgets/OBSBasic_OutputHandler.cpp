@@ -67,6 +67,48 @@ void OBSBasic::ResetOutputs()
 	}
 }
 
+void OBSBasic::RefreshMultistreamPrimaryState()
+{
+	if (!outputHandler || !multistreamChannelBar)
+		return;
+
+	/* The promoted channel is carried by the application's main output, not by
+	 * the manager, so no destination callback ever reports on it. Without this
+	 * its card would sit on "offline" through an entire broadcast. */
+	const std::string primaryId = outputHandler->multiStreamManager->PrimaryChannelId();
+	if (primaryId.empty())
+		return;
+
+	MultiStreamChannelSnapshot snapshot;
+	snapshot.id = primaryId;
+	for (const auto &channel : outputHandler->multiStreamManager->ConfiguredChannels()) {
+		if (channel.id == primaryId) {
+			snapshot.displayName = channel.displayName;
+			break;
+		}
+	}
+
+	obs_output_t *output = outputHandler->streamOutput;
+	if (!output || !obs_output_active(output)) {
+		snapshot.state = streamingStopping ? MultiStreamChannelState::Stopping : MultiStreamChannelState::Idle;
+		multistreamChannelBar->UpdateState(snapshot);
+		return;
+	}
+
+	snapshot.state = streamingStopping ? MultiStreamChannelState::Stopping : MultiStreamChannelState::Live;
+	snapshot.health.congestion = obs_output_get_congestion(output);
+	snapshot.health.droppedFrames = obs_output_get_frames_dropped(output);
+	snapshot.health.totalFrames = obs_output_get_total_frames(output);
+	snapshot.health.totalBytes = static_cast<uint64_t>(obs_output_get_total_bytes(output));
+	if (multistreamPrimaryLiveSince > 0) {
+		const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+					    std::chrono::system_clock::now().time_since_epoch())
+					    .count();
+		snapshot.health.liveSeconds = std::max<int64_t>(0, now - multistreamPrimaryLiveSince);
+	}
+	multistreamChannelBar->UpdateState(snapshot);
+}
+
 void OBSBasic::BindMultistreamManager()
 {
 	if (!outputHandler || !multistreamChannelBar)
@@ -75,6 +117,7 @@ void OBSBasic::BindMultistreamManager()
 	/* Rebuilding the cards resets them to offline, so repaint the live state
 	 * right away: this also runs while a stream is already running. */
 	multistreamChannelBar->ApplySnapshots(outputHandler->multiStreamManager->Snapshot());
+	RefreshMultistreamPrimaryState();
 	RefreshMultistreamPreflight();
 	QPointer<MultistreamChannelBar> bar(multistreamChannelBar);
 	outputHandler->multiStreamManager->SetStateCallback([bar](const MultiStreamChannelSnapshot &snapshot) {

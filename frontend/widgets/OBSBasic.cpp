@@ -271,8 +271,10 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	connect(multistreamChannelBar, &MultistreamChannelBar::reconnectChannelRequested, this,
 		&OBSBasic::ReconnectMultistreamChannel);
 	connect(multistreamChannelBar, &MultistreamChannelBar::healthRefreshRequested, this, [this]() {
-		if (outputHandler && multistreamChannelBar)
-			multistreamChannelBar->ApplySnapshots(outputHandler->multiStreamManager->Snapshot());
+		if (!outputHandler || !multistreamChannelBar)
+			return;
+		multistreamChannelBar->ApplySnapshots(outputHandler->multiStreamManager->Snapshot());
+		RefreshMultistreamPrimaryState();
 	});
 	connect(multistreamChannelBar, &MultistreamChannelBar::channelEnabledChanged, this,
 		[this](const QString &channelId, bool enabled) {
