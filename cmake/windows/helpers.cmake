@@ -490,7 +490,12 @@ function(_bundle_dependencies target)
 
     list(APPEND plugin_stems ${plugin_stem})
 
-    if(plugin MATCHES "(.+d)\\.dll$" AND CMAKE_MATCH_COUNT EQUAL 1 AND NOT CMAKE_MATCH_1 IN_LIST debug_dll_exceptions)
+    # Compare the file name, not the full path: matching the path meant
+    # CMAKE_MATCH_1 carried the directories too, so it never equalled an entry
+    # in debug_dll_exceptions and every plugin ending in 'd' — which is every
+    # TLS backend — was filed as a debug build, leaving the release list empty.
+    cmake_path(GET plugin STEM plugin_filename)
+    if(plugin_filename MATCHES "d$" AND NOT plugin_filename IN_LIST debug_dll_exceptions)
       list(APPEND plugin_${plugin_stem}_debug ${plugin})
     else()
       list(APPEND plugin_${plugin_stem} ${plugin})
