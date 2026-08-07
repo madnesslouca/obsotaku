@@ -690,6 +690,19 @@ void OBSBasic::ApplyMultistreamChannels(std::vector<MultiStreamChannel> channels
 	if (!outputHandler)
 		return;
 
+	/* OAuth channels come out of the store without a server or key: those are
+	 * resolved on demand and never written to disk. Handing them to the output
+	 * layer enabled would fail the whole update, so they go in switched off and
+	 * the resolve below brings them back once the platform answers. The stored
+	 * preference is untouched. */
+	bool needsResolve = false;
+	for (auto &channel : channels) {
+		if (channel.enabled && (channel.server.empty() || channel.streamKey.empty())) {
+			channel.enabled = false;
+			needsResolve = true;
+		}
+	}
+
 	auto previousChannels = outputHandler->multiStreamManager->ConfiguredChannels();
 	std::string error;
 	if (!outputHandler->multiStreamManager->Configure(std::move(channels), error)) {
@@ -702,6 +715,9 @@ void OBSBasic::ApplyMultistreamChannels(std::vector<MultiStreamChannel> channels
 		return;
 	}
 	BindMultistreamManager();
+
+	if (needsResolve)
+		RestoreMultistreamAccounts();
 }
 
 void OBSBasic::OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedChannels,
