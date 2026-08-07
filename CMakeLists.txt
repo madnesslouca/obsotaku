@@ -18,6 +18,11 @@ include(helpers)
 option(ENABLE_FRONTEND "Enable building with UI (requires Qt)" ON)
 option(ENABLE_SCRIPTING "Enable scripting support" ON)
 option(ENABLE_HEVC "Enable HEVC encoders" ON)
+option(ENABLE_PRODUCT_TESTS "Enable the multistream product test targets" OFF)
+
+if(ENABLE_PRODUCT_TESTS)
+  enable_testing()
+endif()
 
 add_subdirectory(libobs)
 if(OS_WINDOWS)
@@ -33,5 +38,9 @@ add_subdirectory(plugins)
 add_subdirectory(test/test-input)
 
 add_subdirectory(frontend)
+
+if(ENABLE_PRODUCT_TESTS AND ENABLE_FRONTEND)
+  add_subdirectory(test/product-oauth)
+endif()
 
 message_configuration()

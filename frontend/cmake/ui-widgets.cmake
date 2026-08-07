@@ -12,6 +12,8 @@ target_sources(
   PRIVATE
     widgets/AudioMixer.cpp
     widgets/AudioMixer.hpp
+    widgets/MultistreamChannelBar.cpp
+    widgets/MultistreamChannelBar.hpp
     widgets/ColorSelect.cpp
     widgets/ColorSelect.hpp
     widgets/OBSBasic.cpp

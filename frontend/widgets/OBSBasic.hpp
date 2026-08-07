@@ -57,6 +57,7 @@ class OBSBasicTransform;
 class OBSLogViewer;
 class OBSMissingFiles;
 class OBSProjector;
+class MultistreamChannelBar;
 class VolumeControl;
 #ifdef YOUTUBE_ENABLED
 class YouTubeAppDock;
@@ -451,6 +452,7 @@ private:
 
 	QPointer<OBSDock> controlsDock;
 	QPointer<OBSDock> mixerDock;
+	QPointer<class UnifiedChatDock> unifiedChatDock;
 
 public:
 	void AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser = false);
@@ -647,6 +649,7 @@ private slots:
 	void on_toggleStatusBar_toggled(bool visible);
 
 	void on_autoConfigure_triggered();
+	void on_multistreamAccounts_triggered();
 	void on_stats_triggered();
 	void on_idianPlayground_triggered();
 
@@ -682,6 +685,18 @@ private:
 	 */
 private:
 	std::unique_ptr<BasicOutputHandler> outputHandler;
+	MultistreamChannelBar *multistreamChannelBar = nullptr;
+	void BindMultistreamManager();
+	void RestoreMultistreamAccounts();
+	void AddMultistreamChannel();
+	void ManageMultistreamAccount(const QString &channelId);
+	void OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedChannels,
+				     std::optional<StreamPlatform> newAccountPlatform);
+	void EditMultistreamChannel(const QString &channelId);
+	void RemoveMultistreamChannel(const QString &channelId);
+	void ReconnectMultistreamChannel(const QString &channelId);
+	void ApplyMultistreamChannels(std::vector<MultiStreamChannel> channels);
+	void RefreshMultistreamPreflight();
 	std::optional<std::pair<uint32_t, uint32_t>> lastOutputResolution;
 
 	int disableOutputsRef = 0;

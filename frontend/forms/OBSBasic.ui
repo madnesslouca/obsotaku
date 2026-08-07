@@ -946,6 +946,7 @@
     <property name="title">
      <string>Basic.MainMenu.Tools</string>
     </property>
+    <addaction name="multistreamAccounts"/>
     <addaction name="autoConfigure"/>
     <addaction name="idianPlayground"/>
     <addaction name="actionOpenPluginManager"/>
@@ -2040,6 +2041,11 @@
   <action name="autoConfigure">
    <property name="text">
     <string>Basic.AutoConfig</string>
+   </property>
+  </action>
+  <action name="multistreamAccounts">
+   <property name="text">
+    <string>Multistream.Accounts.Menu</string>
    </property>
   </action>
   <action name="actionOpenPluginManager">

@@ -19,13 +19,25 @@
 
 #include "OBSBasic.hpp"
 
+#include <dialogs/MultistreamAccountsDialog.hpp>
+#include <oauth/ConnectedAccountManager.hpp>
 #include <qt-wrappers.hpp>
 
+#include <utility/MultistreamChannelStore.hpp>
+#include <utility/MultistreamTaskPool.hpp>
+#include <widgets/MultistreamChannelBar.hpp>
+
 #include <QDir>
+#include <QPointer>
+
+#include <sstream>
 
 void OBSBasic::ResetOutputs()
 {
 	ProfileScope("OBSBasic::ResetOutputs");
+	std::vector<MultiStreamChannel> multistreamChannels;
+	if (outputHandler && outputHandler->multiStreamManager)
+		multistreamChannels = outputHandler->multiStreamManager->ConfiguredChannels();
 
 	const char *mode = config_get_string(activeConfiguration, "Output", "Mode");
 	bool advOut = astrcmpi(mode, "Advanced") == 0;
@@ -35,6 +47,12 @@ void OBSBasic::ResetOutputs()
 	     setupStreamingGuard.wait_for(std::chrono::seconds{0}) == std::future_status::ready)) {
 		outputHandler.reset();
 		outputHandler.reset(advOut ? CreateAdvancedOutputHandler(this) : CreateSimpleOutputHandler(this));
+		if (!multistreamChannels.empty()) {
+			std::string error;
+			if (!outputHandler->multiStreamManager->Configure(std::move(multistreamChannels), error))
+				blog(LOG_WARNING, "Could not restore multistream channels: %s", error.c_str());
+		}
+		BindMultistreamManager();
 
 		emit ReplayBufEnabled(outputHandler->replayBuffer);
 
@@ -46,6 +64,115 @@ void OBSBasic::ResetOutputs()
 	} else {
 		outputHandler->Update();
 	}
+}
+
+void OBSBasic::BindMultistreamManager()
+{
+	if (!outputHandler || !multistreamChannelBar)
+		return;
+	multistreamChannelBar->SetChannels(outputHandler->multiStreamManager->ConfiguredChannels());
+	/* Rebuilding the cards resets them to offline, so repaint the live state
+	 * right away: this also runs while a stream is already running. */
+	multistreamChannelBar->ApplySnapshots(outputHandler->multiStreamManager->Snapshot());
+	RefreshMultistreamPreflight();
+	QPointer<MultistreamChannelBar> bar(multistreamChannelBar);
+	outputHandler->multiStreamManager->SetStateCallback([bar](const MultiStreamChannelSnapshot &snapshot) {
+		if (!bar)
+			return;
+		QMetaObject::invokeMethod(
+			bar.data(), [bar, snapshot]() {
+				if (bar)
+					bar->UpdateState(snapshot);
+			},
+			Qt::QueuedConnection);
+	});
+}
+
+void OBSBasic::RestoreMultistreamAccounts()
+{
+	if (!outputHandler || !multistreamChannelBar)
+		return;
+
+	/* Manual destinations already carry their stream key, so they go live
+	 * immediately; only the OAuth ones need a network round trip. */
+	std::vector<MultiStreamChannel> storedChannels = MultistreamChannelStore::Load();
+	std::vector<MultiStreamChannel> readyChannels;
+	std::vector<ConnectedStreamAccount> accounts;
+	for (auto &channel : storedChannels) {
+		if (GetStreamPlatformInfo(channel.platform).ingestMode == StreamIngestMode::ManualStreamKey)
+			readyChannels.emplace_back(std::move(channel));
+		else
+			accounts.push_back({channel.platform, channel.accountId, channel.displayName, channel.enabled});
+	}
+
+	if (!readyChannels.empty()) {
+		std::string configureError;
+		if (!outputHandler->multiStreamManager->Configure(readyChannels, configureError))
+			blog(LOG_WARNING, "Could not restore manual multistream channels: %s", configureError.c_str());
+		BindMultistreamManager();
+	}
+
+	if (accounts.empty())
+		return;
+
+	if (readyChannels.empty())
+		multistreamChannelBar->ShowRestoringAccounts();
+	QPointer<OBSBasic> guard(this);
+	const QString incompleteRegistration = QTStr("Multistream.Accounts.IntegrationPending");
+	MultistreamTaskPool().start([guard, incompleteRegistration, readyChannels = std::move(readyChannels),
+				     accounts = std::move(accounts)]() mutable {
+		std::vector<MultiStreamChannel> channels = std::move(readyChannels);
+		std::ostringstream failures;
+		for (const auto &account : accounts) {
+			const auto registration =
+				MultistreamAccountsDialog::RegistrationForPlatform(account.platform);
+			if (!MultistreamAccountsDialog::RegistrationReadyForPlatform(account.platform)) {
+				failures << GetStreamPlatformInfo(account.platform).displayName << ": "
+					 << QT_TO_UTF8(incompleteRegistration) << '\n';
+				continue;
+			}
+
+			const std::string redirectUri =
+				account.platform == StreamPlatform::Kick
+					? QStringLiteral("http://127.0.0.1:%1/")
+						  .arg(MultistreamAccountsDialog::KickCallbackPortForPlatform())
+						  .toStdString()
+					: std::string{};
+			MultiStreamChannel channel;
+			std::string error;
+			if (ConnectedAccountManager::ResolveChannel(account, registration, redirectUri, channel,
+							    error)) {
+				channels.emplace_back(std::move(channel));
+			} else {
+				failures << GetStreamPlatformInfo(account.platform).displayName << ": " << error << '\n';
+			}
+		}
+
+		if (!guard)
+			return;
+		const QString failureText = QString::fromStdString(failures.str()).trimmed();
+		QMetaObject::invokeMethod(
+			guard.data(),
+			[guard, channels = std::move(channels), failureText]() mutable {
+				if (!guard || !guard->outputHandler ||
+				    guard->outputHandler->multiStreamManager->IsActive())
+					return;
+				std::string error;
+				if (!guard->outputHandler->multiStreamManager->Configure(std::move(channels), error)) {
+					guard->multistreamChannelBar->ShowRestoreFailure(
+						QString::fromStdString(error));
+					return;
+				}
+				guard->BindMultistreamManager();
+				if (guard->outputHandler->multiStreamManager->ConfiguredChannels().empty() &&
+				    !failureText.isEmpty())
+					guard->multistreamChannelBar->ShowRestoreFailure(failureText);
+				else if (!failureText.isEmpty())
+					blog(LOG_WARNING, "Some multistream accounts could not be restored: %s",
+					     QT_TO_UTF8(failureText));
+			},
+			Qt::QueuedConnection);
+	});
 }
 
 bool OBSBasic::Active() const

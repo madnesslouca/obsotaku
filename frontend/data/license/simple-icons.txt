@@ -1,0 +1,10 @@
+Platform icons in data/images/platforms/ come from Simple Icons
+(https://simpleicons.org), released under the CC0 1.0 Universal Public Domain
+Dedication:
+
+    https://creativecommons.org/publicdomain/zero/1.0/
+
+CC0 applies to the icon collection. The depicted logos remain trademarks of
+their respective owners; they are used here nominatively, to identify the
+streaming service each destination sends to. See
+data/images/platforms/README.md for the brand guidelines of each platform.

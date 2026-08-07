@@ -30,6 +30,7 @@
 #ifdef YOUTUBE_ENABLED
 #include <docks/YouTubeAppDock.hpp>
 #endif
+#include <docks/UnifiedChatDock.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
 #include <dialogs/OBSBasicAdvAudio.hpp>
@@ -45,6 +46,7 @@
 #include <utility/WhatsNewInfoThread.hpp>
 #endif
 #include <widgets/AudioMixer.hpp>
+#include <widgets/MultistreamChannelBar.hpp>
 #include <widgets/OBSProjector.hpp>
 
 #include <OBSStudioAPI.hpp>
@@ -255,6 +257,34 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 
 	ui->setupUi(this);
 	ui->previewDisabledWidget->setVisible(false);
+	multistreamChannelBar = new MultistreamChannelBar(this);
+	ui->verticalLayout->insertWidget(0, multistreamChannelBar);
+	connect(multistreamChannelBar, &MultistreamChannelBar::manageAccountRequested, this,
+		&OBSBasic::ManageMultistreamAccount);
+	connect(multistreamChannelBar, &MultistreamChannelBar::addChannelRequested, this,
+		&OBSBasic::AddMultistreamChannel);
+	connect(multistreamChannelBar, &MultistreamChannelBar::editChannelRequested, this,
+		&OBSBasic::EditMultistreamChannel);
+	connect(multistreamChannelBar, &MultistreamChannelBar::removeChannelRequested, this,
+		&OBSBasic::RemoveMultistreamChannel);
+	connect(multistreamChannelBar, &MultistreamChannelBar::reconnectChannelRequested, this,
+		&OBSBasic::ReconnectMultistreamChannel);
+	connect(multistreamChannelBar, &MultistreamChannelBar::healthRefreshRequested, this, [this]() {
+		if (outputHandler && multistreamChannelBar)
+			multistreamChannelBar->ApplySnapshots(outputHandler->multiStreamManager->Snapshot());
+	});
+	connect(multistreamChannelBar, &MultistreamChannelBar::channelEnabledChanged, this,
+		[this](const QString &channelId, bool enabled) {
+			if (!outputHandler)
+				return;
+			std::string error;
+			if (!outputHandler->multiStreamManager->SetChannelEnabled(channelId.toStdString(), enabled, error)) {
+				multistreamChannelBar->SetChannels(
+					outputHandler->multiStreamManager->ConfiguredChannels());
+				QMessageBox::warning(this, QTStr("Multistream.ChannelBar.ToggleFailed"),
+						     QString::fromStdString(error));
+			}
+		});
 
 	/* Set up streaming connections */
 	connect(
@@ -374,6 +404,9 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	statsDock->setVisible(false);
 	statsDock->setFloating(true);
 	statsDock->resize(700, 200);
+
+	unifiedChatDock = new UnifiedChatDock(this);
+	AddDockWidget(unifiedChatDock, Qt::RightDockWidgetArea);
 
 	copyActionsDynamicProperties();
 
@@ -1078,6 +1111,7 @@ void OBSBasic::OBSInit()
 	}
 
 	ResetOutputs();
+	RestoreMultistreamAccounts();
 	CreateHotkeys();
 
 	InitPrimitives();
@@ -1257,6 +1291,11 @@ void OBSBasic::OBSInit()
 	}
 
 	bool pre23Defaults = config_get_bool(App()->GetUserConfig(), "General", "Pre23Defaults");
+
+	if (unifiedChatDock && !config_has_user_value(App()->GetUserConfig(), "BasicWindow", "UnifiedChatDockVisible")) {
+		unifiedChatDock->setVisible(true);
+		config_set_bool(App()->GetUserConfig(), "BasicWindow", "UnifiedChatDockVisible", true);
+	}
 	if (pre23Defaults) {
 		bool resetDockLock23 = config_get_bool(App()->GetUserConfig(), "General", "ResetDockLock23");
 		if (!resetDockLock23) {

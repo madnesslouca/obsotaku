@@ -18,7 +18,8 @@ protected:
 	void NewConnection();
 
 public:
-	explicit AuthListener(QObject *parent = 0);
+	explicit AuthListener(QObject *parent = 0, quint16 preferredPort = 0);
 	quint16 GetPort();
+	bool IsListening() const;
 	void SetState(QString state);
 };
