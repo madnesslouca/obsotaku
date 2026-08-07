@@ -88,6 +88,43 @@ void OBSBasic::BindMultistreamManager()
 	});
 }
 
+void OBSBasic::PrepareMultistreamPrimaryService()
+{
+	if (!outputHandler)
+		return;
+
+	auto &manager = outputHandler->multiStreamManager;
+	/* A service the user configured wins: the channel bar adds destinations,
+	 * it does not take over an existing setup. */
+	if (obs_service_can_try_to_connect(service)) {
+		manager->SetPrimaryChannelId({});
+		return;
+	}
+
+	const MultiStreamChannel primary = manager->FirstReadyChannel();
+	if (primary.id.empty()) {
+		manager->SetPrimaryChannelId({});
+		return;
+	}
+
+	OBSDataAutoRelease settings = obs_data_create();
+	obs_data_set_string(settings, "server", primary.server.c_str());
+	obs_data_set_string(settings, "key", primary.streamKey.c_str());
+
+	OBSServiceAutoRelease promoted =
+		obs_service_create("rtmp_custom", "multistream_primary_service", settings, nullptr);
+	if (!promoted) {
+		blog(LOG_WARNING, "Could not build the main service from the multistream channel");
+		return;
+	}
+
+	/* Only the in-memory service changes; SaveService() is never called here,
+	 * so the Stream settings page the user sees stays untouched. */
+	service = std::move(promoted);
+	manager->SetPrimaryChannelId(primary.id);
+	blog(LOG_INFO, "Multistream: using %s as the main output", primary.displayName.c_str());
+}
+
 void OBSBasic::RestoreMultistreamAccounts()
 {
 	if (!outputHandler || !multistreamChannelBar)

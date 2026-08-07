@@ -424,6 +424,10 @@ void OBSBasic::StreamActionTriggered()
 
 		Auth *auth = GetAuth();
 
+		/* With channels on the bar, an empty Stream settings page is not a
+		 * mistake to correct: the first one becomes the main output. */
+		PrepareMultistreamPrimaryService();
+
 		auto action = (auth && auth->external()) ? StreamSettingsAction::ContinueStream
 							 : UIValidation::StreamSettingsConfirmation(this, service);
 		switch (action) {
