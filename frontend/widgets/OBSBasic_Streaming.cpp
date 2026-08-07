@@ -266,6 +266,11 @@ void OBSBasic::StreamingStart()
 
 	OnEvent(OBS_FRONTEND_EVENT_STREAMING_STARTED);
 
+	multistreamPrimaryLiveSince =
+		std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+			.count();
+	RefreshMultistreamPrimaryState();
+
 	OnActivate();
 
 #ifdef YOUTUBE_ENABLED
@@ -287,6 +292,7 @@ void OBSBasic::StreamStopping()
 
 	streamingStopping = true;
 	OnEvent(OBS_FRONTEND_EVENT_STREAMING_STOPPING);
+	RefreshMultistreamPrimaryState();
 }
 
 void OBSBasic::StreamingStop(int code, QString last_error)
@@ -356,6 +362,9 @@ void OBSBasic::StreamingStop(int code, QString last_error)
 
 	streamingStopping = false;
 	OnEvent(OBS_FRONTEND_EVENT_STREAMING_STOPPED);
+
+	multistreamPrimaryLiveSince = 0;
+	RefreshMultistreamPrimaryState();
 
 	OnDeactivate();
 

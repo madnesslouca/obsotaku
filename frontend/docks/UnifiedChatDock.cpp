@@ -10,6 +10,7 @@
 #include "UnifiedChatDock.hpp"
 
 #include <utility/MultistreamChannelStore.hpp>
+#include <utility/PlatformIconProvider.hpp>
 #include <utility/StreamPlatformDisplay.hpp>
 
 #include <OBSApp.hpp>
@@ -27,6 +28,14 @@
 
 namespace {
 constexpr int MAX_CHAT_BLOCKS = 500;
+constexpr int PLATFORM_ICON_SIZE = 14;
+
+/* Document resource name the platform logo is registered under, so a message
+ * row can reference the artwork with a plain <img>. */
+QString PlatformIconUrl(StreamPlatform platform)
+{
+	return QStringLiteral("platform:%1").arg(StreamPlatformId(platform));
+}
 
 QString PlatformName(StreamPlatform platform)
 {
@@ -47,20 +56,21 @@ QString SafeUserColor(const QString &color, StreamPlatform platform)
 	return PlatformColor(platform);
 }
 
+/* The logo alone: the platform is recognisable at a glance and the row keeps
+ * its width for the message. The name stays in the title attribute. */
 QString PlatformBadgeHtml(StreamPlatform platform)
 {
-	const QColor color(PlatformColor(platform));
-	const QString rgb = QStringLiteral("%1,%2,%3").arg(color.red()).arg(color.green()).arg(color.blue());
-	return QStringLiteral("<span style=\"background-color:rgba(%1,0.18); border:1px solid rgba(%1,0.45); "
-			      "border-radius:4px; padding:1px 6px; font-weight:700; font-size:10px; "
-			      "color:%2;\">%3</span>")
-		.arg(rgb, PlatformColor(platform), PlatformName(platform).toHtmlEscaped());
+	return QStringLiteral("<img src=\"%1\" width=\"%2\" height=\"%2\" title=\"%3\" "
+			      "style=\"vertical-align:middle;\">")
+		.arg(PlatformIconUrl(platform))
+		.arg(PLATFORM_ICON_SIZE)
+		.arg(PlatformName(platform).toHtmlEscaped());
 }
 
 QString RoleBadgeHtml(const QString &label, const QString &bg, const QString &fg)
 {
 	return QStringLiteral("<span style=\"background-color:%1; color:%2; border-radius:3px; "
-			      "padding:0 4px; font-size:9px; font-weight:700; margin-right:3px;\">%3</span>")
+			      "padding:0 4px; font-size:9px; font-weight:700;\">%3</span>&nbsp;")
 		.arg(bg, fg, label.toHtmlEscaped());
 }
 
@@ -131,11 +141,13 @@ QString MessageRowHtml(const ChatMessage &msg)
 					   : QStringLiteral(" <span style=\"color:#888; font-size:10px;\">@%1</span>")
 						     .arg(msg.channelName.toHtmlEscaped());
 
+	/* Qt's rich text drops margins on inline spans, so the gap between the
+	 * nickname and the message has to be real characters or the two run
+	 * together. The colon is what every chat client uses for the same job. */
 	return QStringLiteral("<div style=\"%1\">"
 			      "<div style=\"margin-bottom:2px;\">%2 %3"
-			      "<span style=\"font-size:10px; color:#888; margin-left:4px;\">%4</span>%5%6</div>"
-			      "<div><b style=\"color:%7;\">%8</b>"
-			      "<span style=\"margin-left:6px;\">%9</span></div></div>")
+			      "<span style=\"font-size:10px; color:#888;\">&nbsp;%4</span>%5%6</div>"
+			      "<div><b style=\"color:%7;\">%8:</b>&nbsp;%9</div></div>")
 		.arg(rowStyle, PlatformBadgeHtml(msg.platform), RolesHtml(msg), msg.timestamp.toHtmlEscaped(),
 		     channelBit, paid, nickColor, msg.senderName.toHtmlEscaped(), msg.messageText.toHtmlEscaped());
 }
@@ -177,6 +189,7 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent) : OBSDock(parent)
 	chatView->setOpenExternalLinks(false);
 	chatView->setOpenLinks(false);
 	chatView->setReadOnly(true);
+	RegisterPlatformIcons();
 	layout->addWidget(chatView, 1);
 
 	auto *sendRow = new QHBoxLayout();
@@ -404,6 +417,20 @@ bool UnifiedChatDock::PlatformFilterEnabled(StreamPlatform platform) const
 {
 	const auto *box = platformFilters.value(static_cast<int>(platform), nullptr);
 	return !box || box->isChecked();
+}
+
+void UnifiedChatDock::RegisterPlatformIcons()
+{
+	/* Rich text cannot load files, so the logos are handed to the document as
+	 * named resources the message rows point an <img> at. */
+	const qreal ratio = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+	for (const auto platform : SelectableStreamPlatforms()) {
+		QPixmap glyph = PlatformIconProvider::Glyph(platform, PLATFORM_ICON_SIZE, ratio);
+		if (glyph.isNull())
+			continue;
+		chatView->document()->addResource(QTextDocument::ImageResource, QUrl(PlatformIconUrl(platform)),
+						  QVariant(glyph));
+	}
 }
 
 void UnifiedChatDock::AppendHtml(const QString &html)
