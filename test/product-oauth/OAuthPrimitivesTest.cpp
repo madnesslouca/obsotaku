@@ -1,5 +1,6 @@
 #include <oauth/OAuthPkce.hpp>
 #include <oauth/OAuthTokenSet.hpp>
+#include <oauth/PlatformMetadataClient.hpp>
 #include <oauth/PlatformOAuthClient.hpp>
 #include <utility/StreamPlatform.hpp>
 
@@ -101,6 +102,28 @@ int main()
 		return Fail("Could not create a Kick authorization session with a local development secret.");
 	if (kickSession.authorizationUrl.find("streamkey%3Aread") == string::npos)
 		return Fail("Kick authorization URL does not request streamkey:read.");
+
+	/* Metadata updates: the catalog decides who accepts them, and a call
+	 * without a usable token must fail before touching the network. */
+	if (!GetStreamPlatformInfo(StreamPlatform::Twitch).supportsMetadataUpdates ||
+	    !GetStreamPlatformInfo(StreamPlatform::YouTube).supportsMetadataUpdates ||
+	    !GetStreamPlatformInfo(StreamPlatform::Kick).supportsMetadataUpdates)
+		return Fail("The OAuth platforms must accept broadcast metadata updates.");
+	if (GetStreamPlatformInfo(StreamPlatform::TikTok).supportsMetadataUpdates ||
+	    GetStreamPlatformInfo(StreamPlatform::CustomRtmp).supportsMetadataUpdates)
+		return Fail("Manual platforms must not claim metadata update support.");
+
+	if (!PlatformMetadataClient::SupportsCategories(StreamPlatform::Twitch) ||
+	    !PlatformMetadataClient::SupportsCategories(StreamPlatform::Kick) ||
+	    PlatformMetadataClient::SupportsCategories(StreamPlatform::YouTube))
+		return Fail("Unexpected category search support.");
+
+	OAuthTokenSet emptyTokens;
+	if (PlatformMetadataClient::Update(StreamPlatform::Twitch, {"client", {}}, emptyTokens, "123",
+					   {"title", {}, {}}, error))
+		return Fail("A metadata update without an access token must fail.");
+	if (PlatformMetadataClient::Update(StreamPlatform::TikTok, {}, emptyTokens, "123", {"title", {}, {}}, error))
+		return Fail("A manual platform must reject metadata updates.");
 
 	/* Unique per run so a crashed earlier run cannot leave a credential behind
 	 * that this one would read, delete, or collide with. */

@@ -26,5 +26,11 @@ public:
 	static bool Get(const std::string &url, const Headers &headers, OAuthHttpResponse &response, std::string &error);
 	static bool PostForm(const std::string &url, const Fields &fields, const Headers &headers,
 			     OAuthHttpResponse &response, std::string &error);
+
+	/* JSON body request for the platform APIs that update broadcast metadata.
+	 * method is PATCH, PUT or POST. */
+	static bool SendJson(const std::string &method, const std::string &url, const std::string &json,
+			     const Headers &headers, OAuthHttpResponse &response, std::string &error);
+
 	static std::string UrlEncode(const std::string &value);
 };
