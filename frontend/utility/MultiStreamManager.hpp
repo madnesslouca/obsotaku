@@ -36,6 +36,11 @@ struct MultiStreamChannel {
 	std::string streamKey;
 	/* Remote profile picture URL; the channel bar caches it on disk. */
 	std::string avatarUrl;
+	/* Broadcast metadata. An empty title means the channel follows the shared
+	 * one from the stream info panel. */
+	std::string title;
+	std::string categoryId;
+	std::string categoryName;
 	/* Zero-based OBS audio track. Track 1 in the user interface is index 0. */
 	size_t audioMixIndex = 0;
 	bool vodTrackEnabled = false;

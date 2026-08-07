@@ -453,6 +453,7 @@ private:
 	QPointer<OBSDock> controlsDock;
 	QPointer<OBSDock> mixerDock;
 	QPointer<class UnifiedChatDock> unifiedChatDock;
+	QPointer<class StreamInfoDock> streamInfoDock;
 
 public:
 	void AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser = false);
