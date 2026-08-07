@@ -1,6 +1,7 @@
 #pragma once
 
 #include <utility/MultitrackVideoOutput.hpp>
+#include <utility/MultiStreamManager.hpp>
 #include <utility/WHIPSimulcastEncoders.hpp>
 
 #include <obs.hpp>
@@ -31,6 +32,7 @@ struct BasicOutputHandler {
 
 	std::unique_ptr<MultitrackVideoOutput> multitrackVideo;
 	bool multitrackVideoActive = false;
+	std::unique_ptr<MultiStreamManager> multiStreamManager = std::make_unique<MultiStreamManager>();
 
 	OBSOutputAutoRelease StreamingOutput() const
 	{
@@ -96,7 +98,7 @@ struct BasicOutputHandler {
 	inline bool Active() const
 	{
 		return streamingActive || recordingActive || delayActive || replayBufferActive || virtualCamActive ||
-		       multitrackVideoActive;
+		       multitrackVideoActive || (multiStreamManager && multiStreamManager->IsActive());
 	}
 
 protected:

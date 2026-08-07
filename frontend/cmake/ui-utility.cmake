@@ -27,6 +27,17 @@ target_sources(
     utility/MultitrackVideoError.hpp
     utility/MultitrackVideoOutput.cpp
     utility/MultitrackVideoOutput.hpp
+    utility/ChannelAvatarCache.cpp
+    utility/ChannelAvatarCache.hpp
+    utility/MultiStreamManager.cpp
+    utility/MultiStreamManager.hpp
+    utility/MultistreamChannelStore.cpp
+    utility/MultistreamChannelStore.hpp
+    utility/MultistreamPreflight.cpp
+    utility/MultistreamPreflight.hpp
+    utility/MultistreamTaskPool.hpp
+    utility/PlatformIconProvider.cpp
+    utility/PlatformIconProvider.hpp
     utility/NativeEventFilter.hpp
     utility/OBSCanvas.cpp
     utility/OBSCanvas.hpp
@@ -58,6 +69,9 @@ target_sources(
     utility/SimpleOutput.cpp
     utility/SimpleOutput.hpp
     utility/StartMultiTrackVideoStreamingGuard.hpp
+    utility/StreamPlatform.cpp
+    utility/StreamPlatform.hpp
+    utility/StreamPlatformDisplay.hpp
     utility/SurfaceEventFilter.hpp
     utility/ThumbnailItem.cpp
     utility/ThumbnailItem.hpp
@@ -79,3 +93,9 @@ target_sources(
     utility/undo_stack.cpp
     utility/undo_stack.hpp
 )
+
+# The Windows credential-store backend is added by os-windows.cmake. Every other
+# platform still needs a definition, otherwise OAuthTokenSet fails to link.
+if(NOT OS_WINDOWS)
+  target_sources(obs-studio PRIVATE utility/SecureTokenStore.hpp utility/SecureTokenStore_Stub.cpp)
+endif()

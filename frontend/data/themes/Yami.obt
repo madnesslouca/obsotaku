@@ -2796,3 +2796,382 @@ AlignmentSelector::indicator:disabled {
 AlignmentSelector::indicator:checked:disabled {
     background: var(--grey3);
 }
+
+/* Multistream Accounts Dialog (PRISM Style) */
+MultistreamAccountsDialog {
+    background-color: var(--bg_window);
+}
+
+MultistreamAccountsDialog #infoBanner {
+    background-color: var(--grey6);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+    padding: 10px 14px;
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+MultistreamAccountsDialog QFrame#platformCard {
+    background-color: var(--grey6);
+    border: 1px solid var(--grey5);
+    border-radius: 10px;
+}
+
+MultistreamAccountsDialog QFrame#platformCard:hover {
+    border-color: var(--grey3);
+    background-color: var(--grey5);
+}
+
+MultistreamAccountsDialog QLabel#platformName {
+    color: var(--text);
+    font-size: var(--font_large);
+    font-weight: bold;
+}
+
+MultistreamAccountsDialog QLabel#platformStatusPill {
+    font-size: var(--font_small);
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+MultistreamAccountsDialog QLabel#platformStatusPill[statusState="connected"] {
+    color: #4ade80;
+    font-weight: 600;
+}
+
+MultistreamAccountsDialog QLabel#platformStatusPill[statusState="pending"] {
+    color: #fbbf24;
+}
+
+MultistreamAccountsDialog QLabel#platformStatusPill[statusState="disconnected"] {
+    color: var(--text_muted);
+}
+
+MultistreamAccountsDialog QPushButton#btnConnect_youtube {
+    background-color: #FF0000;
+    color: #ffffff;
+    font-weight: bold;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    height: 32px;
+}
+
+MultistreamAccountsDialog QPushButton#btnConnect_youtube:hover {
+    background-color: #CC0000;
+}
+
+MultistreamAccountsDialog QPushButton#btnConnect_twitch {
+    background-color: #9146FF;
+    color: #ffffff;
+    font-weight: bold;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    height: 32px;
+}
+
+MultistreamAccountsDialog QPushButton#btnConnect_twitch:hover {
+    background-color: #772CE8;
+}
+
+MultistreamAccountsDialog QPushButton#btnConnect_kick {
+    background-color: #53FC18;
+    color: #000000;
+    font-weight: bold;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    height: 32px;
+}
+
+MultistreamAccountsDialog QPushButton#btnConnect_kick:hover {
+    background-color: #45d912;
+}
+
+MultistreamAccountsDialog QPushButton#btnConfigure_kick {
+    background-color: transparent;
+    color: #53FC18;
+    border: 1px solid #53FC18;
+    border-radius: 6px;
+    padding: 6px 12px;
+    height: 32px;
+}
+
+MultistreamAccountsDialog QPushButton#btnConfigure_kick:hover {
+    background-color: rgba(83, 252, 24, 0.12);
+}
+
+MultistreamAccountsDialog QPushButton#btnConfigure_kick:disabled {
+    color: var(--text_disabled);
+    border-color: var(--input_border);
+}
+
+MultistreamAccountsDialog QPushButton#btnConnect_youtube:disabled,
+MultistreamAccountsDialog QPushButton#btnConnect_twitch:disabled,
+MultistreamAccountsDialog QPushButton#btnConnect_kick:disabled {
+    background-color: var(--button_bg_disabled);
+    color: var(--text_disabled);
+    border: 1px solid var(--input_border);
+}
+
+MultistreamAccountsDialog QPushButton#btnDisconnect {
+    background-color: transparent;
+    color: var(--text);
+    border: 1px solid var(--grey3);
+    border-radius: 6px;
+    padding: 6px 12px;
+    height: 32px;
+}
+
+MultistreamAccountsDialog QPushButton#btnDisconnect:hover {
+    background-color: var(--grey5);
+    border-color: var(--grey1);
+}
+
+MultistreamAccountsDialog QFrame#platformSettings {
+    background-color: var(--grey7);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+}
+
+MultistreamAccountsDialog QLabel#platformSettingsTitle {
+    color: var(--text);
+    font-weight: bold;
+}
+
+/* Multistream channel bar */
+MultistreamChannelBar#multistreamChannelBar {
+    background-color: var(--grey6);
+    border: 0;
+    border-bottom: 1px solid var(--grey5);
+}
+
+MultistreamChannelBar#multistreamChannelBar QFrame[channelCard="true"] {
+    background-color: var(--grey5);
+    border: 1px solid var(--grey4);
+    border-radius: 8px;
+}
+
+MultistreamChannelBar#multistreamChannelBar QFrame[channelCard="true"]:hover {
+    border-color: var(--grey3);
+}
+
+/* Unified chat dock */
+UnifiedChatDock QWidget#unifiedChatDockContent {
+    background-color: var(--grey6);
+}
+
+UnifiedChatDock QTextBrowser#unifiedChatView {
+    background-color: var(--grey7);
+    color: var(--text);
+    border: 1px solid var(--grey5);
+    border-radius: 6px;
+}
+
+UnifiedChatDock QLabel#unifiedChatStatus {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+UnifiedChatDock QCheckBox#chatFilterTwitch {
+    color: #9146FF;
+    font-weight: bold;
+}
+
+UnifiedChatDock QCheckBox#chatFilterYouTube {
+    color: #FF0000;
+    font-weight: bold;
+}
+
+UnifiedChatDock QCheckBox#chatFilterKick {
+    color: #53FC18;
+    font-weight: bold;
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelState {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelState[channelState="live"] {
+    color: #35c759;
+    font-weight: 600;
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelState[channelState="failed"] {
+    color: #ff453a;
+    font-weight: 600;
+}
+
+/* Add channel picker */
+AddChannelDialog {
+    background-color: var(--bg_window);
+}
+
+AddChannelDialog QLabel#addChannelTitle {
+    color: var(--text);
+    font-size: var(--font_large);
+    font-weight: bold;
+}
+
+AddChannelDialog QLabel#addChannelSubtitle {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+AddChannelDialog QToolButton#channelTile {
+    background-color: var(--grey6);
+    border: 1px solid var(--grey5);
+    border-radius: 10px;
+    color: var(--text);
+    font-size: var(--font_small);
+    font-weight: 600;
+    padding: 12px 6px 10px 6px;
+}
+
+AddChannelDialog QToolButton#channelTile:hover {
+    background-color: var(--grey5);
+    border-color: var(--grey3);
+}
+
+AddChannelDialog QToolButton#channelTile:pressed {
+    background-color: var(--grey4);
+}
+
+/* Manual stream key form */
+ManualChannelDialog {
+    background-color: var(--bg_window);
+}
+
+ManualChannelDialog QLabel#manualChannelNote {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+ManualChannelDialog QLabel#manualChannelError {
+    color: #ff453a;
+    font-weight: 600;
+}
+
+/* Channel bar cards */
+MultistreamChannelBar#multistreamChannelBar QLabel#channelBarTitle {
+    color: var(--text);
+    font-weight: bold;
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelBarEmpty {
+    color: var(--text_muted);
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelName {
+    color: var(--text);
+    font-weight: 600;
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelState[channelState="busy"] {
+    color: #fbbf24;
+    font-weight: 600;
+}
+
+MultistreamChannelBar#multistreamChannelBar QPushButton#channelBarAdd {
+    background-color: var(--grey5);
+    border: 1px solid var(--grey4);
+    border-radius: 15px;
+    color: var(--text);
+    font-size: var(--font_large);
+    font-weight: bold;
+    padding: 0;
+}
+
+MultistreamChannelBar#multistreamChannelBar QPushButton#channelBarAdd:hover {
+    background-color: var(--grey4);
+    border-color: var(--grey3);
+}
+
+MultistreamChannelBar#multistreamChannelBar QScrollArea#channelBarScroll {
+    background: transparent;
+    border: none;
+}
+
+MultistreamChannelBar#multistreamChannelBar QToolButton#channelMenu {
+    color: var(--text_muted);
+    border: none;
+}
+
+MultistreamChannelBar#multistreamChannelBar QToolButton#channelMenu:hover {
+    color: var(--text);
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelBarSubtitle {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+MultistreamChannelBar#multistreamChannelBar QFrame[channelCard="true"][channelEnabled="false"] {
+    background-color: var(--grey6);
+    border-color: var(--grey5);
+}
+
+MultistreamChannelBar#multistreamChannelBar QFrame[channelCard="true"][channelEnabled="false"] QLabel {
+    color: var(--text_disabled);
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelHealth {
+    font-size: var(--font_small);
+    color: #35c759;
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelHealth[healthState="warn"] {
+    color: #fbbf24;
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelHealth[healthState="bad"] {
+    color: #ff453a;
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelBarWarning,
+MultistreamChannelBar#multistreamChannelBar QLabel#channelBarWarningIcon {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelBarWarning[severity="warning"],
+MultistreamChannelBar#multistreamChannelBar QLabel#channelBarWarningIcon[severity="warning"] {
+    color: #fbbf24;
+}
+
+AddChannelDialog QLabel#addChannelSection {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+AddChannelDialog QToolButton#channelTile[platform="twitch"]:hover {
+    border-color: #9146ff;
+}
+
+AddChannelDialog QToolButton#channelTile[platform="youtube"]:hover {
+    border-color: #ff0000;
+}
+
+AddChannelDialog QToolButton#channelTile[platform="kick"]:hover {
+    border-color: #53fc18;
+}
+
+AddChannelDialog QToolButton#channelTile[platform="facebook"]:hover {
+    border-color: #0866ff;
+}
+
+AddChannelDialog QToolButton#channelTile[platform="tiktok"]:hover {
+    border-color: #ff0050;
+}
+
+AddChannelDialog QToolButton#channelTile[platform="x"]:hover {
+    border-color: #71767b;
+}
+
+AddChannelDialog QToolButton#channelTile[platform="trovo"]:hover {
+    border-color: #1ec160;
+}

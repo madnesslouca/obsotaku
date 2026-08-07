@@ -18,6 +18,7 @@
 ******************************************************************************/
 
 #include "OBSBasic.hpp"
+#include <docks/UnifiedChatDock.hpp>
 
 #include <qt-wrappers.hpp>
 
@@ -87,6 +88,9 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	ui->mixerDock->setVisible(true);
 	ui->transitionsDock->setVisible(true);
 	controlsDock->setVisible(true);
+	if (unifiedChatDock) {
+		unifiedChatDock->setVisible(true);
+	}
 	statsDock->setVisible(false);
 	statsDock->setFloating(true);
 

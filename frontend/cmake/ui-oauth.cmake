@@ -1,4 +1,20 @@
 target_sources(
   obs-studio
-  PRIVATE oauth/Auth.cpp oauth/Auth.hpp oauth/AuthListener.cpp oauth/AuthListener.hpp oauth/OAuth.cpp oauth/OAuth.hpp
+  PRIVATE
+    oauth/Auth.cpp
+    oauth/Auth.hpp
+    oauth/AuthListener.cpp
+    oauth/AuthListener.hpp
+    oauth/ConnectedAccountManager.cpp
+    oauth/ConnectedAccountManager.hpp
+    oauth/OAuth.cpp
+    oauth/OAuth.hpp
+    oauth/OAuthHttpClient.cpp
+    oauth/OAuthHttpClient.hpp
+    oauth/OAuthPkce.cpp
+    oauth/OAuthPkce.hpp
+    oauth/OAuthTokenSet.cpp
+    oauth/OAuthTokenSet.hpp
+    oauth/PlatformOAuthClient.cpp
+    oauth/PlatformOAuthClient.hpp
 )

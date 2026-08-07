@@ -13,8 +13,14 @@ target_link_libraries(obs-studio PRIVATE OBS::properties-view)
 target_sources(
   obs-studio
   PRIVATE
+    dialogs/AddChannelDialog.cpp
+    dialogs/AddChannelDialog.hpp
     dialogs/LogUploadDialog.cpp
     dialogs/LogUploadDialog.hpp
+    dialogs/ManualChannelDialog.cpp
+    dialogs/ManualChannelDialog.hpp
+    dialogs/MultistreamAccountsDialog.cpp
+    dialogs/MultistreamAccountsDialog.hpp
     dialogs/NameDialog.cpp
     dialogs/NameDialog.hpp
     dialogs/OAuthLogin.cpp

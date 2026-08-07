@@ -40,6 +40,7 @@ target_link_libraries(
     OBS::bpm
 )
 
+include(cmake/ui-chat.cmake)
 include(cmake/ui-components.cmake)
 include(cmake/ui-dialogs.cmake)
 include(cmake/ui-docks.cmake)
@@ -58,6 +59,10 @@ if(NOT OAUTH_BASE_URL)
   set(OAUTH_BASE_URL "https://auth.obsproject.com/" CACHE STRING "Default OAuth base URL")
   mark_as_advanced(OAUTH_BASE_URL)
 endif()
+set(PRODUCT_YOUTUBE_CLIENT_ID "" CACHE STRING "YouTube OAuth client ID for the multistream product")
+set(PRODUCT_TWITCH_CLIENT_ID "" CACHE STRING "Twitch OAuth client ID for the multistream product")
+set(PRODUCT_KICK_CLIENT_ID "" CACHE STRING "Kick OAuth client ID for the multistream product")
+set(PRODUCT_KICK_TOKEN_PROXY "" CACHE STRING "Kick HTTPS token exchange endpoint for the multistream product")
 include(cmake/feature-twitch.cmake)
 include(cmake/feature-restream.cmake)
 include(cmake/feature-youtube.cmake)

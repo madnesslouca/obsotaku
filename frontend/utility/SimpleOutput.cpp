@@ -747,6 +747,22 @@ bool SimpleOutput::StartStreaming(obs_service_t *service)
 		if (multitrackVideo && multitrackVideoActive) {
 			multitrackVideo->StartedStreaming();
 		}
+		if (multiStreamManager->HasEnabledChannels()) {
+			MultiStreamReconnectSettings multistreamReconnect{maxRetries, retryDelay};
+			string multistreamError;
+			/* Indexed by audio track so a channel always gets the track it
+			 * selected; null entries are expected and stay in place. */
+			vector<obs_encoder_t *> audioEncodersByTrack(MAX_AUDIO_MIXES, nullptr);
+			for (int i = 0; i < MAX_AUDIO_MIXES; i++)
+				audioEncodersByTrack[i] = audioTrack[i];
+			if (!multiStreamManager->Start(obs_output_get_video_encoder(streamOutput),
+						       obs_output_get_audio_encoder(streamOutput, 0),
+						       audioEncodersByTrack, multistreamReconnect,
+						       multistreamError)) {
+				blog(LOG_WARNING, "Additional multistream outputs failed to start: %s",
+				     multistreamError.c_str());
+			}
+		}
 		return true;
 	}
 
@@ -922,6 +938,7 @@ bool SimpleOutput::StartReplayBuffer()
 
 void SimpleOutput::StopStreaming(bool force)
 {
+	multiStreamManager->Stop(force);
 	auto output = StreamingOutput();
 	if (force && output) {
 		obs_output_force_stop(output);

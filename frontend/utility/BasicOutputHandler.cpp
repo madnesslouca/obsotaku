@@ -68,6 +68,9 @@ void OBSStopStreaming(void *data, calldata_t *params)
 	output->delayActive = false;
 	output->multitrackVideoActive = false;
 	os_atomic_set_bool(&streaming_active, false);
+	if (output->multiStreamManager) {
+		output->multiStreamManager->Stop(false);
+	}
 	QMetaObject::invokeMethod(output->main, "StreamingStop", Q_ARG(int, code), Q_ARG(QString, arg_last_error));
 }
 

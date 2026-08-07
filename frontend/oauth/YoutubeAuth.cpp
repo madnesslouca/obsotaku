@@ -262,7 +262,7 @@ std::shared_ptr<Auth> YoutubeAuth::Login(QWidget *owner, const std::string &serv
 	// Async Login.
 	connect(&server, &AuthListener::ok, &dlg, [&dlg, &auth_code](QString code) {
 #ifdef _DEBUG
-		blog(LOG_DEBUG, "Got youtube redirected answer: %s", QT_TO_UTF8(code));
+		blog(LOG_DEBUG, "YouTube OAuth redirect accepted");
 #endif
 		auth_code = code;
 		dlg.accept();
