@@ -342,6 +342,27 @@ raw (debug, nunca logar token)
 
 ---
 
+## 11b. Progresso de implementação (2026-08-07)
+
+Fase 1 parcial aplicada no código:
+
+| Item | Estado |
+| --- | --- |
+| Modelo `ChatMessage` com `channelId`, roles, Super Chat / membership | Feito |
+| API `SetChannels` + status por canal | Feito |
+| Twitch badges de papel (MOD/SUB/VIP/HOST) | Feito |
+| Twitch IRC autenticado + `SendText` (PRIVMSG) | Feito (exige re-login com `chat:read`/`chat:edit`) |
+| YouTube Super Chat / membership no poll | Feito |
+| YouTube `liveChatMessages.insert` (envio) | Feito (live ativa) |
+| Dock: filtros dinâmicos, status multi, campo enviar | Feito |
+| Kick envio | Não (sem API pública estável) |
+| Multi-conexão por `channelId` (2× Twitch) | Ainda 1 sessão por plataforma |
+| Emotes gráficos / overlay na cena | Pendente |
+
+Arquivos principais: `frontend/chat/MultiStreamChatAggregator.*`, `frontend/docks/UnifiedChatDock.*`.
+
+---
+
 ## 12. Conclusão
 
 O chat do PRISM é um **produto completo** (dock web + bridge + cloud/MQTT + sources temáticos + ecossistema Naver), não um widget Qt.

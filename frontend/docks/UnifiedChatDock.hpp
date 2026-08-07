@@ -14,8 +14,11 @@
 #include <chat/MultiStreamChatAggregator.hpp>
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QTextBrowser>
 #include <QVBoxLayout>
@@ -37,17 +40,33 @@ protected:
 
 private slots:
 	void OnChatMessage(const ChatMessage &msg);
-	void OnStatusChanged(StreamPlatform platform, ChatConnectionState state, const QString &detail);
+	void OnStatusChanged(const QString &channelId, StreamPlatform platform, ChatConnectionState state,
+			     const QString &detail);
+	void OnSendClicked();
+	void OnSendPlatformChanged(int index);
+	void OnFilterToggled();
 
 private:
+	void RebuildFilters(const std::vector<ChatChannelRef> &channels);
+	void RefreshSendTargets();
+	void UpdateStatusSummary();
+	bool PlatformFilterEnabled(StreamPlatform platform) const;
+	void AppendHtml(const QString &html);
+
 	MultiStreamChatAggregator *aggregator = nullptr;
 
+	QHBoxLayout *filtersLayout = nullptr;
+	QHash<int, QCheckBox *> platformFilters;
 	QTextBrowser *chatView = nullptr;
-	QCheckBox *showTwitch = nullptr;
-	QCheckBox *showYouTube = nullptr;
-	QCheckBox *showKick = nullptr;
 	QCheckBox *autoScroll = nullptr;
 	QLabel *statusLabel = nullptr;
 	QPushButton *clearButton = nullptr;
+	QComboBox *sendPlatform = nullptr;
+	QLineEdit *sendInput = nullptr;
+	QPushButton *sendButton = nullptr;
+	QLabel *sendHint = nullptr;
+
+	QHash<int, ChatConnectionState> platformStates;
+	QHash<int, QString> platformDetails;
 	bool connected = false;
 };

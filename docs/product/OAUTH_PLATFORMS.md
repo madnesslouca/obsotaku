@@ -8,7 +8,7 @@ fallback, not the primary setup experience.
 | Platform | Desktop OAuth flow | Minimum initial scopes | Ingest credentials |
 | --- | --- | --- | --- |
 | YouTube | Authorization Code + PKCE, loopback callback | `https://www.googleapis.com/auth/youtube` | `liveStreams` returns the ingestion address and stream name |
-| Twitch | Public Device Code flow | `channel:read:stream_key`, `channel:manage:broadcast` | Helix `streams/key` returns the key; the ingest API returns the server list |
+| Twitch | Public Device Code flow | `channel:read:stream_key`, `channel:manage:broadcast`, `chat:read`, `chat:edit` | Helix `streams/key` returns the key; the ingest API returns the server list. Chat scopes let the unified dock join IRC as the streamer and reply. Existing Twitch links must reconnect once to pick them up. |
 | Kick | Authorization Code + PKCE | `channel:read`, `streamkey:read`, `channel:write`, `user:read` | `public/v1/channels` returns `stream.url` and `stream.key` |
 
 The app must request additional chat or moderation scopes only when the corresponding feature exists. They are not
