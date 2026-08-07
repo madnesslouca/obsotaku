@@ -67,6 +67,27 @@ void OBSBasic::ResetOutputs()
 	}
 }
 
+std::vector<MultiStreamManager::ChannelOutput> OBSBasic::MultistreamChannelOutputs() const
+{
+	if (!outputHandler || !outputHandler->multiStreamManager)
+		return {};
+	return outputHandler->multiStreamManager->ChannelOutputs();
+}
+
+QString OBSBasic::MultistreamPrimaryChannelName() const
+{
+	if (!outputHandler || !outputHandler->multiStreamManager)
+		return {};
+	const std::string primaryId = outputHandler->multiStreamManager->PrimaryChannelId();
+	if (primaryId.empty())
+		return {};
+	for (const auto &channel : outputHandler->multiStreamManager->ConfiguredChannels()) {
+		if (channel.id == primaryId)
+			return QString::fromStdString(channel.displayName);
+	}
+	return {};
+}
+
 void OBSBasic::RefreshMultistreamPrimaryState()
 {
 	if (!outputHandler || !multistreamChannelBar)

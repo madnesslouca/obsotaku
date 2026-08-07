@@ -382,6 +382,30 @@ vector<MultiStreamChannelSnapshot> MultiStreamManager::Snapshot() const
 	return result;
 }
 
+vector<MultiStreamManager::ChannelOutput> MultiStreamManager::ChannelOutputs() const
+{
+	lock_guard lock(mutex);
+	vector<ChannelOutput> result;
+	result.reserve(channels.size());
+	/* Driven by the configured list rather than by the live destinations, so
+	 * the table shows every enabled channel even before anything is sending.
+	 * A destination only exists while the output is up. */
+	for (const auto &channel : channels) {
+		if (!channel.enabled || channel.id == primaryChannelId)
+			continue;
+
+		ChannelOutput entry{channel.id, channel.displayName, {}};
+		for (const auto &destination : destinations) {
+			if (destination->channel.id == channel.id && destination->output) {
+				entry.output = OBSOutputAutoRelease{obs_output_get_ref(destination->output)};
+				break;
+			}
+		}
+		result.emplace_back(std::move(entry));
+	}
+	return result;
+}
+
 void MultiStreamManager::SetStateCallback(StateCallback callback)
 {
 	lock_guard lock(mutex);
