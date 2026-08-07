@@ -30,6 +30,7 @@
 #ifdef YOUTUBE_ENABLED
 #include <docks/YouTubeAppDock.hpp>
 #endif
+#include <docks/StreamInfoDock.hpp>
 #include <docks/UnifiedChatDock.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
@@ -407,6 +408,9 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 
 	unifiedChatDock = new UnifiedChatDock(this);
 	AddDockWidget(unifiedChatDock, Qt::RightDockWidgetArea);
+
+	streamInfoDock = new StreamInfoDock(this);
+	AddDockWidget(streamInfoDock, Qt::RightDockWidgetArea);
 
 	copyActionsDynamicProperties();
 

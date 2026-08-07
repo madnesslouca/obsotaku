@@ -3247,3 +3247,55 @@ MultistreamAccountsDialog QLabel#accountInstructions {
     border-radius: 8px;
     padding: 8px 10px;
 }
+/* Stream info dock */
+StreamInfoDock QWidget#streamInfoContent {
+    background-color: var(--grey6);
+}
+
+StreamInfoDock QLabel#streamInfoLabel {
+    color: var(--text);
+    font-weight: 600;
+}
+
+StreamInfoDock QLabel#streamInfoHint {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+StreamInfoDock QFrame#streamInfoRow {
+    background-color: var(--grey7);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+}
+
+StreamInfoDock QLabel#streamInfoName {
+    color: var(--text);
+    font-weight: 600;
+}
+
+StreamInfoDock QLabel#streamInfoState {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+StreamInfoDock QLabel#streamInfoState[titleState="own"] {
+    color: #60a5fa;
+}
+
+StreamInfoDock QLabel#streamInfoResult {
+    font-size: var(--font_small);
+    color: var(--text_muted);
+}
+
+StreamInfoDock QLabel#streamInfoResult[resultState="ok"] {
+    color: #4ade80;
+}
+
+StreamInfoDock QLabel#streamInfoResult[resultState="error"] {
+    color: #ff453a;
+}
+
+StreamInfoDock QScrollArea#streamInfoScroll {
+    background: transparent;
+    border: none;
+}

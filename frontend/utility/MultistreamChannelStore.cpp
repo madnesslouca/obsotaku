@@ -108,6 +108,9 @@ vector<MultiStreamChannel> MultistreamChannelStore::Load()
 		channel.accountId = StringValue(config, Key(index, "AccountId"));
 		channel.server = StringValue(config, Key(index, "Server"));
 		channel.avatarUrl = StringValue(config, Key(index, "AvatarUrl"));
+		channel.title = StringValue(config, Key(index, "Title"));
+		channel.categoryId = StringValue(config, Key(index, "CategoryId"));
+		channel.categoryName = StringValue(config, Key(index, "CategoryName"));
 		channel.audioMixIndex = ClampTrack(config_get_int(config, SECTION, Key(index, "AudioTrack").c_str()), 0);
 		channel.vodTrackEnabled = config_get_bool(config, SECTION, Key(index, "VodTrackEnabled").c_str());
 		channel.vodTrackIndex =
@@ -152,8 +155,9 @@ bool MultistreamChannelStore::Save(const vector<MultiStreamChannel> &channels, s
 	 * entries that Load() would read back. */
 	const int previousCount = static_cast<int>(config_get_int(config, SECTION, "Count"));
 	for (int index = 0; index < min(previousCount, MAX_STORED_CHANNELS); ++index) {
-		for (const char *name : {"Id", "Platform", "DisplayName", "AccountId", "Server", "AvatarUrl",
-					 "AudioTrack", "VodTrackEnabled", "VodTrackIndex", "Enabled"})
+		for (const char *name : {"Id", "Platform", "DisplayName", "AccountId", "Server", "AvatarUrl", "Title",
+					 "CategoryId", "CategoryName", "AudioTrack", "VodTrackEnabled",
+					 "VodTrackIndex", "Enabled"})
 			config_remove_value(config, SECTION, Key(index, name).c_str());
 	}
 
@@ -166,6 +170,9 @@ bool MultistreamChannelStore::Save(const vector<MultiStreamChannel> &channels, s
 		config_set_string(config, SECTION, Key(index, "AccountId").c_str(), channel.accountId.c_str());
 		config_set_string(config, SECTION, Key(index, "Server").c_str(), channel.server.c_str());
 		config_set_string(config, SECTION, Key(index, "AvatarUrl").c_str(), channel.avatarUrl.c_str());
+		config_set_string(config, SECTION, Key(index, "Title").c_str(), channel.title.c_str());
+		config_set_string(config, SECTION, Key(index, "CategoryId").c_str(), channel.categoryId.c_str());
+		config_set_string(config, SECTION, Key(index, "CategoryName").c_str(), channel.categoryName.c_str());
 		config_set_int(config, SECTION, Key(index, "AudioTrack").c_str(),
 			       static_cast<int64_t>(channel.audioMixIndex));
 		config_set_bool(config, SECTION, Key(index, "VodTrackEnabled").c_str(), channel.vodTrackEnabled);
