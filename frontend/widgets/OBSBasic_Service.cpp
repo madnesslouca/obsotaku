@@ -27,6 +27,13 @@ void OBSBasic::SaveService()
 		return;
 	}
 
+	/* The promoted service holds a channel's stream key and belongs to the
+	 * session, not to the profile. Writing it to service.json would put that
+	 * key on disk and turn a temporary choice into the saved configuration. */
+	if (multistreamPromotedService) {
+		return;
+	}
+
 	const OBSProfile &currentProfile = GetCurrentProfile();
 
 	const std::filesystem::path jsonFilePath = currentProfile.path / std::filesystem::u8path(OBSServiceFileName);
@@ -124,5 +131,8 @@ void OBSBasic::SetService(obs_service_t *newService)
 {
 	if (newService) {
 		service = newService;
+		/* Whoever calls this is setting the service deliberately, so it is
+		 * no longer the one the multistream bar promoted on its own. */
+		multistreamPromotedService = false;
 	}
 }

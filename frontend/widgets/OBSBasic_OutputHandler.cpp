@@ -95,8 +95,10 @@ void OBSBasic::PrepareMultistreamPrimaryService()
 
 	auto &manager = outputHandler->multiStreamManager;
 	/* A service the user configured wins: the channel bar adds destinations,
-	 * it does not take over an existing setup. */
-	if (obs_service_can_try_to_connect(service)) {
+	 * it does not take over an existing setup. A service this code promoted
+	 * earlier is not that, and must be recomputed instead — otherwise the
+	 * channel behind it would also be fanned out and sent twice. */
+	if (obs_service_can_try_to_connect(service) && !multistreamPromotedService) {
 		manager->SetPrimaryChannelId({});
 		return;
 	}
@@ -121,6 +123,7 @@ void OBSBasic::PrepareMultistreamPrimaryService()
 	/* Only the in-memory service changes; SaveService() is never called here,
 	 * so the Stream settings page the user sees stays untouched. */
 	service = std::move(promoted);
+	multistreamPromotedService = true;
 	manager->SetPrimaryChannelId(primary.id);
 	blog(LOG_INFO, "Multistream: using %s as the main output", primary.displayName.c_str());
 }
