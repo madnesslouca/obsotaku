@@ -16,9 +16,18 @@ static MultiStreamChannel MakeChannel(const ConnectedStreamAccount &account, con
 	const auto &platform = GetStreamPlatformInfo(account.platform);
 	MultiStreamChannel channel;
 	channel.id = string(platform.id) + ":" + account.accountId;
-	channel.displayName = account.displayName.empty() ? string(platform.displayName) : account.displayName;
+	/* The bare platform name is the last resort: a channel labelled "Kick"
+	 * tells the user nothing when several accounts share the platform. */
+	if (!account.displayName.empty() && account.displayName != platform.displayName)
+		channel.displayName = account.displayName;
+	else if (!ingest.displayName.empty())
+		channel.displayName = ingest.displayName;
+	else
+		channel.displayName = string(platform.displayName);
 	channel.platform = account.platform;
 	channel.accountId = account.accountId;
+	/* Always the handle the platform reports, never the editable label. */
+	channel.chatAddress = ingest.displayName;
 	channel.server = ingest.server;
 	channel.streamKey = ingest.streamKey;
 	channel.avatarUrl = ingest.avatarUrl;
@@ -92,8 +101,10 @@ void ConnectedAccountManager::PreserveUserSettings(const MultiStreamChannel &sto
 {
 	if (!stored.id.empty())
 		resolved.id = stored.id;
-	/* A name the user edited outranks whatever the platform reports. */
-	if (!stored.displayName.empty())
+	/* A name the user edited outranks whatever the platform reports. The bare
+	 * platform name is not one of those: it is the placeholder a channel gets
+	 * when nothing was stored, and keeping it would freeze the label there. */
+	if (!stored.displayName.empty() && stored.displayName != GetStreamPlatformInfo(stored.platform).displayName)
 		resolved.displayName = stored.displayName;
 	resolved.audioMixIndex = stored.audioMixIndex;
 	resolved.vodTrackEnabled = stored.vodTrackEnabled;
@@ -105,6 +116,10 @@ void ConnectedAccountManager::PreserveUserSettings(const MultiStreamChannel &sto
 	/* Keep the cached avatar when the platform did not return one. */
 	if (resolved.avatarUrl.empty())
 		resolved.avatarUrl = stored.avatarUrl;
+	/* The chat handle belongs to the platform, so a fresh one always wins;
+	 * the stored one is only a fallback for a reply that omitted it. */
+	if (resolved.chatAddress.empty())
+		resolved.chatAddress = stored.chatAddress;
 }
 
 bool ConnectedAccountManager::Disconnect(const ConnectedStreamAccount &account, string &error)

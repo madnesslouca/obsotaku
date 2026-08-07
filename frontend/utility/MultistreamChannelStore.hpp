@@ -32,6 +32,11 @@ public:
 	static bool Remove(const std::string &channelId, std::string &error);
 	static bool SetEnabled(const std::string &channelId, bool enabled, std::string &error);
 
+	/* Writes back what a credential resolve learned about a channel: its
+	 * display name, chat handle and avatar. Credentials are left out on
+	 * purpose, so the stored channel keeps resolving them on demand. */
+	static bool UpdateIdentity(const std::vector<MultiStreamChannel> &resolved, std::string &error);
+
 	/* Stable id for a new manual destination on this platform. */
 	static std::string NewManualChannelId(StreamPlatform platform);
 	static std::string ChannelIdForAccount(StreamPlatform platform, const std::string &accountId);

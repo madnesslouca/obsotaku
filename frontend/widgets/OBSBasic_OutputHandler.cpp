@@ -20,6 +20,7 @@
 #include "OBSBasic.hpp"
 
 #include <dialogs/MultistreamAccountsDialog.hpp>
+#include <docks/UnifiedChatDock.hpp>
 #include <oauth/ConnectedAccountManager.hpp>
 #include <qt-wrappers.hpp>
 
@@ -221,6 +222,20 @@ void OBSBasic::RestoreMultistreamAccounts()
 					return;
 				}
 				guard->BindMultistreamManager();
+				/* The resolve is the only place the platform handle
+				 * and avatar are learned, and chat reads them back
+				 * from the store, so they have to be written down. */
+				std::string identityError;
+				if (!MultistreamChannelStore::UpdateIdentity(
+					    guard->outputHandler->multiStreamManager->ConfiguredChannels(),
+					    identityError))
+					blog(LOG_WARNING, "Could not store the resolved channel identities: %s",
+					     identityError.c_str());
+				/* Chat may have already connected using whatever the
+				 * store held before the resolve; point it at the
+				 * handle the platform just confirmed. */
+				if (guard->unifiedChatDock && guard->unifiedChatDock->isVisible())
+					guard->unifiedChatDock->AutoConnectAccounts();
 				if (guard->outputHandler->multiStreamManager->ConfiguredChannels().empty() &&
 				    !failureText.isEmpty())
 					guard->multistreamChannelBar->ShowRestoreFailure(failureText);
