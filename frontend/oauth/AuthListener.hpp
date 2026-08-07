@@ -12,7 +12,9 @@ class AuthListener : public QObject {
 
 signals:
 	void ok(const QString &code);
-	void fail();
+	/* reason carries what the platform sent back when it explained itself
+	 * (error / error_description). Empty when the callback said nothing. */
+	void fail(const QString &reason = QString());
 
 protected:
 	void NewConnection();
