@@ -43,14 +43,14 @@ private slots:
 	void OnStatusChanged(const QString &channelId, StreamPlatform platform, ChatConnectionState state,
 			     const QString &detail);
 	void OnSendClicked();
-	void OnSendPlatformChanged(int index);
+	void OnSendChannelChanged(int index);
 	void OnFilterToggled();
 
 private:
 	void RebuildFilters(const std::vector<ChatChannelRef> &channels);
-	void RefreshSendTargets();
+	void RefreshSendTargets(const std::vector<ChatChannelRef> &channels);
 	void UpdateStatusSummary();
-	bool PlatformFilterEnabled(StreamPlatform platform) const;
+	bool ChannelFilterEnabled(const QString &channelId) const;
 	void AppendHtml(const QString &html);
 	void RegisterPlatformIcons();
 	/* Role labels that ended up with artwork; the rest fall back to a pill. */
@@ -59,17 +59,22 @@ private:
 	MultiStreamChatAggregator *aggregator = nullptr;
 
 	QHBoxLayout *filtersLayout = nullptr;
-	QHash<int, QCheckBox *> platformFilters;
+	/* Keyed by channel id, not by platform: two accounts on one platform get
+	 * a filter each, otherwise one of them would be invisible. */
+	QHash<QString, QCheckBox *> channelFilters;
 	QTextBrowser *chatView = nullptr;
 	QCheckBox *autoScroll = nullptr;
 	QLabel *statusLabel = nullptr;
 	QPushButton *clearButton = nullptr;
-	QComboBox *sendPlatform = nullptr;
+	QComboBox *sendChannel = nullptr;
 	QLineEdit *sendInput = nullptr;
 	QPushButton *sendButton = nullptr;
 	QLabel *sendHint = nullptr;
 
-	QHash<int, ChatConnectionState> platformStates;
-	QHash<int, QString> platformDetails;
+	/* Connection state per channel, for the summary line. */
+	QHash<QString, ChatConnectionState> channelStates;
+	QHash<QString, QString> channelDetails;
+	QHash<QString, QString> channelNames;
+	QHash<QString, StreamPlatform> channelPlatforms;
 	bool connected = false;
 };
