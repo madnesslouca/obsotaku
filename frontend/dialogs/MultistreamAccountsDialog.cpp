@@ -213,12 +213,12 @@ quint16 MultistreamAccountsDialog::KickCallbackPortForPlatform()
 }
 
 MultistreamAccountsDialog::MultistreamAccountsDialog(QWidget *parent, vector<MultiStreamChannel> existingChannels,
-						     optional<StreamPlatform> newAccountPlatform)
+						     optional<StreamPlatform> focusedPlatform)
 	: QDialog(parent)
 {
-	setWindowTitle(newAccountPlatform
+	setWindowTitle(focusedPlatform
 			       ? QTStr("Multistream.Accounts.SingleTitle").arg(
-					 StreamPlatformDisplayName(*newAccountPlatform))
+					 StreamPlatformDisplayName(*focusedPlatform))
 			       : QTStr("Multistream.Accounts.Title"));
 	setMinimumWidth(660);
 	setModal(true);
@@ -241,7 +241,7 @@ MultistreamAccountsDialog::MultistreamAccountsDialog(QWidget *parent, vector<Mul
 	for (auto &channel : existingChannels) {
 		if (GetStreamPlatformInfo(channel.platform).ingestMode != StreamIngestMode::ResolvedByApi)
 			continue;
-		if (newAccountPlatform && channel.platform != *newAccountPlatform)
+		if (focusedPlatform && channel.platform != *focusedPlatform)
 			continue;
 
 		auto row = make_unique<AccountRow>();
@@ -256,8 +256,8 @@ MultistreamAccountsDialog::MultistreamAccountsDialog(QWidget *parent, vector<Mul
 	/* Focused on one platform, only that group is shown; otherwise every
 	 * platform gets a group so a first account can be added from here. */
 	vector<StreamPlatform> platforms;
-	if (newAccountPlatform) {
-		platforms.push_back(*newAccountPlatform);
+	if (focusedPlatform) {
+		platforms.push_back(*focusedPlatform);
 	} else {
 		for (const auto platform : {StreamPlatform::YouTube, StreamPlatform::Twitch, StreamPlatform::Kick})
 			platforms.push_back(platform);

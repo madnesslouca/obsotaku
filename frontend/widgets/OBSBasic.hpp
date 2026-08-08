@@ -709,7 +709,7 @@ private:
 	void AddMultistreamChannel();
 	void ManageMultistreamAccount(const QString &channelId);
 	void OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedChannels,
-				     std::optional<StreamPlatform> newAccountPlatform);
+				     std::optional<StreamPlatform> focusedPlatform);
 	void EditMultistreamChannel(const QString &channelId);
 	void RemoveMultistreamChannel(const QString &channelId);
 	void ReconnectMultistreamChannel(const QString &channelId);

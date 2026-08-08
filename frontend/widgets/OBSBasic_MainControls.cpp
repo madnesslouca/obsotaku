@@ -721,9 +721,9 @@ void OBSBasic::ApplyMultistreamChannels(std::vector<MultiStreamChannel> channels
 }
 
 void OBSBasic::OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedChannels,
-				       std::optional<StreamPlatform> newAccountPlatform)
+				       std::optional<StreamPlatform> focusedPlatform)
 {
-	MultistreamAccountsDialog dialog(this, std::move(managedChannels), newAccountPlatform);
+	MultistreamAccountsDialog dialog(this, std::move(managedChannels), focusedPlatform);
 	dialog.exec();
 	if (!outputHandler)
 		return;
@@ -774,7 +774,10 @@ void OBSBasic::ManageMultistreamAccount(const QString &channelId)
 	});
 	if (existing == channels.end())
 		return;
-	OpenMultistreamAccounts({*existing}, std::nullopt);
+	/* Managing one channel's account shows that platform alone. Without this
+	 * the dialog opens on every platform, and the one the user clicked is
+	 * buried among groups that have nothing to do with it. */
+	OpenMultistreamAccounts({*existing}, existing->platform);
 }
 
 void OBSBasic::AddMultistreamChannel()

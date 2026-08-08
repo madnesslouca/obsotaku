@@ -37,11 +37,12 @@ class MultistreamAccountsDialog : public QDialog {
 	Q_OBJECT
 
 public:
-	/* existingChannels are the OAuth channels to manage. Pass newAccountPlatform
-	 * to focus a single platform, which is what picking it in the add-channel
-	 * grid means. */
+	/* existingChannels are the OAuth channels to manage. Pass focusedPlatform to
+	 * show that platform alone — what both picking it in the add-channel grid
+	 * and managing one channel's account mean. Left empty, every platform gets
+	 * a group so a first account can be connected from here. */
 	MultistreamAccountsDialog(QWidget *parent, std::vector<MultiStreamChannel> existingChannels,
-				  std::optional<StreamPlatform> newAccountPlatform = std::nullopt);
+				  std::optional<StreamPlatform> focusedPlatform = std::nullopt);
 
 	/* Channels this dialog produced, including edits. */
 	std::vector<MultiStreamChannel> Channels() const;
