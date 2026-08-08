@@ -9,6 +9,7 @@
 
 #include "UnifiedChatDock.hpp"
 
+#include <utility/ChatBadgeIcons.hpp>
 #include <utility/MultistreamChannelStore.hpp>
 #include <utility/PlatformIconProvider.hpp>
 #include <utility/StreamPlatformDisplay.hpp>
@@ -30,11 +31,26 @@ namespace {
 constexpr int MAX_CHAT_BLOCKS = 500;
 constexpr int PLATFORM_ICON_SIZE = 14;
 
+constexpr int ROLE_BADGE_SIZE = 14;
+
 /* Document resource name the platform logo is registered under, so a message
  * row can reference the artwork with a plain <img>. */
 QString PlatformIconUrl(StreamPlatform platform)
 {
 	return QStringLiteral("platform:%1").arg(StreamPlatformId(platform));
+}
+
+QString RoleBadgeUrl(const QString &roleLabel)
+{
+	return QStringLiteral("badge:%1").arg(roleLabel.toLower());
+}
+
+/* Every role the aggregator can report, in the order they are drawn. */
+const QStringList &RoleBadgeLabels()
+{
+	static const QStringList labels{QStringLiteral("HOST"), QStringLiteral("MOD"), QStringLiteral("VIP"),
+					QStringLiteral("SUB")};
+	return labels;
 }
 
 QString PlatformName(StreamPlatform platform)
@@ -74,20 +90,29 @@ QString RoleBadgeHtml(const QString &label, const QString &bg, const QString &fg
 		.arg(bg, fg, label.toHtmlEscaped());
 }
 
-QString RolesHtml(const ChatMessage &msg)
+/* Badges the artwork covers become an icon; anything else keeps the lettered
+ * pill, so an unknown role is still shown rather than silently dropped. */
+QString RolesHtml(const ChatMessage &msg, const QSet<QString> &drawnRoles)
 {
 	QString html;
 	for (const QString &badge : msg.roleBadges) {
-		if (badge == QStringLiteral("HOST"))
+		if (drawnRoles.contains(badge)) {
+			html += QStringLiteral("<img src=\"%1\" width=\"%2\" height=\"%2\" title=\"%3\" "
+					       "style=\"vertical-align:middle;\">&nbsp;")
+					.arg(RoleBadgeUrl(badge))
+					.arg(ROLE_BADGE_SIZE)
+					.arg(badge.toHtmlEscaped());
+		} else if (badge == QStringLiteral("HOST")) {
 			html += RoleBadgeHtml(badge, QStringLiteral("#7c3aed"), QStringLiteral("#fff"));
-		else if (badge == QStringLiteral("MOD"))
+		} else if (badge == QStringLiteral("MOD")) {
 			html += RoleBadgeHtml(badge, QStringLiteral("#16a34a"), QStringLiteral("#fff"));
-		else if (badge == QStringLiteral("VIP"))
+		} else if (badge == QStringLiteral("VIP")) {
 			html += RoleBadgeHtml(badge, QStringLiteral("#db2777"), QStringLiteral("#fff"));
-		else if (badge == QStringLiteral("SUB"))
+		} else if (badge == QStringLiteral("SUB")) {
 			html += RoleBadgeHtml(badge, QStringLiteral("#2563eb"), QStringLiteral("#fff"));
-		else
+		} else {
 			html += RoleBadgeHtml(badge, QStringLiteral("#ca8a04"), QStringLiteral("#111"));
+		}
 	}
 	return html;
 }
@@ -116,7 +141,7 @@ QString StatusText(ChatConnectionState state, const QString &platformName, const
 	return {};
 }
 
-QString MessageRowHtml(const ChatMessage &msg)
+QString MessageRowHtml(const ChatMessage &msg, const QSet<QString> &drawnRoles)
 {
 	const QString nickColor = SafeUserColor(msg.userColor, msg.platform);
 	QString rowStyle = QStringLiteral("margin:0 0 8px 0; padding:6px 8px; border-radius:6px;");
@@ -148,7 +173,8 @@ QString MessageRowHtml(const ChatMessage &msg)
 			      "<div style=\"margin-bottom:2px;\">%2 %3"
 			      "<span style=\"font-size:10px; color:#888;\">&nbsp;%4</span>%5%6</div>"
 			      "<div><b style=\"color:%7;\">%8:</b>&nbsp;%9</div></div>")
-		.arg(rowStyle, PlatformBadgeHtml(msg.platform), RolesHtml(msg), msg.timestamp.toHtmlEscaped(),
+		.arg(rowStyle, PlatformBadgeHtml(msg.platform), RolesHtml(msg, drawnRoles),
+		     msg.timestamp.toHtmlEscaped(),
 		     channelBit, paid, nickColor, msg.senderName.toHtmlEscaped(), msg.messageText.toHtmlEscaped());
 }
 } // namespace
@@ -431,6 +457,17 @@ void UnifiedChatDock::RegisterPlatformIcons()
 		chatView->document()->addResource(QTextDocument::ImageResource, QUrl(PlatformIconUrl(platform)),
 						  QVariant(glyph));
 	}
+
+	/* A role with no artwork is left out of the set and keeps the text pill. */
+	drawnRoleBadges.clear();
+	for (const QString &label : RoleBadgeLabels()) {
+		QPixmap glyph = ChatBadgeIcons::Glyph(label, ROLE_BADGE_SIZE, ratio);
+		if (glyph.isNull())
+			continue;
+		chatView->document()->addResource(QTextDocument::ImageResource, QUrl(RoleBadgeUrl(label)),
+						  QVariant(glyph));
+		drawnRoleBadges.insert(label);
+	}
 }
 
 void UnifiedChatDock::AppendHtml(const QString &html)
@@ -453,7 +490,7 @@ void UnifiedChatDock::OnChatMessage(const ChatMessage &msg)
 {
 	if (!PlatformFilterEnabled(msg.platform))
 		return;
-	AppendHtml(MessageRowHtml(msg));
+	AppendHtml(MessageRowHtml(msg, drawnRoleBadges));
 }
 
 void UnifiedChatDock::OnStatusChanged(const QString &, StreamPlatform platform, ChatConnectionState state,

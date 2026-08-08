@@ -53,6 +53,8 @@ private:
 	bool PlatformFilterEnabled(StreamPlatform platform) const;
 	void AppendHtml(const QString &html);
 	void RegisterPlatformIcons();
+	/* Role labels that ended up with artwork; the rest fall back to a pill. */
+	QSet<QString> drawnRoleBadges;
 
 	MultiStreamChatAggregator *aggregator = nullptr;
 
