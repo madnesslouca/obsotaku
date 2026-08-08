@@ -29,6 +29,8 @@ target_sources(
     utility/MultitrackVideoOutput.hpp
     utility/ChannelAvatarCache.cpp
     utility/ChannelAvatarCache.hpp
+    utility/ChatBadgeIcons.cpp
+    utility/ChatBadgeIcons.hpp
     utility/MultiStreamManager.cpp
     utility/MultiStreamManager.hpp
     utility/MultistreamChannelStore.cpp
