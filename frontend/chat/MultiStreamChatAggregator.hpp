@@ -9,65 +9,18 @@
 
 #pragma once
 
-#include <utility/StreamPlatform.hpp>
+#include "ChatConnection.hpp"
 
-#include <QDateTime>
 #include <QNetworkAccessManager>
 #include <QObject>
-#include <QPointer>
-#include <QSslSocket>
-#include <QTimer>
 
-#include <functional>
+#include <memory>
 #include <vector>
 
-enum class ChatConnectionState {
-	Disconnected,
-	Connecting,
-	Connected,
-	Failed,
-	MissingCredential,
-	WaitingForBroadcast,
-	/* The platform has no public chat API we can read. */
-	Unsupported,
-};
-
-enum class ChatMessageKind {
-	Normal,
-	SuperChat,
-	Membership,
-	System,
-};
-
-/* One multistream destination the dock wants chat for. address is the IRC
- * login / Kick slug / YouTube account id depending on the platform. */
-struct ChatChannelRef {
-	QString channelId;
-	StreamPlatform platform = StreamPlatform::CustomRtmp;
-	QString address;
-	QString displayName;
-	QString accountId;
-};
-
-struct ChatMessage {
-	QString channelId;
-	StreamPlatform platform = StreamPlatform::CustomRtmp;
-	QString channelName;
-	QString senderName;
-	QString messageText;
-	QString userColor;
-	QString timestamp;
-	bool isModerator = false;
-	bool isSubscriber = false;
-	bool isVip = false;
-	bool isBroadcaster = false;
-	/* Short role labels shown next to the nick (MOD, SUB, VIP, ...). */
-	QStringList roleBadges;
-	ChatMessageKind kind = ChatMessageKind::Normal;
-	QString paidAmount;
-	QString paidCurrency;
-};
-
+/* Holds one live chat connection per destination and forwards what they say.
+ *
+ * Every method addresses a channel by its id rather than by platform, so two
+ * accounts on the same platform are two independent connections. */
 class MultiStreamChatAggregator : public QObject {
 	Q_OBJECT
 
@@ -75,17 +28,19 @@ public:
 	explicit MultiStreamChatAggregator(QObject *parent = nullptr);
 	~MultiStreamChatAggregator() override;
 
-	/* Replaces the live chat set: disconnects anything no longer listed and
-	 * connects each new destination. One live connection per platform for
-	 * now (first enabled wins); channelId is still tracked on every event. */
+	/* Replaces the live set: drops connections no longer listed, keeps the
+	 * ones whose target did not change, and starts the new ones. */
 	void SetChannels(const std::vector<ChatChannelRef> &channels);
 	void DisconnectAll();
 
-	bool IsConnected(StreamPlatform platform) const;
-	bool CanSend(StreamPlatform platform) const;
-	/* Sends on the live connection for that platform. Returns false when
-	 * the path is unavailable (anonymous Twitch, no YT chat id, ...). */
-	bool SendText(StreamPlatform platform, const QString &text, QString &error);
+	bool IsConnected(const QString &channelId) const;
+	bool CanSend(const QString &channelId) const;
+	/* False when the message could not be handed to the platform at all. */
+	bool SendText(const QString &channelId, const QString &text, QString &error);
+
+	/* Whether this platform has a send path at all, regardless of any
+	 * connection being up. Kick chat is read-only in this build. */
+	static bool PlatformCanSend(StreamPlatform platform);
 
 signals:
 	void messageReceived(const ChatMessage &message);
@@ -93,87 +48,10 @@ signals:
 			   const QString &detail);
 
 private:
-	// Twitch IRC
-	void StartTwitch();
-	void DisconnectAllTwitch();
-	void LoadTwitchAuthAndStart();
-	void OpenTwitchSocket();
-	void OnTwitchConnected();
-	void OnTwitchReadyRead();
-	void OnTwitchError(QAbstractSocket::SocketError socketError);
-	void OnTwitchDisconnected();
-	void ParseTwitchIrcLine(const QString &line);
-
-	// Kick WebSocket (Pusher)
-	void StartKick();
-	void DisconnectAllKick();
-	void ResolveKickChatroom();
-	void OpenKickSocket();
-	void OnKickConnected();
-	void OnKickReadyRead();
-	void OnKickError(QAbstractSocket::SocketError socketError);
-	void OnKickDisconnected();
-	bool ProcessKickHandshake();
-	void ProcessKickFrames();
-	void SendKickFrame(quint8 opcode, const QByteArray &payload);
-	void HandleKickPayload(const QByteArray &payload);
-
-	// YouTube live chat
-	void StartYouTube();
-	void DisconnectAllYouTube();
-	void ResolveYouTubeLiveChat();
-	void PollYouTubeChat();
-	void WithYouTubeAccessToken(std::function<void(const QString &)> continuation);
-	void ScheduleYouTubeRetry(int milliseconds);
-	/* False when the request could not even be started; a failure after that
-	 * arrives on statusChanged, because the reply is async. */
-	bool SendYouTubeText(const QString &text, QString &error);
-
-	void EmitStatus(StreamPlatform platform, ChatConnectionState state, const QString &detail = {});
-	void ScheduleReconnect(StreamPlatform platform);
-	QString ChannelIdFor(StreamPlatform platform) const;
-	QString DisplayNameFor(StreamPlatform platform) const;
+	ChatConnection *FindConnection(const QString &channelId) const;
+	static std::unique_ptr<ChatConnection> MakeConnection(const ChatChannelRef &channel,
+							      QNetworkAccessManager *netManager, QObject *parent);
 
 	QNetworkAccessManager *netManager = nullptr;
-
-	// Twitch
-	QPointer<QSslSocket> twitchSocket;
-	QString twitchChannelId;
-	QString twitchChannel;
-	QString twitchDisplayName;
-	QString twitchAccountId;
-	QString twitchOauthToken;
-	QString twitchIrcNick;
-	bool twitchAuthenticated = false;
-	QTimer *twitchReconnectTimer = nullptr;
-	int twitchReconnectDelayMs = 5000;
-	bool twitchConnected = false;
-
-	// Kick
-	QPointer<QSslSocket> kickSocket;
-	QByteArray kickBuffer;
-	QByteArray kickFragment;
-	QByteArray kickHandshakeKey;
-	QString kickChannelId;
-	QString kickChatroomId;
-	QString kickChannel;
-	QString kickDisplayName;
-	QTimer *kickReconnectTimer = nullptr;
-	int kickReconnectDelayMs = 5000;
-	quint8 kickFragmentOpcode = 0;
-	bool kickHandshakeComplete = false;
-	bool kickConnected = false;
-
-	// YouTube
-	QTimer *ytPollTimer = nullptr;
-	QString ytChannelId;
-	QString ytAccountId;
-	QString ytDisplayName;
-	QString ytLiveChatId;
-	QString ytNextPageToken;
-	QString ytAccessToken;
-	qint64 ytAccessTokenExpiresAt = 0;
-	bool ytPrimed = false;
-	bool ytConnected = false;
-	bool ytRequestInFlight = false;
+	std::vector<std::unique_ptr<ChatConnection>> connections;
 };

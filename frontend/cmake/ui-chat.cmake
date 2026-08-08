@@ -1,1 +1,14 @@
-target_sources(obs-studio PRIVATE chat/MultiStreamChatAggregator.cpp chat/MultiStreamChatAggregator.hpp)
+target_sources(
+  obs-studio
+  PRIVATE
+    chat/ChatConnection.cpp
+    chat/ChatConnection.hpp
+    chat/KickChatConnection.cpp
+    chat/KickChatConnection.hpp
+    chat/MultiStreamChatAggregator.cpp
+    chat/MultiStreamChatAggregator.hpp
+    chat/TwitchChatConnection.cpp
+    chat/TwitchChatConnection.hpp
+    chat/YouTubeChatConnection.cpp
+    chat/YouTubeChatConnection.hpp
+)

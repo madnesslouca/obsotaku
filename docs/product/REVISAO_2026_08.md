@@ -121,7 +121,21 @@ omissão, mas não a resolve.
 Não são defeitos: são consequências de decisões tomadas. Estão aqui para serem
 decididas de novo, agora com uso real.
 
-### L1 — Uma conexão de chat por plataforma
+### L1 — Uma conexão de chat por plataforma — **resolvido em 2026-08-08**
+
+O agregador foi dividido: `ChatConnection` é a base, com o canal, o backoff e a
+forma de reportar status; `TwitchChatConnection`, `KickChatConnection` e
+`YouTubeChatConnection` carregam cada protocolo. O agregador virou uma lista de
+conexões endereçadas por id de canal, e a dock passou a filtrar, listar e
+reportar por canal em vez de por plataforma.
+
+Verificado com dois canais Kick ao vivo ao mesmo tempo: dois chatrooms
+resolvidos, dois sockets abertos, mensagens dos dois intercaladas com a origem
+marcada, e o filtro de um deles removendo só as dele.
+
+O texto abaixo é o diagnóstico original.
+
+
 
 `MultiStreamChatAggregator::SetChannels` usa `FirstOf()` e guarda um único
 conjunto de estado por plataforma (`twitchChannel`, `kickChannel`, `ytAccountId`).

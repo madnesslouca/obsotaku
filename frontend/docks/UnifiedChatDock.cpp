@@ -222,9 +222,9 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent) : OBSDock(parent)
 	sendRow->setContentsMargins(0, 0, 0, 0);
 	sendRow->setSpacing(6);
 
-	sendPlatform = new QComboBox(mainWidget);
-	sendPlatform->setObjectName(QStringLiteral("unifiedChatSendPlatform"));
-	sendPlatform->setMinimumWidth(110);
+	sendChannel = new QComboBox(mainWidget);
+	sendChannel->setObjectName(QStringLiteral("unifiedChatSendPlatform"));
+	sendChannel->setMinimumWidth(140);
 
 	sendInput = new QLineEdit(mainWidget);
 	sendInput->setObjectName(QStringLiteral("unifiedChatSendInput"));
@@ -234,7 +234,7 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent) : OBSDock(parent)
 	sendButton->setObjectName(QStringLiteral("unifiedChatSendButton"));
 	sendButton->setEnabled(false);
 
-	sendRow->addWidget(sendPlatform);
+	sendRow->addWidget(sendChannel);
 	sendRow->addWidget(sendInput, 1);
 	sendRow->addWidget(sendButton);
 	layout->addLayout(sendRow);
@@ -256,8 +256,8 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent) : OBSDock(parent)
 	connect(clearButton, &QPushButton::clicked, chatView, &QTextBrowser::clear);
 	connect(sendButton, &QPushButton::clicked, this, &UnifiedChatDock::OnSendClicked);
 	connect(sendInput, &QLineEdit::returnPressed, this, &UnifiedChatDock::OnSendClicked);
-	connect(sendPlatform, qOverload<int>(&QComboBox::currentIndexChanged), this,
-		&UnifiedChatDock::OnSendPlatformChanged);
+	connect(sendChannel, qOverload<int>(&QComboBox::currentIndexChanged), this,
+		&UnifiedChatDock::OnSendChannelChanged);
 }
 
 void UnifiedChatDock::showEvent(QShowEvent *event)
@@ -279,28 +279,29 @@ void UnifiedChatDock::RebuildFilters(const std::vector<ChatChannelRef> &channels
 			widget->deleteLater();
 		delete item;
 	}
-	platformFilters.clear();
+	channelFilters.clear();
+	channelNames.clear();
+	channelPlatforms.clear();
 
-	QSet<int> seen;
+	/* One filter per channel rather than per platform: with two accounts on
+	 * the same platform, a single checkbox would hide both at once and the
+	 * second account would have no label of its own anywhere. */
 	for (const auto &channel : channels) {
 		if (!GetStreamPlatformInfo(channel.platform).supportsChat)
 			continue;
-		const int key = static_cast<int>(channel.platform);
-		if (seen.contains(key))
-			continue;
-		seen.insert(key);
 
-		auto *box = new QCheckBox(PlatformName(channel.platform), this->widget());
+		const QString label = channel.displayName.isEmpty() ? channel.address : channel.displayName;
+		channelNames.insert(channel.channelId, label);
+		channelPlatforms.insert(channel.channelId, channel.platform);
+
+		auto *box = new QCheckBox(label, this->widget());
 		box->setChecked(true);
-		box->setObjectName(QStringLiteral("chatFilter_%1")
-					   .arg(QString::fromUtf8(GetStreamPlatformInfo(channel.platform).id.data(),
-								  static_cast<qsizetype>(
-									  GetStreamPlatformInfo(channel.platform).id.size()))));
+		box->setToolTip(PlatformName(channel.platform));
 		box->setStyleSheet(QStringLiteral("QCheckBox { color: %1; font-weight: 600; }")
 					   .arg(PlatformColor(channel.platform)));
 		connect(box, &QCheckBox::toggled, this, &UnifiedChatDock::OnFilterToggled);
 		filtersLayout->addWidget(box);
-		platformFilters.insert(key, box);
+		channelFilters.insert(channel.channelId, box);
 	}
 }
 
@@ -336,7 +337,7 @@ void UnifiedChatDock::AutoConnectAccounts()
 	}
 
 	RebuildFilters(targets);
-	RefreshSendTargets();
+	RefreshSendTargets(targets);
 
 	if (targets.empty()) {
 		connected = false;
@@ -349,76 +350,87 @@ void UnifiedChatDock::AutoConnectAccounts()
 	aggregator->SetChannels(targets);
 	connected = true;
 	UpdateStatusSummary();
-	OnSendPlatformChanged(sendPlatform->currentIndex());
+	OnSendChannelChanged(sendChannel->currentIndex());
 }
 
 void UnifiedChatDock::DisconnectAccounts()
 {
-	if (!connected && platformStates.isEmpty()) {
+	if (!connected && channelStates.isEmpty()) {
 		aggregator->DisconnectAll();
 		return;
 	}
 	aggregator->DisconnectAll();
 	connected = false;
-	platformStates.clear();
-	platformDetails.clear();
+	channelStates.clear();
+	channelDetails.clear();
 }
 
-void UnifiedChatDock::RefreshSendTargets()
+void UnifiedChatDock::RefreshSendTargets(const std::vector<ChatChannelRef> &channels)
 {
-	const int previous = sendPlatform->currentData().toInt();
-	sendPlatform->blockSignals(true);
-	sendPlatform->clear();
+	const QString previous = sendChannel->currentData().toString();
+	sendChannel->blockSignals(true);
+	sendChannel->clear();
 
-	for (auto it = platformFilters.constBegin(); it != platformFilters.constEnd(); ++it) {
-		const auto platform = static_cast<StreamPlatform>(it.key());
-		if (!GetStreamPlatformInfo(platform).supportsChat)
+	for (const auto &channel : channels) {
+		if (!MultiStreamChatAggregator::PlatformCanSend(channel.platform))
 			continue;
-		/* Kick has no public send path in this build. */
-		if (platform == StreamPlatform::Kick)
-			continue;
-		sendPlatform->addItem(PlatformName(platform), it.key());
+		/* The platform is in the label because two channels can share a
+		 * name across platforms, and the target has to be unambiguous. */
+		const QString label = channel.displayName.isEmpty() ? channel.address : channel.displayName;
+		sendChannel->addItem(QStringLiteral("%1 (%2)").arg(label, PlatformName(channel.platform)),
+				     channel.channelId);
 	}
 
-	const int restore = sendPlatform->findData(previous);
-	sendPlatform->setCurrentIndex(restore >= 0 ? restore : 0);
-	sendPlatform->blockSignals(false);
-	sendPlatform->setEnabled(sendPlatform->count() > 0);
+	const int restore = sendChannel->findData(previous);
+	sendChannel->setCurrentIndex(restore >= 0 ? restore : 0);
+	sendChannel->blockSignals(false);
+	sendChannel->setEnabled(sendChannel->count() > 0);
 }
 
-void UnifiedChatDock::OnSendPlatformChanged(int)
+void UnifiedChatDock::OnSendChannelChanged(int)
 {
-	if (sendPlatform->count() == 0) {
+	if (sendChannel->count() == 0) {
 		sendButton->setEnabled(false);
 		sendInput->setEnabled(false);
 		sendHint->setText(QTStr("Multistream.Chat.SendUnavailable"));
 		return;
 	}
 
-	const auto platform = static_cast<StreamPlatform>(sendPlatform->currentData().toInt());
-	const bool can = aggregator->CanSend(platform);
+	const QString channelId = sendChannel->currentData().toString();
+	const bool can = aggregator->CanSend(channelId);
 	sendButton->setEnabled(can);
 	sendInput->setEnabled(true);
 
-	if (platform == StreamPlatform::Twitch && !can)
+	const QString name = channelNames.value(channelId, sendChannel->currentText());
+	if (can) {
+		sendHint->setText(QTStr("Multistream.Chat.SendReady").arg(name));
+		return;
+	}
+
+	/* A destination that cannot take a message says why: the two reasons ask
+	 * different things of the user — reconnect the account, or go live. */
+	switch (channelPlatforms.value(channelId, StreamPlatform::CustomRtmp)) {
+	case StreamPlatform::Twitch:
 		sendHint->setText(QTStr("Multistream.Chat.SendNeedsTwitchAuth"));
-	else if (platform == StreamPlatform::YouTube && !can)
+		break;
+	case StreamPlatform::YouTube:
 		sendHint->setText(QTStr("Multistream.Chat.SendNeedsYouTubeLive"));
-	else if (can)
-		sendHint->setText(QTStr("Multistream.Chat.SendReady").arg(PlatformName(platform)));
-	else
+		break;
+	default:
 		sendHint->setText(QTStr("Multistream.Chat.SendUnavailable"));
+		break;
+	}
 }
 
 void UnifiedChatDock::OnSendClicked()
 {
-	if (sendPlatform->count() == 0)
+	if (sendChannel->count() == 0)
 		return;
 
-	const auto platform = static_cast<StreamPlatform>(sendPlatform->currentData().toInt());
+	const QString channelId = sendChannel->currentData().toString();
 	const QString text = sendInput->text();
 	QString error;
-	if (!aggregator->SendText(platform, text, error)) {
+	if (!aggregator->SendText(channelId, text, error)) {
 		if (error == QStringLiteral("twitch-anonymous"))
 			sendHint->setText(QTStr("Multistream.Chat.SendNeedsTwitchAuth"));
 		else if (error == QStringLiteral("youtube-not-live"))
@@ -431,7 +443,7 @@ void UnifiedChatDock::OnSendClicked()
 	}
 
 	sendInput->clear();
-	OnSendPlatformChanged(sendPlatform->currentIndex());
+	OnSendChannelChanged(sendChannel->currentIndex());
 }
 
 void UnifiedChatDock::OnFilterToggled()
@@ -439,9 +451,9 @@ void UnifiedChatDock::OnFilterToggled()
 	/* Filters only hide future rows; already rendered messages stay. */
 }
 
-bool UnifiedChatDock::PlatformFilterEnabled(StreamPlatform platform) const
+bool UnifiedChatDock::ChannelFilterEnabled(const QString &channelId) const
 {
-	const auto *box = platformFilters.value(static_cast<int>(platform), nullptr);
+	const auto *box = channelFilters.value(channelId, nullptr);
 	return !box || box->isChecked();
 }
 
@@ -488,31 +500,33 @@ void UnifiedChatDock::AppendHtml(const QString &html)
 
 void UnifiedChatDock::OnChatMessage(const ChatMessage &msg)
 {
-	if (!PlatformFilterEnabled(msg.platform))
+	if (!ChannelFilterEnabled(msg.channelId))
 		return;
 	AppendHtml(MessageRowHtml(msg, drawnRoleBadges));
 }
 
-void UnifiedChatDock::OnStatusChanged(const QString &, StreamPlatform platform, ChatConnectionState state,
+void UnifiedChatDock::OnStatusChanged(const QString &channelId, StreamPlatform platform, ChatConnectionState state,
 				      const QString &detail)
 {
-	platformStates.insert(static_cast<int>(platform), state);
-	platformDetails.insert(static_cast<int>(platform), detail);
+	channelStates.insert(channelId, state);
+	channelDetails.insert(channelId, detail);
+	if (!channelNames.contains(channelId))
+		channelNames.insert(channelId, PlatformName(platform));
 	UpdateStatusSummary();
-	OnSendPlatformChanged(sendPlatform->currentIndex());
+	OnSendChannelChanged(sendChannel->currentIndex());
 }
 
 void UnifiedChatDock::UpdateStatusSummary()
 {
-	if (platformStates.isEmpty()) {
+	if (channelStates.isEmpty()) {
 		statusLabel->setText(QTStr("Multistream.Chat.Ready"));
 		return;
 	}
 
+	/* Named by channel rather than by platform: with two accounts on one
+	 * platform, "Conectado ao chat da Twitch" twice says nothing. */
 	QStringList parts;
-	for (auto it = platformStates.constBegin(); it != platformStates.constEnd(); ++it) {
-		const auto platform = static_cast<StreamPlatform>(it.key());
-		parts << StatusText(it.value(), PlatformName(platform), platformDetails.value(it.key()));
-	}
+	for (auto it = channelStates.constBegin(); it != channelStates.constEnd(); ++it)
+		parts << StatusText(it.value(), channelNames.value(it.key(), it.key()), channelDetails.value(it.key()));
 	statusLabel->setText(parts.join(QStringLiteral(" · ")));
 }
