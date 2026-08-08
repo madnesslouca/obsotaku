@@ -295,10 +295,9 @@ bool MultiStreamChatAggregator::SendText(StreamPlatform platform, const QString 
 			error = "youtube-not-live";
 			return false;
 		}
-		/* Network result is async; failures surface via statusChanged. */
-		SendYouTubeText(trimmed, error);
-		error.clear();
-		return true;
+		/* The request itself is async, so only a refusal to even start it
+		 * can be reported here; everything later arrives on statusChanged. */
+		return SendYouTubeText(trimmed, error);
 	}
 
 	error = "unsupported";
@@ -410,11 +409,12 @@ void MultiStreamChatAggregator::OnTwitchConnected()
 	twitchSocket->write("CAP REQ :twitch.tv/tags twitch.tv/commands\r\n");
 
 	if (twitchAuthenticated && !twitchOauthToken.isEmpty()) {
-		/* IRC nick is the streamer's login. Prefer the stored display name
-		 * (usually the login) and fall back to the channel being joined. */
-		twitchIrcNick = twitchDisplayName.trimmed().toLower();
-		if (twitchIrcNick.isEmpty())
-			twitchIrcNick = twitchChannel;
+		/* The nick has to be the account's Twitch login, which is what
+		 * twitchChannel holds. Taking it from the display name instead meant
+		 * that renaming a channel in the interface produced a nick Twitch
+		 * rejects — with a space in it, even — and the session dropped to
+		 * anonymous, so reading kept working and sending quietly stopped. */
+		twitchIrcNick = twitchChannel;
 		twitchSocket->write(QStringLiteral("PASS oauth:%1\r\n").arg(twitchOauthToken).toUtf8());
 		twitchSocket->write(QStringLiteral("NICK %1\r\n").arg(twitchIrcNick).toUtf8());
 	} else {
@@ -516,10 +516,20 @@ void MultiStreamChatAggregator::ParseTwitchIrcLine(const QString &line)
 				msg.isSubscriber = true;
 			else if (key == QStringLiteral("vip") && value == QStringLiteral("1"))
 				msg.isVip = true;
-			else if (key == QStringLiteral("badges") && value.contains(QStringLiteral("broadcaster/")))
-				msg.isBroadcaster = true;
-			else if (key == QStringLiteral("badges") && value.contains(QStringLiteral("vip/")))
-				msg.isVip = true;
+			else if (key == QStringLiteral("badges")) {
+				/* One pass over the whole list: chained else-if on the
+				 * same key would stop at the first badge that matched
+				 * and drop every other role the chatter holds. */
+				msg.isBroadcaster =
+					msg.isBroadcaster || value.contains(QStringLiteral("broadcaster/"));
+				msg.isModerator = msg.isModerator || value.contains(QStringLiteral("moderator/"));
+				msg.isVip = msg.isVip || value.contains(QStringLiteral("vip/"));
+				/* Founders are subscribers who joined early; Twitch sends
+				 * them a badge of their own and subscriber=0. */
+				msg.isSubscriber = msg.isSubscriber ||
+						   value.contains(QStringLiteral("subscriber/")) ||
+						   value.contains(QStringLiteral("founder/"));
+			}
 		}
 	}
 
@@ -1180,16 +1190,31 @@ void MultiStreamChatAggregator::PollYouTubeChat()
 	});
 }
 
-void MultiStreamChatAggregator::SendYouTubeText(const QString &text, QString &error)
+bool MultiStreamChatAggregator::SendYouTubeText(const QString &text, QString &error)
 {
+	if (ytLiveChatId.isEmpty()) {
+		error = "youtube-not-live";
+		return false;
+	}
+
 	error.clear();
 	QPointer<MultiStreamChatAggregator> guard(this);
 	const QString liveChatId = ytLiveChatId;
 	const QString bodyText = text;
 
 	WithYouTubeAccessToken([this, guard, liveChatId, bodyText](const QString &token) {
-		if (!guard || liveChatId.isEmpty() || token.isEmpty())
+		if (!guard)
 			return;
+		/* Silence here would look like the message was sent: the input
+		 * clears either way, so a refusal has to reach the status line. */
+		if (token.isEmpty()) {
+			EmitStatus(StreamPlatform::YouTube, ChatConnectionState::MissingCredential);
+			return;
+		}
+		if (liveChatId.isEmpty()) {
+			EmitStatus(StreamPlatform::YouTube, ChatConnectionState::WaitingForBroadcast);
+			return;
+		}
 
 		QUrl url(QStringLiteral("https://www.googleapis.com/youtube/v3/liveChat/messages"));
 		QUrlQuery query;
@@ -1233,4 +1258,5 @@ void MultiStreamChatAggregator::SendYouTubeText(const QString &text, QString &er
 			emit messageReceived(echo);
 		});
 	});
+	return true;
 }

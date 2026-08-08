@@ -162,13 +162,17 @@ linha "Transmissão" das estatísticas, não passa pelo fan-out).
 
 Em ordem do que eu acho que rende mais por esforço:
 
-### A1 — Eventos ao vivo da Twitch por EventSub WebSocket
+### A1 — Eventos ao vivo da Twitch por EventSub WebSocket — **adiado**
 
 Seguidores, inscrições, raids e bits chegando na dock, ao lado do chat.
 **Não precisa de servidor público**: o EventSub tem transporte WebSocket, e o
-token que já guardamos serve. É a adição de maior impacto percebido — é o que
-faz a dock virar um painel de verdade — e reaproveita toda a camada de OAuth já
-construída.
+token que já guardamos serve.
+
+Adiado por decisão de produto em 2026-08-08: o bot do otakudo já cobre eventos
+nas plataformas, e duplicar isso dentro do OBS dividiria a fonte da verdade sem
+o usuário ganhar nada. Fica registrado para o caso de o OBS um dia precisar
+reagir a eventos por conta própria — trocar de cena num raid, por exemplo — que
+é coisa que o bot não tem como fazer.
 
 ### A2 — Emotes no chat
 

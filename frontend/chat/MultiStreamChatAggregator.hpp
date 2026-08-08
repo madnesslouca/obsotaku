@@ -125,7 +125,9 @@ private:
 	void PollYouTubeChat();
 	void WithYouTubeAccessToken(std::function<void(const QString &)> continuation);
 	void ScheduleYouTubeRetry(int milliseconds);
-	void SendYouTubeText(const QString &text, QString &error);
+	/* False when the request could not even be started; a failure after that
+	 * arrives on statusChanged, because the reply is async. */
+	bool SendYouTubeText(const QString &text, QString &error);
 
 	void EmitStatus(StreamPlatform platform, ChatConnectionState state, const QString &detail = {});
 	void ScheduleReconnect(StreamPlatform platform);

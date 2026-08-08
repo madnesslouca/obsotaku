@@ -16,10 +16,13 @@
 
 #include <obs.hpp>
 #include <util/config-file.h>
+#include <util/platform.h>
+#include <util/util.hpp>
 
 #include <QString>
 
 #include <algorithm>
+#include <filesystem>
 
 using namespace std;
 
@@ -38,6 +41,37 @@ uint32_t SimpleVideoBitrate(config_t *config)
 uint32_t SimpleAudioBitrate(config_t *config)
 {
 	return static_cast<uint32_t>(config_get_uint(config, "SimpleOutput", "ABitrate"));
+}
+
+/* Advanced mode keeps the stream bitrate in the encoder's own settings file
+ * rather than in the profile ini. Every encoder OBS ships names the field
+ * "bitrate", so reading it there covers them all; an encoder that does not is
+ * simply reported as unknown, exactly as before. */
+uint32_t AdvancedVideoBitrate()
+{
+	const OBSBasic *main = OBSBasic::Get();
+	if (!main)
+		return 0;
+
+	const std::filesystem::path path =
+		main->GetCurrentProfile().path / std::filesystem::u8path("streamEncoder.json");
+	if (path.empty())
+		return 0;
+
+	BPtr<char> json = os_quick_read_utf8_file(path.u8string().c_str());
+	if (!json)
+		return 0;
+
+	OBSDataAutoRelease settings = obs_data_create_from_json(json);
+	return settings ? static_cast<uint32_t>(obs_data_get_int(settings, "bitrate")) : 0;
+}
+
+uint32_t AdvancedAudioBitrate(config_t *config)
+{
+	/* The stream track is 1-based in the interface and the key is per track. */
+	const int64_t track = config_get_int(config, "AdvOut", "TrackIndex");
+	const string key = "Track" + to_string(track < 1 ? 1 : track) + "Bitrate";
+	return static_cast<uint32_t>(config_get_uint(config, "AdvOut", key.c_str()));
 }
 } // namespace
 
@@ -65,10 +99,11 @@ OutputVideoSettings MultistreamPreflight::CurrentOutputSettings()
 		settings.height = static_cast<uint32_t>(config_get_uint(config, "Video", "OutputCY"));
 	}
 
-	/* Advanced mode keeps the bitrate inside the encoder settings, which vary
-	 * per encoder, so only simple mode reports one here. */
 	const char *mode = config_get_string(config, "Output", "Mode");
-	if (!mode || astrcmpi(mode, "Advanced") != 0) {
+	if (mode && astrcmpi(mode, "Advanced") == 0) {
+		settings.videoBitrateKbps = AdvancedVideoBitrate();
+		settings.audioBitrateKbps = AdvancedAudioBitrate(config);
+	} else {
 		settings.videoBitrateKbps = SimpleVideoBitrate(config);
 		settings.audioBitrateKbps = SimpleAudioBitrate(config);
 	}

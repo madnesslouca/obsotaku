@@ -124,7 +124,12 @@ const vector<StreamPlatformInfo> &SupportedStreamPlatforms()
 		},
 		{
 			/* TikTok LIVE ingest is only exposed through TikTok Live Studio
-			 * for accounts allowed to stream; there is no public API. */
+			 * for accounts allowed to stream; there is no public API.
+			 *
+			 * No default server on purpose: TikTok hands out the server and
+			 * the key together, per session, and the host differs by region.
+			 * Pre-filling one would look like only the key was missing, and
+			 * point the user at a datacenter that is not theirs. */
 			StreamPlatform::TikTok,
 			"tiktok",
 			"TikTok",
@@ -135,7 +140,7 @@ const vector<StreamPlatformInfo> &SupportedStreamPlatforms()
 			{},
 			{},
 			{},
-			"rtmp://push-rtmp-l1-va01.tiktokcdn.com/live/",
+			{},
 			"https://livecenter.tiktok.com/",
 			"#ff0050",
 			/* TikTok LIVE is a vertical surface: 1080x1920 at 30 fps. */
