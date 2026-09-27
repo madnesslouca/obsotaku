@@ -9,7 +9,29 @@
 
 #include "ConnectedAccountManager.hpp"
 
+#include <map>
+#include <memory>
+#include <mutex>
+
 using namespace std;
+
+namespace {
+mutex accountMutexesMutex;
+map<string, weak_ptr<mutex>> accountMutexes;
+
+shared_ptr<mutex> MutexForAccount(StreamPlatform platform, const string &accountId)
+{
+	const string key = string(GetStreamPlatformInfo(platform).id) + ':' + accountId;
+	lock_guard lock(accountMutexesMutex);
+	auto &slot = accountMutexes[key];
+	auto result = slot.lock();
+	if (!result) {
+		result = make_shared<mutex>();
+		slot = result;
+	}
+	return result;
+}
+} // namespace
 
 static MultiStreamChannel MakeChannel(const ConnectedStreamAccount &account, const ResolvedStreamIngest &ingest)
 {
@@ -35,20 +57,74 @@ static MultiStreamChannel MakeChannel(const ConnectedStreamAccount &account, con
 	return channel;
 }
 
-bool ConnectedAccountManager::CompleteConnection(StreamPlatform platform,
-					  const OAuthClientRegistration &registration, const OAuthTokenSet &tokens,
-					  ConnectedStreamAccount &account, MultiStreamChannel &channel,
-					  string &error)
+bool ConnectedAccountManager::LoadUsableTokens(StreamPlatform platform, const string &accountId,
+					       const OAuthClientRegistration &registration, const string &redirectUri,
+					       OAuthTokenSet &tokens, string &error)
 {
+	if (accountId.empty()) {
+		error = "An account id is required to load OAuth credentials.";
+		return false;
+	}
+
+	/* Load again after entering the account lock. Another component may have
+	 * refreshed and rotated the token while this caller was waiting. */
+	const auto accountMutex = MutexForAccount(platform, accountId);
+	lock_guard accountLock(*accountMutex);
+	auto stored = OAuthTokenSet::Load(platform, accountId, error);
+	if (!stored) {
+		if (error.empty()) {
+			error = "No stored OAuth credential exists for this account.";
+		}
+		return false;
+	}
+
+	if (stored->AccessTokenExpired()) {
+		OAuthTokenSet refreshed;
+		if (!PlatformOAuthClient::RefreshTokens(platform, registration, redirectUri, *stored, refreshed,
+							error)) {
+			return false;
+		}
+		/* A rotated refresh token is not usable until it is durable. Continuing
+		 * after a failed save would leave the account broken on next launch. */
+		if (!refreshed.Save(platform, accountId, error)) {
+			return false;
+		}
+		*stored = std::move(refreshed);
+	}
+
+	tokens = std::move(*stored);
+	error.clear();
+	return true;
+}
+
+bool ConnectedAccountManager::CompleteConnection(StreamPlatform platform, const OAuthClientRegistration &registration,
+						 const OAuthTokenSet &tokens, ConnectedStreamAccount &account,
+						 MultiStreamChannel &channel, string &error,
+						 const atomic_bool *canceled)
+{
+	if (canceled && canceled->load()) {
+		error = "The account connection was canceled.";
+		return false;
+	}
 	ResolvedStreamIngest ingest;
 	if (!PlatformOAuthClient::ResolveIngest(platform, registration, tokens, ingest, error))
 		return false;
+	if (canceled && canceled->load()) {
+		error = "The account connection was canceled.";
+		return false;
+	}
 	if (ingest.accountId.empty()) {
 		error = "The connected platform returned no stable account id.";
 		return false;
 	}
 
 	ConnectedStreamAccount connected{platform, ingest.accountId, ingest.displayName, true};
+	const auto accountMutex = MutexForAccount(platform, connected.accountId);
+	lock_guard accountLock(*accountMutex);
+	if (canceled && canceled->load()) {
+		error = "The account connection was canceled.";
+		return false;
+	}
 	if (!tokens.Save(platform, connected.accountId, error))
 		return false;
 
@@ -67,26 +143,15 @@ bool ConnectedAccountManager::ResolveChannel(const ConnectedStreamAccount &accou
 		return false;
 	}
 
-	auto storedTokens = OAuthTokenSet::Load(account.platform, account.accountId, error);
-	if (!storedTokens) {
-		if (error.empty())
-			error = "No stored OAuth credential exists for this account.";
+	OAuthTokenSet storedTokens;
+	if (!LoadUsableTokens(account.platform, account.accountId, registration, redirectUri, storedTokens, error)) {
 		return false;
-	}
-
-	if (storedTokens->AccessTokenExpired()) {
-		OAuthTokenSet refreshedTokens;
-		if (!PlatformOAuthClient::RefreshTokens(account.platform, registration, redirectUri, *storedTokens,
-						     refreshedTokens, error))
-			return false;
-		if (!refreshedTokens.Save(account.platform, account.accountId, error))
-			return false;
-		*storedTokens = std::move(refreshedTokens);
 	}
 
 	ResolvedStreamIngest ingest;
-	if (!PlatformOAuthClient::ResolveIngest(account.platform, registration, *storedTokens, ingest, error))
+	if (!PlatformOAuthClient::ResolveIngest(account.platform, registration, storedTokens, ingest, error)) {
 		return false;
+	}
 	if (!ingest.accountId.empty() && ingest.accountId != account.accountId) {
 		error = "The OAuth credential resolved to a different platform account.";
 		return false;
@@ -128,5 +193,7 @@ bool ConnectedAccountManager::Disconnect(const ConnectedStreamAccount &account, 
 		error = "A connected OAuth account is required to remove credentials.";
 		return false;
 	}
+	const auto accountMutex = MutexForAccount(account.platform, account.accountId);
+	lock_guard accountLock(*accountMutex);
 	return OAuthTokenSet::Remove(account.platform, account.accountId, error);
 }

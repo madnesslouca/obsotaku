@@ -13,6 +13,7 @@
 
 #include <utility/MultiStreamManager.hpp>
 
+#include <atomic>
 #include <string>
 
 struct ConnectedStreamAccount {
@@ -24,9 +25,17 @@ struct ConnectedStreamAccount {
 
 class ConnectedAccountManager {
 public:
+	/* Loads the current credential and refreshes it when needed. Refreshes are
+	 * serialized per account because some platforms rotate refresh tokens and
+	 * invalidate the old value as soon as it is used. */
+	static bool LoadUsableTokens(StreamPlatform platform, const std::string &accountId,
+				     const OAuthClientRegistration &registration, const std::string &redirectUri,
+				     OAuthTokenSet &tokens, std::string &error);
+
 	static bool CompleteConnection(StreamPlatform platform, const OAuthClientRegistration &registration,
 				       const OAuthTokenSet &tokens, ConnectedStreamAccount &account,
-				       MultiStreamChannel &channel, std::string &error);
+				       MultiStreamChannel &channel, std::string &error,
+				       const std::atomic_bool *canceled = nullptr);
 	static bool ResolveChannel(const ConnectedStreamAccount &account, const OAuthClientRegistration &registration,
 				   const std::string &redirectUri, MultiStreamChannel &channel, std::string &error);
 	static bool Disconnect(const ConnectedStreamAccount &account, std::string &error);

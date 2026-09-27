@@ -651,6 +651,7 @@ private slots:
 
 	void on_autoConfigure_triggered();
 	void on_multistreamAccounts_triggered();
+	void on_ndiNetworkSettings_triggered();
 	void on_stats_triggered();
 	void on_idianPlayground_triggered();
 

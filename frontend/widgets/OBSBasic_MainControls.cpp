@@ -24,6 +24,7 @@
 #include <dialogs/LogUploadDialog.hpp>
 #include <dialogs/ManualChannelDialog.hpp>
 #include <dialogs/MultistreamAccountsDialog.hpp>
+#include <dialogs/NdiNetworkDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
 #include <dialogs/OBSBasicAdvAudio.hpp>
 #include <dialogs/OBSBasicFilters.hpp>
@@ -766,6 +767,19 @@ void OBSBasic::on_multistreamAccounts_triggered()
 	OpenMultistreamAccounts(std::move(channels), std::nullopt);
 }
 
+void OBSBasic::on_ndiNetworkSettings_triggered()
+{
+	NdiNetworkDialog dialog(this);
+	if (dialog.exec() != QDialog::Accepted || !dialog.RestartRequired())
+		return;
+
+	const auto answer = OBSMessageBox::question(this, QTStr("Restart"), QTStr("NdiNetwork.RestartPrompt"));
+	if (answer == QMessageBox::Yes) {
+		restart = true;
+		close();
+	}
+}
+
 void OBSBasic::ManageMultistreamAccount(const QString &channelId)
 {
 	const auto channels = MultistreamChannelStore::Load();
@@ -866,8 +880,14 @@ void OBSBasic::RemoveMultistreamChannel(const QString &channelId)
 					  .arg(QString::fromStdString(existing->displayName))) != QMessageBox::Yes)
 		return;
 
-	/* An OAuth destination also has a stored credential; removing the card
-	 * without it would leave the token behind in the credential store. */
+	std::string error;
+	if (!MultistreamChannelStore::Remove(channelId.toStdString(), error)) {
+		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"), QString::fromStdString(error));
+		return;
+	}
+
+	/* Commit the channel removal before deleting its OAuth credential. If the
+	 * config write fails, the account remains fully recoverable. */
 	if (GetStreamPlatformInfo(existing->platform).ingestMode == StreamIngestMode::ResolvedByApi) {
 		std::string disconnectError;
 		ConnectedStreamAccount account{existing->platform, existing->accountId, existing->displayName, false};
@@ -878,12 +898,6 @@ void OBSBasic::RemoveMultistreamChannel(const QString &channelId)
 		config_remove_value(config, section.c_str(), "AccountId");
 		config_remove_value(config, section.c_str(), "DisplayName");
 		config_save_safe(config, "tmp", nullptr);
-	}
-
-	std::string error;
-	if (!MultistreamChannelStore::Remove(channelId.toStdString(), error)) {
-		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"), QString::fromStdString(error));
-		return;
 	}
 	ApplyMultistreamChannels(MultistreamChannelStore::Load());
 }

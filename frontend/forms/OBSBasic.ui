@@ -947,6 +947,7 @@
      <string>Basic.MainMenu.Tools</string>
     </property>
     <addaction name="multistreamAccounts"/>
+    <addaction name="ndiNetworkSettings"/>
     <addaction name="autoConfigure"/>
     <addaction name="idianPlayground"/>
     <addaction name="actionOpenPluginManager"/>
@@ -2046,6 +2047,11 @@
   <action name="multistreamAccounts">
    <property name="text">
     <string>Multistream.Accounts.Menu</string>
+   </property>
+  </action>
+  <action name="ndiNetworkSettings">
+   <property name="text">
+    <string>NdiNetwork.Menu</string>
    </property>
   </action>
   <action name="actionOpenPluginManager">

@@ -53,6 +53,7 @@ add_obs_plugin(
     PLATFORMS WINDOWS MACOS LINUX
     WITH_MESSAGE
 )
+add_obs_plugin(distroav-bundle PLATFORMS WINDOWS ARCHITECTURES x64 WITH_MESSAGE)
 add_obs_plugin(
     frontend-tools
     PLATFORMS WINDOWS MACOS LINUX

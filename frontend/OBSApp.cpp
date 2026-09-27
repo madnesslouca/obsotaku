@@ -21,6 +21,7 @@
 #include <dialogs/LogUploadDialog.hpp>
 #include <plugin-manager/PluginManager.hpp>
 #include <utility/CrashHandler.hpp>
+#include <utility/NdiNetworkConfig.hpp>
 #include <utility/OBSEventFilter.hpp>
 #include <utility/OBSProxyStyle.hpp>
 #if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
@@ -2039,6 +2040,18 @@ void OBSApp::addLogLine(int logLevel, const QString &message)
 
 void OBSApp::loadAppModules(struct obs_module_failure_info &mfi)
 {
+	/* NDI reads ndi-config.v1.json when DistroAV initializes. Preparing this
+	 * after module loading would make the adapter selector look successful
+	 * while traffic still used every interface until another launch. */
+	QString ndiConfigError;
+	if (NdiNetworkConfig::PrepareEnvironment(&ndiConfigError)) {
+		const QString selectedAddress = NdiNetworkConfig::SelectedAddress();
+		if (!selectedAddress.isEmpty())
+			blog(LOG_INFO, "NDI network interface restricted to %s", QT_TO_UTF8(selectedAddress));
+	} else {
+		blog(LOG_ERROR, "Could not prepare the NDI network configuration: %s", QT_TO_UTF8(ndiConfigError));
+	}
+
 	pluginManager_->preLoad();
 	blog(LOG_INFO, "---------------------------------");
 	obs_load_all_modules2(&mfi);

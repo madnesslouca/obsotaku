@@ -38,6 +38,8 @@ target_sources(
     utility/MultistreamPreflight.cpp
     utility/MultistreamPreflight.hpp
     utility/MultistreamTaskPool.hpp
+    utility/NdiNetworkConfig.cpp
+    utility/NdiNetworkConfig.hpp
     utility/PlatformIconProvider.cpp
     utility/PlatformIconProvider.hpp
     utility/NativeEventFilter.hpp

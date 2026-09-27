@@ -27,6 +27,13 @@ endif()
 add_executable(obs-studio)
 add_executable(OBS::studio ALIAS obs-studio)
 
+# The bundled DistroAV files are copied by a custom target rather than built
+# from source. Make the frontend target depend on it so a normal OBS build is
+# immediately runnable with NDI support.
+if(TARGET distroav-bundle)
+  add_dependencies(obs-studio distroav-bundle)
+endif()
+
 target_link_libraries(
   obs-studio
   PRIVATE
@@ -84,6 +91,22 @@ elseif(OS_LINUX)
   include(cmake/os-linux.cmake)
 elseif(OS_FREEBSD OR OS_OPENBSD)
   include(cmake/os-freebsd.cmake)
+endif()
+
+# This repository ships a customized OBS product. The upstream binary updater
+# replaces obs64.exe with the stock build and therefore removes every product
+# feature compiled into the frontend. OBS already recognizes this marker and
+# hides/disables updater controls; ship it beside the customized runtime.
+if(OS_WINDOWS)
+  add_custom_command(
+    TARGET obs-studio
+    POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/disable_updater"
+            "${OBS_OUTPUT_DIR}/$<CONFIG>/disable_updater"
+    COMMENT "Disabling the upstream binary updater for the customized product"
+    VERBATIM
+  )
+  install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/disable_updater" DESTINATION "." COMPONENT Runtime)
 endif()
 
 foreach(graphics_library IN ITEMS opengl metal d3d11)

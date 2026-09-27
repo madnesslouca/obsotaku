@@ -50,6 +50,9 @@ function Build {
     Ensure-Location $ProjectRoot
 
     $CmakeArgs = @('--preset', "windows-ci-${Target}")
+    if ( $Target -eq 'x64' ) {
+        $CmakeArgs += '-DENABLE_PRODUCT_TESTS=ON'
+    }
 
     $CmakeBuildArgs = @('--build')
     $CmakeInstallArgs = @()
@@ -78,6 +81,11 @@ function Build {
 
     Log-Group "Building obs-studio..."
     Invoke-External cmake @CmakeBuildArgs
+
+    if ( $Target -eq 'x64' ) {
+        Log-Group "Testing multistream product targets..."
+        Invoke-External ctest --test-dir "build_${Target}" -C $Configuration -R '^product-' --output-on-failure
+    }
 
     Log-Group "Installing obs-studio..."
     Invoke-External cmake @CmakeInstallArgs

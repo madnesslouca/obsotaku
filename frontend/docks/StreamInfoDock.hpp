@@ -16,6 +16,7 @@
 #include <QHash>
 #include <QPointer>
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -57,6 +58,7 @@ private:
 		QLabel *resultLabel = nullptr;
 		/* Guards against the combo's own repopulation looking like a pick. */
 		bool populatingCategories = false;
+		uint64_t categorySearchGeneration = 0;
 	};
 
 	void BuildRows();
@@ -77,4 +79,5 @@ private:
 	QVBoxLayout *rowsLayout = nullptr;
 	std::vector<std::unique_ptr<ChannelRow>> rows;
 	int pendingApplies = 0;
+	uint64_t rowsGeneration = 0;
 };

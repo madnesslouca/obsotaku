@@ -10,8 +10,7 @@
 #include "TwitchChatConnection.hpp"
 
 #include <dialogs/MultistreamAccountsDialog.hpp>
-#include <oauth/OAuthTokenSet.hpp>
-#include <oauth/PlatformOAuthClient.hpp>
+#include <oauth/ConnectedAccountManager.hpp>
 #include <utility/MultistreamTaskPool.hpp>
 
 #include <QPointer>
@@ -58,21 +57,11 @@ void TwitchChatConnection::LoadTokenAndOpen()
 	QPointer<TwitchChatConnection> guard(this);
 	MultistreamTaskPool().start([guard, accountId]() {
 		std::string error;
-		auto tokens = OAuthTokenSet::Load(StreamPlatform::Twitch, accountId, error);
-		if (tokens && tokens->AccessTokenExpired()) {
-			const auto registration =
-				MultistreamAccountsDialog::RegistrationForPlatform(StreamPlatform::Twitch);
-			OAuthTokenSet refreshed;
-			if (PlatformOAuthClient::RefreshTokens(StreamPlatform::Twitch, registration, {}, *tokens,
-							       refreshed, error)) {
-				refreshed.Save(StreamPlatform::Twitch, accountId, error);
-				*tokens = std::move(refreshed);
-			} else {
-				tokens.reset();
-			}
-		}
-
-		const QString token = tokens ? QString::fromStdString(tokens->accessToken) : QString();
+		OAuthTokenSet tokens;
+		const auto registration = MultistreamAccountsDialog::RegistrationForPlatform(StreamPlatform::Twitch);
+		const bool loaded = ConnectedAccountManager::LoadUsableTokens(StreamPlatform::Twitch, accountId,
+									      registration, {}, tokens, error);
+		const QString token = loaded ? QString::fromStdString(tokens.accessToken) : QString();
 		if (!guard)
 			return;
 		QMetaObject::invokeMethod(
