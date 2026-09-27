@@ -1,3 +1,4 @@
+#include <oauth/OAuthHttpClient.hpp>
 #include <oauth/OAuthPkce.hpp>
 #include <oauth/OAuthTokenSet.hpp>
 #include <oauth/PlatformMetadataClient.hpp>
@@ -51,8 +52,9 @@ int main()
 		/* A manual platform without a key help URL leaves the user with no
 		 * way to find the value the dialog is asking for. */
 		if (info.ingestMode == StreamIngestMode::ManualStreamKey && platform != StreamPlatform::CustomRtmp &&
-		    (info.defaultIngestServer.empty() || info.streamKeyHelpUrl.empty()))
-			return Fail("A manual platform is missing its ingest server or help URL.");
+		    info.streamKeyHelpUrl.empty()) {
+			return Fail("A manual platform is missing its stream-key help URL.");
+		}
 		if (info.ingestMode == StreamIngestMode::ResolvedByApi && info.oauthFlow == StreamOAuthFlow::None)
 			return Fail("An API-resolved platform must define an OAuth flow.");
 		if (info.brandColor.size() != 7 || info.brandColor.front() != '#')
@@ -67,6 +69,9 @@ int main()
 		return Fail("Twitch OAuth capabilities are incorrect.");
 	if (!kick.requiresBackendTokenExchange || !kick.apiProvidesIngestServer || !kick.apiProvidesStreamKey)
 		return Fail("Kick OAuth capabilities are incorrect.");
+	if (!GetStreamPlatformInfo(StreamPlatform::TikTok).defaultIngestServer.empty()) {
+		return Fail("TikTok must not pin users to a regional ingest server.");
+	}
 	if (find(kick.scopes.cbegin(), kick.scopes.cend(), "streamkey:read") == kick.scopes.cend())
 		return Fail("Kick streamkey:read scope is missing.");
 
@@ -102,6 +107,14 @@ int main()
 		return Fail("Could not create a Kick authorization session with a local development secret.");
 	if (kickSession.authorizationUrl.find("streamkey%3Aread") == string::npos)
 		return Fail("Kick authorization URL does not request streamkey:read.");
+
+	/* Scheme checks must be case-insensitive. libcurl accepts HTTP://, so a
+	 * prefix comparison would otherwise leak OAuth credentials in clear text. */
+	OAuthHttpResponse insecureResponse;
+	if (OAuthHttpClient::Get("HTTP://example.invalid/oauth/token", {}, insecureResponse, error) ||
+	    error.find("HTTPS") == string::npos) {
+		return Fail("The OAuth HTTP client accepted a non-local clear-text URL.");
+	}
 
 	/* Metadata updates: the catalog decides who accepts them, and a call
 	 * without a usable token must fail before touching the network. */

@@ -19,6 +19,8 @@
 #include <QPointer>
 #include <QTimer>
 
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -97,11 +99,12 @@ private:
 	void RefreshConnectedAccount(int index, const OAuthClientRegistration &registration);
 	void DisconnectAccount(int index);
 
-	void SetBusy(int index, const QString &status);
+	uint64_t SetBusy(int index, const QString &status);
+	bool IsCurrentOperation(int index, uint64_t generation) const;
 	void SetControlsEnabled(bool enabled);
 	void CancelPendingConnection();
 	void FinishConnection(int index, bool success, ConnectedStreamAccount account, MultiStreamChannel channel,
-			      const QString &error);
+			      const QString &error, uint64_t generation);
 	void ClearLoopback();
 
 	std::vector<std::unique_ptr<AccountRow>> rows;
@@ -121,4 +124,9 @@ private:
 	bool busy = false;
 	/* Index of the row currently connecting, or -1. */
 	int busyIndex = -1;
+	/* Every asynchronous connection attempt carries both values. A canceled or
+	 * superseded task may finish, but it can no longer mutate the dialog or
+	 * persist a newly obtained account credential. */
+	uint64_t connectionGeneration = 0;
+	std::shared_ptr<std::atomic_bool> connectionCancellation;
 };

@@ -10,8 +10,7 @@
 #include "YouTubeChatConnection.hpp"
 
 #include <dialogs/MultistreamAccountsDialog.hpp>
-#include <oauth/OAuthTokenSet.hpp>
-#include <oauth/PlatformOAuthClient.hpp>
+#include <oauth/ConnectedAccountManager.hpp>
 #include <utility/MultistreamTaskPool.hpp>
 
 #include <QDateTime>
@@ -84,22 +83,12 @@ void YouTubeChatConnection::WithAccessToken(std::function<void(const QString &)>
 	QPointer<YouTubeChatConnection> guard(this);
 	MultistreamTaskPool().start([guard, accountId, continuation = std::move(continuation)]() mutable {
 		std::string error;
-		auto tokens = OAuthTokenSet::Load(StreamPlatform::YouTube, accountId, error);
-		if (tokens && tokens->AccessTokenExpired()) {
-			const auto registration =
-				MultistreamAccountsDialog::RegistrationForPlatform(StreamPlatform::YouTube);
-			OAuthTokenSet refreshed;
-			if (PlatformOAuthClient::RefreshTokens(StreamPlatform::YouTube, registration, {}, *tokens,
-							       refreshed, error)) {
-				refreshed.Save(StreamPlatform::YouTube, accountId, error);
-				*tokens = std::move(refreshed);
-			} else {
-				tokens.reset();
-			}
-		}
-
-		const QString token = tokens ? QString::fromStdString(tokens->accessToken) : QString();
-		const qint64 expiresAt = tokens ? tokens->expiresAt : 0;
+		OAuthTokenSet tokens;
+		const auto registration = MultistreamAccountsDialog::RegistrationForPlatform(StreamPlatform::YouTube);
+		const bool loaded = ConnectedAccountManager::LoadUsableTokens(StreamPlatform::YouTube, accountId,
+									      registration, {}, tokens, error);
+		const QString token = loaded ? QString::fromStdString(tokens.accessToken) : QString();
+		const qint64 expiresAt = loaded ? tokens.expiresAt : 0;
 		if (!guard)
 			return;
 		QMetaObject::invokeMethod(

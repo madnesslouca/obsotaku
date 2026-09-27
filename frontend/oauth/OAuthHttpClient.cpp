@@ -11,7 +11,9 @@
 
 #include <curl/curl.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <memory>
 #include <thread>
 
@@ -27,9 +29,36 @@ bool IsLoopbackUrl(const string &url)
 		return false;
 
 	const size_t hostStart = schemeEnd + 3;
-	const size_t hostEnd = url.find_first_of(":/?#", hostStart);
-	const string host = url.substr(hostStart, hostEnd == string::npos ? string::npos : hostEnd - hostStart);
+	if (hostStart >= url.size()) {
+		return false;
+	}
+
+	size_t hostEnd;
+	if (url[hostStart] == '[') {
+		hostEnd = url.find(']', hostStart);
+		if (hostEnd == string::npos) {
+			return false;
+		}
+		++hostEnd;
+	} else {
+		hostEnd = url.find_first_of(":/?#", hostStart);
+	}
+	string host = url.substr(hostStart, hostEnd == string::npos ? string::npos : hostEnd - hostStart);
+	transform(host.begin(), host.end(), host.begin(),
+		  [](unsigned char character) { return static_cast<char>(tolower(character)); });
 	return host == "127.0.0.1" || host == "localhost" || host == "[::1]";
+}
+
+string UrlScheme(const string &url)
+{
+	const size_t separator = url.find("://");
+	if (separator == string::npos) {
+		return {};
+	}
+	string scheme = url.substr(0, separator);
+	transform(scheme.begin(), scheme.end(), scheme.begin(),
+		  [](unsigned char character) { return static_cast<char>(tolower(character)); });
+	return scheme;
 }
 
 bool ShouldRetry(const OAuthHttpResponse &response)
@@ -59,9 +88,11 @@ size_t WriteResponse(char *data, size_t size, size_t count, void *userData)
 bool Configure(CURL *curl, const string &url, const OAuthHttpClient::Headers &headers, OAuthHttpResponse &response,
 	       CurlHeaders &nativeHeaders, string &error)
 {
-	/* Compare the parsed host, not the URL prefix: "http://127.0.0.1.evil.com"
-	 * starts with the loopback prefix but resolves to a remote server. */
-	if (url.rfind("http://", 0) == 0 && !IsLoopbackUrl(url)) {
+	/* Compare a normalized scheme and parsed host, not a case-sensitive URL
+	 * prefix: libcurl accepts HTTP:// as HTTP, and a prefix check would let a
+	 * token proxy send credentials over clear text. */
+	const string scheme = UrlScheme(url);
+	if ((scheme != "https" && scheme != "http") || (scheme == "http" && !IsLoopbackUrl(url))) {
 		error = "OAuth requests to non-local endpoints must use HTTPS.";
 		return false;
 	}

@@ -490,18 +490,15 @@ MultiStreamChannelHealth MultiStreamManager::ReadHealth(const Destination &desti
 void MultiStreamManager::OnOutputStart(void *data, calldata_t *)
 {
 	auto *destination = static_cast<Destination *>(data);
-	destination->liveSinceUnixTime =
-		chrono::duration_cast<chrono::seconds>(chrono::system_clock::now().time_since_epoch()).count();
 	destination->owner->UpdateState(*destination, MultiStreamChannelState::Live);
 }
 
 void MultiStreamManager::OnOutputReconnect(void *data, calldata_t *)
 {
 	auto *destination = static_cast<Destination *>(data);
-	++destination->reconnects;
 	/* Reconnecting is not idle and not live: report it as starting so the
 	 * card stops claiming the destination is fine. */
-	destination->owner->UpdateState(*destination, MultiStreamChannelState::Starting);
+	destination->owner->UpdateState(*destination, MultiStreamChannelState::Starting, nullptr, true);
 }
 
 void MultiStreamManager::OnOutputStopping(void *data, calldata_t *)
@@ -545,16 +542,25 @@ void MultiStreamManager::DisconnectSignals(Destination &destination)
 	destination.signalsConnected = false;
 }
 
-void MultiStreamManager::UpdateState(Destination &destination, MultiStreamChannelState state, const char *lastError)
+void MultiStreamManager::UpdateState(Destination &destination, MultiStreamChannelState state, const char *lastError,
+				     bool countReconnect)
 {
 	StateCallback callback;
 	MultiStreamChannelSnapshot snapshot;
 	{
 		lock_guard lock(mutex);
+		if (countReconnect) {
+			++destination.reconnects;
+		}
 		destination.state = state;
 		destination.lastError = lastError ? lastError : "";
-		if (state != MultiStreamChannelState::Live)
+		if (state == MultiStreamChannelState::Live) {
+			destination.liveSinceUnixTime =
+				chrono::duration_cast<chrono::seconds>(chrono::system_clock::now().time_since_epoch())
+					.count();
+		} else {
 			destination.liveSinceUnixTime = 0;
+		}
 		snapshot = {destination.channel.id, destination.channel.displayName, destination.state,
 			    destination.lastError, ReadHealth(destination)};
 		callback = stateCallback;

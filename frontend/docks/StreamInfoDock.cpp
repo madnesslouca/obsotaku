@@ -10,8 +10,7 @@
 #include "StreamInfoDock.hpp"
 
 #include <dialogs/MultistreamAccountsDialog.hpp>
-#include <oauth/OAuthTokenSet.hpp>
-#include <oauth/PlatformOAuthClient.hpp>
+#include <oauth/ConnectedAccountManager.hpp>
 #include <utility/MultistreamChannelStore.hpp>
 #include <utility/MultistreamTaskPool.hpp>
 #include <utility/PlatformIconProvider.hpp>
@@ -56,23 +55,8 @@ QString FromStd(const std::string &value)
 bool LoadUsableTokens(const MultiStreamChannel &channel, const OAuthClientRegistration &registration,
 		      OAuthTokenSet &tokens, std::string &error)
 {
-	auto stored = OAuthTokenSet::Load(channel.platform, channel.accountId, error);
-	if (!stored) {
-		if (error.empty())
-			error = "No stored credential for this account.";
-		return false;
-	}
-
-	if (stored->AccessTokenExpired()) {
-		OAuthTokenSet refreshed;
-		if (!PlatformOAuthClient::RefreshTokens(channel.platform, registration, {}, *stored, refreshed, error))
-			return false;
-		refreshed.Save(channel.platform, channel.accountId, error);
-		*stored = std::move(refreshed);
-	}
-
-	tokens = std::move(*stored);
-	return true;
+	return ConnectedAccountManager::LoadUsableTokens(channel.platform, channel.accountId, registration, {}, tokens,
+							 error);
 }
 } // namespace
 
@@ -148,6 +132,7 @@ StreamInfoDock::ChannelRow *StreamInfoDock::RowAt(int index)
 
 void StreamInfoDock::ClearRows()
 {
+	++rowsGeneration;
 	for (auto &row : rows) {
 		if (row->widget) {
 			rowsLayout->removeWidget(row->widget);
@@ -313,9 +298,13 @@ void StreamInfoDock::SearchCategories(int index, const QString &query)
 
 	const MultiStreamChannel channel = row->channel;
 	const auto registration = MultistreamAccountsDialog::RegistrationForPlatform(channel.platform);
+	const uint64_t rowSet = rowsGeneration;
+	const uint64_t searchGeneration = ++row->categorySearchGeneration;
+	const QString requestedText = query.trimmed();
 	QPointer<StreamInfoDock> guard(this);
 
-	MultistreamTaskPool().start([guard, index, channel, registration, text = query.trimmed().toStdString()]() {
+	MultistreamTaskPool().start([guard, index, channel, registration, rowSet, searchGeneration, requestedText,
+				     text = requestedText.toStdString()]() {
 		OAuthTokenSet tokens;
 		std::string error;
 		std::vector<StreamCategory> results;
@@ -326,12 +315,17 @@ void StreamInfoDock::SearchCategories(int index, const QString &query)
 			return;
 		QMetaObject::invokeMethod(
 			guard.data(),
-			[guard, index, results = std::move(results)]() {
+			[guard, index, channelId = channel.id, rowSet, searchGeneration, requestedText,
+			 results = std::move(results)]() {
 				if (!guard)
 					return;
 				ChannelRow *target = guard->RowAt(index);
-				if (!target || !target->categoryCombo || results.empty())
+				if (!target || !target->categoryCombo || results.empty() ||
+				    guard->rowsGeneration != rowSet || target->channel.id != channelId ||
+				    target->categorySearchGeneration != searchGeneration ||
+				    target->categoryCombo->currentText().trimmed() != requestedText) {
 					return;
+				}
 
 				/* Keep what the user typed; only the list changes. */
 				const QString typed = target->categoryCombo->currentText();

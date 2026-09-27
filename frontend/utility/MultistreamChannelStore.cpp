@@ -18,6 +18,8 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <optional>
+#include <unordered_set>
 
 using namespace std;
 
@@ -25,6 +27,9 @@ namespace {
 constexpr const char *SECTION = "MultistreamChannels";
 constexpr const char *MANUAL_KEY_STORE = "manual-rtmp";
 constexpr int MAX_STORED_CHANNELS = 32;
+constexpr const char *CHANNEL_FIELDS[] = {
+	"Id",    "Platform",   "DisplayName",  "AccountId",  "ChatAddress",     "Server",        "AvatarUrl",
+	"Title", "CategoryId", "CategoryName", "AudioTrack", "VodTrackEnabled", "VodTrackIndex", "Enabled"};
 
 string Key(int index, const char *name)
 {
@@ -40,6 +45,61 @@ const char *StringValue(config_t *config, const string &key)
 size_t ClampTrack(int64_t value, size_t fallback)
 {
 	return (value < 0 || value >= MAX_AUDIO_MIXES) ? fallback : static_cast<size_t>(value);
+}
+
+void ClearStoredChannels(config_t *config, int count)
+{
+	for (int index = 0; index < min(count, MAX_STORED_CHANNELS); ++index) {
+		for (const char *name : CHANNEL_FIELDS) {
+			config_remove_value(config, SECTION, Key(index, name).c_str());
+		}
+	}
+}
+
+void WriteStoredChannels(config_t *config, const vector<MultiStreamChannel> &channels)
+{
+	int index = 0;
+	for (const auto &channel : channels) {
+		const auto &info = GetStreamPlatformInfo(channel.platform);
+		config_set_string(config, SECTION, Key(index, "Id").c_str(), channel.id.c_str());
+		config_set_string(config, SECTION, Key(index, "Platform").c_str(), string(info.id).c_str());
+		config_set_string(config, SECTION, Key(index, "DisplayName").c_str(), channel.displayName.c_str());
+		config_set_string(config, SECTION, Key(index, "AccountId").c_str(), channel.accountId.c_str());
+		config_set_string(config, SECTION, Key(index, "ChatAddress").c_str(), channel.chatAddress.c_str());
+		config_set_string(config, SECTION, Key(index, "Server").c_str(), channel.server.c_str());
+		config_set_string(config, SECTION, Key(index, "AvatarUrl").c_str(), channel.avatarUrl.c_str());
+		config_set_string(config, SECTION, Key(index, "Title").c_str(), channel.title.c_str());
+		config_set_string(config, SECTION, Key(index, "CategoryId").c_str(), channel.categoryId.c_str());
+		config_set_string(config, SECTION, Key(index, "CategoryName").c_str(), channel.categoryName.c_str());
+		config_set_int(config, SECTION, Key(index, "AudioTrack").c_str(),
+			       static_cast<int64_t>(channel.audioMixIndex));
+		config_set_bool(config, SECTION, Key(index, "VodTrackEnabled").c_str(), channel.vodTrackEnabled);
+		config_set_int(config, SECTION, Key(index, "VodTrackIndex").c_str(),
+			       static_cast<int64_t>(channel.vodTrackIndex));
+		config_set_bool(config, SECTION, Key(index, "Enabled").c_str(), channel.enabled);
+		++index;
+	}
+	config_set_int(config, SECTION, "Count", index);
+}
+
+struct SecretBackup {
+	string channelId;
+	optional<string> previous;
+};
+
+void RollBackSecrets(const vector<SecretBackup> &backups)
+{
+	for (auto item = backups.rbegin(); item != backups.rend(); ++item) {
+		string rollbackError;
+		const bool restored =
+			item->previous ? SecureTokenStore::Save(MANUAL_KEY_STORE, item->channelId, *item->previous,
+								rollbackError)
+				       : SecureTokenStore::Remove(MANUAL_KEY_STORE, item->channelId, rollbackError);
+		if (!restored) {
+			blog(LOG_ERROR, "Could not roll back the stream key for %s: %s", item->channelId.c_str(),
+			     rollbackError.c_str());
+		}
+	}
 }
 
 /* Reads the pre-store layout, where each platform had one hard-coded section.
@@ -155,50 +215,70 @@ bool MultistreamChannelStore::Save(const vector<MultiStreamChannel> &channels, s
 		error = "Too many multistream destinations.";
 		return false;
 	}
-
-	/* Clear the previous list first: shrinking it would otherwise leave stale
-	 * entries that Load() would read back. */
-	const int previousCount = static_cast<int>(config_get_int(config, SECTION, "Count"));
-	for (int index = 0; index < min(previousCount, MAX_STORED_CHANNELS); ++index) {
-		for (const char *name : {"Id", "Platform", "DisplayName", "AccountId", "ChatAddress", "Server",
-					 "AvatarUrl", "Title", "CategoryId", "CategoryName", "AudioTrack",
-					 "VodTrackEnabled", "VodTrackIndex", "Enabled"})
-			config_remove_value(config, SECTION, Key(index, name).c_str());
+	unordered_set<string> channelIds;
+	unordered_set<string> manualChannelIds;
+	for (const auto &channel : channels) {
+		if (channel.id.empty() || !channelIds.emplace(channel.id).second) {
+			error = "Multistream destination ids must be present and unique.";
+			return false;
+		}
+		if (GetStreamPlatformInfo(channel.platform).ingestMode == StreamIngestMode::ManualStreamKey) {
+			manualChannelIds.emplace(channel.id);
+		}
 	}
 
-	int index = 0;
+	const vector<MultiStreamChannel> previousChannels = Load();
+	vector<SecretBackup> secretBackups;
 	for (const auto &channel : channels) {
 		const auto &info = GetStreamPlatformInfo(channel.platform);
-		config_set_string(config, SECTION, Key(index, "Id").c_str(), channel.id.c_str());
-		config_set_string(config, SECTION, Key(index, "Platform").c_str(), string(info.id).c_str());
-		config_set_string(config, SECTION, Key(index, "DisplayName").c_str(), channel.displayName.c_str());
-		config_set_string(config, SECTION, Key(index, "AccountId").c_str(), channel.accountId.c_str());
-		config_set_string(config, SECTION, Key(index, "ChatAddress").c_str(), channel.chatAddress.c_str());
-		config_set_string(config, SECTION, Key(index, "Server").c_str(), channel.server.c_str());
-		config_set_string(config, SECTION, Key(index, "AvatarUrl").c_str(), channel.avatarUrl.c_str());
-		config_set_string(config, SECTION, Key(index, "Title").c_str(), channel.title.c_str());
-		config_set_string(config, SECTION, Key(index, "CategoryId").c_str(), channel.categoryId.c_str());
-		config_set_string(config, SECTION, Key(index, "CategoryName").c_str(), channel.categoryName.c_str());
-		config_set_int(config, SECTION, Key(index, "AudioTrack").c_str(),
-			       static_cast<int64_t>(channel.audioMixIndex));
-		config_set_bool(config, SECTION, Key(index, "VodTrackEnabled").c_str(), channel.vodTrackEnabled);
-		config_set_int(config, SECTION, Key(index, "VodTrackIndex").c_str(),
-			       static_cast<int64_t>(channel.vodTrackIndex));
-		config_set_bool(config, SECTION, Key(index, "Enabled").c_str(), channel.enabled);
-
-		/* Stream keys must never reach the .ini. */
-		if (info.ingestMode == StreamIngestMode::ManualStreamKey && !channel.streamKey.empty()) {
-			string keyError;
-			if (!SecureTokenStore::Save(MANUAL_KEY_STORE, channel.id, channel.streamKey, keyError)) {
-				error = keyError;
-				return false;
-			}
+		if (info.ingestMode != StreamIngestMode::ManualStreamKey || channel.streamKey.empty()) {
+			continue;
 		}
-		++index;
+
+		string keyError;
+		auto previous = SecureTokenStore::Load(MANUAL_KEY_STORE, channel.id, keyError);
+		if (!keyError.empty()) {
+			RollBackSecrets(secretBackups);
+			error = keyError;
+			return false;
+		}
+		if (!SecureTokenStore::Save(MANUAL_KEY_STORE, channel.id, channel.streamKey, keyError)) {
+			RollBackSecrets(secretBackups);
+			error = keyError;
+			return false;
+		}
+		secretBackups.push_back({channel.id, std::move(previous)});
 	}
 
-	config_set_int(config, SECTION, "Count", index);
-	config_save_safe(config, "tmp", nullptr);
+	/* Credentials are durable before the shared configuration is touched. If
+	 * any credential write failed above, the old list and its keys were restored
+	 * intact rather than leaving a partially cleared configuration behind. */
+	const int previousCount = static_cast<int>(config_get_int(config, SECTION, "Count"));
+	ClearStoredChannels(config, max(previousCount, static_cast<int>(channels.size())));
+	WriteStoredChannels(config, channels);
+	if (config_save_safe(config, "tmp", nullptr) != CONFIG_SUCCESS) {
+		/* Restore the in-memory configuration too. A later unrelated save must
+		 * not accidentally persist this failed update. */
+		ClearStoredChannels(config, max(previousCount, static_cast<int>(channels.size())));
+		WriteStoredChannels(config, previousChannels);
+		RollBackSecrets(secretBackups);
+		error = "Could not save the multistream channel configuration.";
+		return false;
+	}
+
+	/* Drop credentials that no longer have a channel only after the new config
+	 * is safely on disk. Failure here is recoverable and must not roll it back. */
+	for (const auto &previous : previousChannels) {
+		if (GetStreamPlatformInfo(previous.platform).ingestMode != StreamIngestMode::ManualStreamKey ||
+		    manualChannelIds.find(previous.id) != manualChannelIds.end()) {
+			continue;
+		}
+		string keyError;
+		if (!SecureTokenStore::Remove(MANUAL_KEY_STORE, previous.id, keyError)) {
+			blog(LOG_WARNING, "Could not remove the orphaned stream key for %s: %s", previous.id.c_str(),
+			     keyError.c_str());
+		}
+	}
 	error.clear();
 	return true;
 }
@@ -231,9 +311,6 @@ bool MultistreamChannelStore::Remove(const string &channelId, string &error)
 	}
 	channels.erase(removed, channels.end());
 
-	string keyError;
-	if (!SecureTokenStore::Remove(MANUAL_KEY_STORE, channelId, keyError))
-		blog(LOG_WARNING, "Could not remove the stored stream key: %s", keyError.c_str());
 	return Save(channels, error);
 }
 

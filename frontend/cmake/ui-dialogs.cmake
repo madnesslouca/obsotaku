@@ -21,6 +21,8 @@ target_sources(
     dialogs/ManualChannelDialog.hpp
     dialogs/MultistreamAccountsDialog.cpp
     dialogs/MultistreamAccountsDialog.hpp
+    dialogs/NdiNetworkDialog.cpp
+    dialogs/NdiNetworkDialog.hpp
     dialogs/NameDialog.cpp
     dialogs/NameDialog.hpp
     dialogs/OAuthLogin.cpp

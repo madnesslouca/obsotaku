@@ -146,7 +146,8 @@ private:
 
 	static void ConnectSignals(Destination &destination);
 	static void DisconnectSignals(Destination &destination);
-	void UpdateState(Destination &destination, MultiStreamChannelState state, const char *lastError = nullptr);
+	void UpdateState(Destination &destination, MultiStreamChannelState state, const char *lastError = nullptr,
+			 bool countReconnect = false);
 	void ReportFailure(const std::vector<MultiStreamChannel> &failedChannels, const std::string &error);
 	static void PersistEnabled(const std::string &channelId, bool enabled);
 

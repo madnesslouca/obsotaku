@@ -296,7 +296,8 @@ MultistreamAccountsDialog::MultistreamAccountsDialog(QWidget *parent, vector<Mul
 			return;
 		ClearLoopback();
 		twitchPollTimer.stop();
-		FinishConnection(busyIndex, false, {}, {}, QTStr("Multistream.Accounts.TimedOut"));
+		FinishConnection(busyIndex, false, {}, {}, QTStr("Multistream.Accounts.TimedOut"),
+				 connectionGeneration);
 	});
 
 	for (int index = 0; index < static_cast<int>(rows.size()); ++index) {
@@ -742,9 +743,13 @@ void MultistreamAccountsDialog::RefreshConnectedAccount(int index, const OAuthCl
 
 	const ConnectedStreamAccount account = row->account;
 	const string redirectUri = RedirectUriFor(row->platform);
-	SetBusy(index, QTStr("Multistream.Accounts.Refreshing"));
+	const uint64_t generation = SetBusy(index, QTStr("Multistream.Accounts.Refreshing"));
+	const auto cancellation = connectionCancellation;
 	QPointer<MultistreamAccountsDialog> guard(this);
-	MultistreamTaskPool().start([guard, index, account, registration, redirectUri]() {
+	MultistreamTaskPool().start([guard, index, account, registration, redirectUri, generation, cancellation]() {
+		if (cancellation->load()) {
+			return;
+		}
 		ConnectionResult result;
 		result.account = account;
 		string error;
@@ -752,14 +757,16 @@ void MultistreamAccountsDialog::RefreshConnectedAccount(int index, const OAuthCl
 			ConnectedAccountManager::ResolveChannel(account, registration, redirectUri, result.channel,
 								error);
 		result.error = FromStdString(error);
-		if (!guard)
+		if (!guard || cancellation->load()) {
 			return;
+		}
 		QMetaObject::invokeMethod(
 			guard.data(),
-			[guard, index, result = std::move(result)]() mutable {
-				if (guard)
+			[guard, index, generation, cancellation, result = std::move(result)]() mutable {
+				if (guard && !cancellation->load() && guard->IsCurrentOperation(index, generation)) {
 					guard->FinishConnection(index, result.success, std::move(result.account),
-								std::move(result.channel), result.error);
+								std::move(result.channel), result.error, generation);
+				}
 			},
 			Qt::QueuedConnection);
 	});
@@ -792,73 +799,94 @@ void MultistreamAccountsDialog::StartPkceConnection(int index, const OAuthClient
 	}
 
 	loopback->SetState(FromStdString(session.state));
-	connect(loopback, &AuthListener::fail, this, [this, index](const QString &reason) {
+	const uint64_t generation = SetBusy(index, QTStr("Multistream.Accounts.WaitingForBrowser"));
+	const auto cancellation = connectionCancellation;
+	connect(loopback, &AuthListener::fail, this, [this, index, generation](const QString &reason) {
+		if (!IsCurrentOperation(index, generation)) {
+			return;
+		}
 		ClearLoopback();
 		/* Show what the platform said; the generic wording hides whether the
 		 * user refused or the redirect URI is simply not registered. */
 		FinishConnection(index, false, {}, {},
 				 reason.isEmpty() ? QTStr("Multistream.Accounts.AuthorizationRejected")
-						  : QTStr("Multistream.Accounts.AuthorizationFailedWith").arg(reason));
+						  : QTStr("Multistream.Accounts.AuthorizationFailedWith").arg(reason),
+				 generation);
 	});
 	connect(loopback, &AuthListener::ok, this,
-		[this, index, platform, registration, session](const QString &code) mutable {
+		[this, index, platform, registration, session, generation, cancellation](const QString &code) mutable {
+			if (!IsCurrentOperation(index, generation) || cancellation->load()) {
+				return;
+			}
 			ClearLoopback();
 			if (AccountRow *target = RowAt(index))
 				target->statusLabel->setText(QTStr("Multistream.Accounts.Finishing"));
 			QPointer<MultistreamAccountsDialog> guard(this);
-			MultistreamTaskPool().start([guard, index, platform, registration, session,
-						     code = code.toStdString()]() mutable {
+			MultistreamTaskPool().start([guard, index, platform, registration, session, generation,
+						     cancellation, code = code.toStdString()]() mutable {
+				if (cancellation->load()) {
+					return;
+				}
 				ConnectionResult result;
 				OAuthTokenSet tokens;
 				string taskError;
 				if (PlatformOAuthClient::ExchangeAuthorizationCode(registration, session, code, tokens,
-										   taskError)) {
+										   taskError) &&
+				    !cancellation->load()) {
 					result.success = ConnectedAccountManager::CompleteConnection(
 						platform, registration, tokens, result.account, result.channel,
-						taskError);
+						taskError, cancellation.get());
 				}
 				result.error = FromStdString(taskError);
-				if (!guard)
+				if (!guard || cancellation->load()) {
 					return;
+				}
 				QMetaObject::invokeMethod(
 					guard.data(),
-					[guard, index, result = std::move(result)]() mutable {
-						if (guard)
+					[guard, index, generation, cancellation, result = std::move(result)]() mutable {
+						if (guard && !cancellation->load() &&
+						    guard->IsCurrentOperation(index, generation)) {
 							guard->FinishConnection(index, result.success,
 										std::move(result.account),
-										std::move(result.channel),
-										result.error);
+										std::move(result.channel), result.error,
+										generation);
+						}
 					},
 					Qt::QueuedConnection);
 			});
 		});
 
-	SetBusy(index, QTStr("Multistream.Accounts.WaitingForBrowser"));
 	if (!QDesktopServices::openUrl(QUrl(FromStdString(session.authorizationUrl)))) {
 		ClearLoopback();
-		FinishConnection(index, false, {}, {}, QTStr("Multistream.Accounts.BrowserOpenFailed"));
+		FinishConnection(index, false, {}, {}, QTStr("Multistream.Accounts.BrowserOpenFailed"), generation);
 	}
 }
 
 void MultistreamAccountsDialog::StartTwitchConnection(int index, const OAuthClientRegistration &registration)
 {
-	SetBusy(index, QTStr("Multistream.Accounts.RequestingDeviceCode"));
+	const uint64_t generation = SetBusy(index, QTStr("Multistream.Accounts.RequestingDeviceCode"));
+	const auto cancellation = connectionCancellation;
 	QPointer<MultistreamAccountsDialog> guard(this);
-	MultistreamTaskPool().start([guard, index, registration]() {
+	MultistreamTaskPool().start([guard, index, registration, generation, cancellation]() {
+		if (cancellation->load()) {
+			return;
+		}
 		DeviceStartResult result;
 		string error;
 		result.success = PlatformOAuthClient::StartDeviceAuthorization(StreamPlatform::Twitch, registration,
 									      result.authorization, error);
 		result.error = FromStdString(error);
-		if (!guard)
+		if (!guard || cancellation->load()) {
 			return;
+		}
 		QMetaObject::invokeMethod(
 			guard.data(),
-			[guard, index, registration, result = std::move(result)]() mutable {
-				if (!guard)
+			[guard, index, registration, generation, cancellation, result = std::move(result)]() mutable {
+				if (!guard || cancellation->load() || !guard->IsCurrentOperation(index, generation)) {
 					return;
+				}
 				if (!result.success) {
-					guard->FinishConnection(index, false, {}, {}, result.error);
+					guard->FinishConnection(index, false, {}, {}, result.error, generation);
 					return;
 				}
 				guard->twitchRegistration = registration;
@@ -886,40 +914,48 @@ void MultistreamAccountsDialog::PollTwitch()
 		return;
 	if (twitchAuthorization.expiresInSeconds > 0 &&
 	    twitchElapsed.elapsed() >= static_cast<qint64>(twitchAuthorization.expiresInSeconds) * 1000) {
-		FinishConnection(busyIndex, false, {}, {}, QTStr("Multistream.Accounts.DeviceCodeExpired"));
+		FinishConnection(busyIndex, false, {}, {}, QTStr("Multistream.Accounts.DeviceCodeExpired"),
+				 connectionGeneration);
 		return;
 	}
 
 	const OAuthDeviceAuthorization authorization = twitchAuthorization;
 	const OAuthClientRegistration registration = twitchRegistration;
 	const int index = busyIndex;
+	const uint64_t generation = connectionGeneration;
+	const auto cancellation = connectionCancellation;
 	QPointer<MultistreamAccountsDialog> guard(this);
-	MultistreamTaskPool().start([guard, index, authorization, registration]() {
+	MultistreamTaskPool().start([guard, index, authorization, registration, generation, cancellation]() {
+		if (cancellation->load()) {
+			return;
+		}
 		DevicePollResult result;
 		OAuthTokenSet tokens;
 		string error;
 		result.status = PlatformOAuthClient::PollDeviceAuthorization(StreamPlatform::Twitch, registration,
 									     authorization, tokens, error);
-		if (result.status == OAuthDevicePollStatus::Authorized) {
+		if (result.status == OAuthDevicePollStatus::Authorized && !cancellation->load()) {
 			result.connection.success = ConnectedAccountManager::CompleteConnection(
 				StreamPlatform::Twitch, registration, tokens, result.connection.account,
-				result.connection.channel, error);
+				result.connection.channel, error, cancellation.get());
 			result.connection.error = FromStdString(error);
 		}
 		result.error = FromStdString(error);
-		if (!guard)
+		if (!guard || cancellation->load()) {
 			return;
+		}
 		QMetaObject::invokeMethod(
 			guard.data(),
-			[guard, index, result = std::move(result)]() mutable {
-				if (!guard || !guard->busy)
+			[guard, index, generation, cancellation, result = std::move(result)]() mutable {
+				if (!guard || cancellation->load() || !guard->IsCurrentOperation(index, generation)) {
 					return;
+				}
 				switch (result.status) {
 				case OAuthDevicePollStatus::Authorized:
 					guard->FinishConnection(index, result.connection.success,
 								std::move(result.connection.account),
 								std::move(result.connection.channel),
-								result.connection.error);
+								result.connection.error, generation);
 					break;
 				case OAuthDevicePollStatus::Pending:
 					guard->twitchPollTimer.start(guard->twitchPollIntervalSeconds * 1000);
@@ -929,7 +965,7 @@ void MultistreamAccountsDialog::PollTwitch()
 					guard->twitchPollTimer.start(guard->twitchPollIntervalSeconds * 1000);
 					break;
 				default:
-					guard->FinishConnection(index, false, {}, {}, result.error);
+					guard->FinishConnection(index, false, {}, {}, result.error, generation);
 					break;
 				}
 			},
@@ -984,8 +1020,13 @@ void MultistreamAccountsDialog::SetControlsEnabled(bool enabled)
 		button->setEnabled(enabled);
 }
 
-void MultistreamAccountsDialog::SetBusy(int index, const QString &status)
+uint64_t MultistreamAccountsDialog::SetBusy(int index, const QString &status)
 {
+	if (connectionCancellation) {
+		connectionCancellation->store(true);
+	}
+	connectionCancellation = std::make_shared<std::atomic_bool>(false);
+	++connectionGeneration;
 	busy = true;
 	busyIndex = index;
 	SetControlsEnabled(false);
@@ -995,12 +1036,23 @@ void MultistreamAccountsDialog::SetBusy(int index, const QString &status)
 	connectionTimeout.start(CONNECTION_TIMEOUT_MS);
 	if (AccountRow *row = RowAt(index))
 		row->statusLabel->setText(status);
+	return connectionGeneration;
+}
+
+bool MultistreamAccountsDialog::IsCurrentOperation(int index, uint64_t generation) const
+{
+	return busy && busyIndex == index && connectionGeneration == generation && connectionCancellation &&
+	       !connectionCancellation->load();
 }
 
 void MultistreamAccountsDialog::CancelPendingConnection()
 {
 	if (!busy)
 		return;
+	if (connectionCancellation) {
+		connectionCancellation->store(true);
+	}
+	++connectionGeneration;
 	ClearLoopback();
 	twitchPollTimer.stop();
 	/* Reported as a cancellation, not a failure: no message box for something
@@ -1019,8 +1071,12 @@ void MultistreamAccountsDialog::CancelPendingConnection()
 }
 
 void MultistreamAccountsDialog::FinishConnection(int index, bool success, ConnectedStreamAccount account,
-						 MultiStreamChannel channel, const QString &error)
+						 MultiStreamChannel channel, const QString &error, uint64_t generation)
 {
+	if (!IsCurrentOperation(index, generation)) {
+		return;
+	}
+	connectionCancellation->store(true);
 	busy = false;
 	busyIndex = -1;
 	twitchPollTimer.stop();

@@ -171,6 +171,21 @@ void OBSBasic::PrepareMultistreamPrimaryService()
 	const MultiStreamChannel primary = manager->FirstReadyChannel();
 	if (primary.id.empty()) {
 		manager->SetPrimaryChannelId({});
+		/* A service promoted for an earlier stream still owns that channel's
+		 * server and stream key. If every channel was disabled or removed, it
+		 * must be released before validation/start or OBS would silently stream
+		 * to the obsolete destination. Restore the profile service (usually the
+		 * empty default service) for the next attempt. */
+		if (multistreamPromotedService) {
+			service = nullptr;
+			multistreamPromotedService = false;
+			if (!LoadService()) {
+				service = obs_service_create("rtmp_common", "default_service", nullptr, nullptr);
+				if (service) {
+					obs_service_release(service);
+				}
+			}
+		}
 		return;
 	}
 
