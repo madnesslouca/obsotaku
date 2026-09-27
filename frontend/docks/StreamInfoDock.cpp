@@ -22,6 +22,7 @@
 #include <util/config-file.h>
 
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -190,10 +191,29 @@ StreamInfoDock::StreamInfoDock(QWidget *parent) : OBSDock(parent)
 	RefreshChannels();
 }
 
+StreamInfoDock::~StreamInfoDock()
+{
+	Shutdown();
+}
+
+void StreamInfoDock::Shutdown()
+{
+	if (shuttingDown.exchange(true))
+		return;
+	++rowsGeneration;
+	for (auto &row : rows) {
+		++row->categorySearchGeneration;
+		if (row->categorySearchTimer)
+			row->categorySearchTimer->stop();
+	}
+	QCoreApplication::removePostedEvents(this);
+}
+
 void StreamInfoDock::showEvent(QShowEvent *event)
 {
 	OBSDock::showEvent(event);
-	RefreshChannels();
+	if (!shuttingDown.load())
+		RefreshChannels();
 }
 
 StreamInfoDock::ChannelRow *StreamInfoDock::RowAt(int index)
@@ -217,7 +237,7 @@ void StreamInfoDock::ClearRows()
 
 void StreamInfoDock::RefreshChannels()
 {
-	if (pendingApplies > 0)
+	if (shuttingDown.load() || pendingApplies > 0)
 		return;
 
 	ClearRows();
@@ -427,13 +447,13 @@ void StreamInfoDock::SearchCategories(int index, const QString &query)
 			success = PlatformMetadataClient::SearchCategories(channel.platform, registration, tokens, text,
 									    results, error);
 		const QString message = QString::fromUtf8(error.data(), static_cast<qsizetype>(error.size()));
-		if (!guard)
+		if (!guard || guard->shuttingDown.load())
 			return;
 		QMetaObject::invokeMethod(
 			guard.data(),
 			[guard, index, channelId = channel.id, rowSet, searchGeneration, requestedText,
 			 success, message, results = std::move(results)]() {
-				if (!guard)
+				if (!guard || guard->shuttingDown.load())
 					return;
 				ChannelRow *target = guard->RowAt(index);
 				if (!target || !target->categoryCombo || guard->rowsGeneration != rowSet ||
@@ -596,12 +616,12 @@ void StreamInfoDock::ApplyRow(int index, const QString &sharedTitle)
 								 channel.accountId, metadata, error);
 		}
 		const QString message = QString::fromUtf8(error.data(), static_cast<qsizetype>(error.size()));
-		if (!guard)
+		if (!guard || guard->shuttingDown.load())
 			return;
 		QMetaObject::invokeMethod(
 			guard.data(),
 			[guard, index, success, message]() {
-				if (guard)
+				if (guard && !guard->shuttingDown.load())
 					guard->ReportResult(index, success, message);
 			},
 			Qt::QueuedConnection);
@@ -610,6 +630,8 @@ void StreamInfoDock::ApplyRow(int index, const QString &sharedTitle)
 
 void StreamInfoDock::ReportResult(int index, bool success, const QString &message)
 {
+	if (shuttingDown.load())
+		return;
 	if (ChannelRow *row = RowAt(index)) {
 		row->resultLabel->setVisible(true);
 		row->resultLabel->setText(success ? QTStr("Multistream.Info.Updated")

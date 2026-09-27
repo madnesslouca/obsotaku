@@ -32,11 +32,12 @@ class UnifiedChatDock : public OBSDock {
 
 public:
 	explicit UnifiedChatDock(QWidget *parent = nullptr);
-	~UnifiedChatDock() override = default;
+	~UnifiedChatDock() override;
 
 	MultiStreamChatAggregator *Aggregator() const { return aggregator; }
 	void AutoConnectAccounts();
 	void DisconnectAccounts();
+	void Shutdown();
 
 protected:
 	void changeEvent(QEvent *event) override;
@@ -94,4 +95,5 @@ private:
 	QHash<QString, QString> channelNames;
 	QHash<QString, StreamPlatform> channelPlatforms;
 	bool connected = false;
+	bool shuttingDown = false;
 };

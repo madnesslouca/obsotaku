@@ -102,11 +102,16 @@ void MultiStreamChatAggregator::SetChannels(const std::vector<ChatChannelRef> &c
 
 void MultiStreamChatAggregator::DisconnectAll()
 {
+	StopAll();
+	connections.clear();
+}
+
+void MultiStreamChatAggregator::StopAll()
+{
 	for (auto &connection : connections) {
 		if (connection)
 			connection->Stop();
 	}
-	connections.clear();
 }
 
 bool MultiStreamChatAggregator::IsConnected(const QString &channelId) const

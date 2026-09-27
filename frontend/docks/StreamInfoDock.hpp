@@ -16,6 +16,7 @@
 #include <QHash>
 #include <QPointer>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -38,10 +39,11 @@ class StreamInfoDock : public OBSDock {
 
 public:
 	explicit StreamInfoDock(QWidget *parent = nullptr);
-	~StreamInfoDock() override = default;
+	~StreamInfoDock() override;
 
 	/* Reloads the channel list from the store. */
 	void RefreshChannels();
+	void Shutdown();
 
 protected:
 	void showEvent(QShowEvent *event) override;
@@ -90,4 +92,5 @@ private:
 	int successfulApplies = 0;
 	int failedApplies = 0;
 	uint64_t rowsGeneration = 0;
+	std::atomic_bool shuttingDown{false};
 };

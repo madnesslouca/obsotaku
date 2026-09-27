@@ -31,6 +31,9 @@ public:
 	/* Replaces the live set: drops connections no longer listed, keeps the
 	 * ones whose target did not change, and starts the new ones. */
 	void SetChannels(const std::vector<ChatChannelRef> &channels);
+	/* Stops timers, sockets and new work while keeping the QObject instances
+	 * alive until background token tasks have drained during shutdown. */
+	void StopAll();
 	void DisconnectAll();
 
 	bool IsConnected(const QString &channelId) const;

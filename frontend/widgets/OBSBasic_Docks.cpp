@@ -19,6 +19,7 @@
 
 #include "OBSBasic.hpp"
 #include <docks/UnifiedChatDock.hpp>
+#include <docks/VerticalPreviewDock.hpp>
 
 #include <qt-wrappers.hpp>
 
@@ -90,6 +91,9 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 	controlsDock->setVisible(true);
 	if (unifiedChatDock) {
 		unifiedChatDock->setVisible(true);
+	}
+	if (verticalPreviewDock) {
+		verticalPreviewDock->setVisible(true);
 	}
 	statsDock->setVisible(false);
 	statsDock->setFloating(true);

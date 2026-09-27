@@ -3171,6 +3171,56 @@ ManualChannelDialog QLabel#manualChannelError {
     font-weight: 600;
 }
 
+VerticalPreviewDock QWidget#verticalPreviewContent {
+    background-color: var(--bg_window);
+}
+
+VerticalPreviewDock QFrame#verticalPreviewHeader,
+VerticalPreviewDock QFrame#verticalPreviewControls {
+    background-color: var(--bg_secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+VerticalPreviewDock QLabel#verticalPreviewHeaderTitle,
+VerticalPreviewDock QLabel#verticalPreviewEmptyTitle {
+    color: var(--text);
+    font-weight: 700;
+}
+
+VerticalPreviewDock QLabel#verticalPreviewHint,
+VerticalPreviewDock QLabel#verticalPreviewStatus,
+VerticalPreviewDock QLabel#verticalPreviewLabel {
+    color: var(--text_muted);
+}
+
+VerticalPreviewDock QLabel#verticalPreviewLabel {
+    font-size: var(--font_small);
+    font-weight: 600;
+}
+
+VerticalPreviewDock QStackedWidget#verticalPreviewStack,
+VerticalPreviewDock QFrame#verticalPreviewEmpty {
+    background-color: #050506;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+
+VerticalPreviewDock QLabel#verticalPreviewEmptyIcon {
+    color: #ff5c8a;
+    background-color: rgba(255, 0, 80, 0.14);
+    border: 1px solid rgba(255, 0, 80, 0.34);
+    border-radius: 10px;
+    font-size: 20px;
+    font-weight: 800;
+    padding: 14px 8px;
+}
+
+VerticalPreviewDock QPushButton#verticalPreviewPrimaryButton,
+VerticalPreviewDock QPushButton#verticalPreviewEditButton {
+    font-weight: 700;
+}
+
 /* Channel bar cards */
 MultistreamChannelBar#multistreamChannelBar QLabel#channelBarTitle {
     color: var(--text);
