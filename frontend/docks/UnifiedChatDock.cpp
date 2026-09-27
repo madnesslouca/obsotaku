@@ -18,17 +18,26 @@
 #include <qt-wrappers.hpp>
 
 #include <QColor>
+#include <QEvent>
+#include <QFrame>
+#include <QIcon>
+#include <QPalette>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
+#include <QStyle>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+
+#include <utility>
 
 #include "moc_UnifiedChatDock.cpp"
 
 namespace {
 constexpr int MAX_CHAT_BLOCKS = 500;
+constexpr int MAX_CHAT_MESSAGES = 300;
 constexpr int PLATFORM_ICON_SIZE = 14;
 
 constexpr int ROLE_BADGE_SIZE = 14;
@@ -70,6 +79,45 @@ QString SafeUserColor(const QString &color, StreamPlatform platform)
 	if (hexColor.match(color).hasMatch())
 		return color;
 	return PlatformColor(platform);
+}
+
+QColor MixColors(const QColor &base, const QColor &accent, qreal accentAmount)
+{
+	const qreal baseAmount = 1.0 - accentAmount;
+	return QColor(qRound(base.red() * baseAmount + accent.red() * accentAmount),
+		      qRound(base.green() * baseAmount + accent.green() * accentAmount),
+		      qRound(base.blue() * baseAmount + accent.blue() * accentAmount));
+}
+
+struct ChatColors {
+	QString surface;
+	QString border;
+	QString text;
+	QString muted;
+	QColor background;
+};
+
+ChatColors ColorsFor(const QTextBrowser *view)
+{
+	const QPalette palette = view->palette();
+	const QColor background = palette.color(QPalette::Base);
+	const QColor text = palette.color(QPalette::Text);
+	QColor muted = palette.color(QPalette::Disabled, QPalette::Text);
+	if (!muted.isValid() || muted == text)
+		muted = MixColors(background, text, 0.62);
+
+	return {MixColors(background, text, 0.045).name(), MixColors(background, text, 0.15).name(),
+		text.name(), muted.name(), background};
+}
+
+QString ReadableUserColor(const QString &color, StreamPlatform platform, const QColor &background)
+{
+	QColor result(SafeUserColor(color, platform));
+	if (background.lightness() < 128 && result.lightness() < 145)
+		result = result.lighter(175);
+	else if (background.lightness() >= 128 && result.lightness() > 145)
+		result = result.darker(170);
+	return result.name();
 }
 
 /* The logo alone: the platform is recognisable at a glance and the row keeps
@@ -141,16 +189,24 @@ QString StatusText(ChatConnectionState state, const QString &platformName, const
 	return {};
 }
 
-QString MessageRowHtml(const ChatMessage &msg, const QSet<QString> &drawnRoles)
+QString MessageRowHtml(const ChatMessage &msg, const QSet<QString> &drawnRoles, const ChatColors &colors)
 {
-	const QString nickColor = SafeUserColor(msg.userColor, msg.platform);
-	QString rowStyle = QStringLiteral("margin:0 0 8px 0; padding:6px 8px; border-radius:6px;");
-	if (msg.kind == ChatMessageKind::SuperChat)
-		rowStyle += QStringLiteral(" background-color:rgba(234,179,8,0.14); border-left:3px solid #eab308;");
-	else if (msg.kind == ChatMessageKind::Membership)
-		rowStyle += QStringLiteral(" background-color:rgba(34,197,94,0.12); border-left:3px solid #22c55e;");
-	else if (msg.isBroadcaster)
-		rowStyle += QStringLiteral(" background-color:rgba(124,58,237,0.10);");
+	const QString platformColor = PlatformColor(msg.platform);
+	const QString nickColor = ReadableUserColor(msg.userColor, msg.platform, colors.background);
+	QString accent = platformColor;
+	QColor surface(colors.surface);
+	if (msg.kind == ChatMessageKind::SuperChat) {
+		accent = QStringLiteral("#eab308");
+		surface = MixColors(colors.background, QColor(accent), 0.14);
+	} else if (msg.kind == ChatMessageKind::Membership) {
+		accent = QStringLiteral("#22c55e");
+		surface = MixColors(colors.background, QColor(accent), 0.12);
+	} else if (msg.isBroadcaster) {
+		surface = MixColors(colors.background, QColor(QStringLiteral("#7c3aed")), 0.11);
+	}
+	const QString rowStyle = QStringLiteral("margin:0 0 7px 0; padding:8px 10px; background-color:%1; "
+						"border:1px solid %2; border-left:3px solid %3; border-radius:7px;")
+				 .arg(surface.name(), colors.border, accent);
 
 	QString paid;
 	if (msg.kind == ChatMessageKind::SuperChat && !msg.paidAmount.isEmpty()) {
@@ -161,21 +217,22 @@ QString MessageRowHtml(const ChatMessage &msg, const QSet<QString> &drawnRoles)
 					    : QStringLiteral(" %1").arg(msg.paidCurrency.toHtmlEscaped()));
 	}
 
-	const QString channelBit = msg.channelName.isEmpty()
-					   ? QString()
-					   : QStringLiteral(" <span style=\"color:#888; font-size:10px;\">@%1</span>")
-						     .arg(msg.channelName.toHtmlEscaped());
+	const QString channelName = msg.channelName.isEmpty() ? PlatformName(msg.platform) : msg.channelName;
+	const QString channelBit = QStringLiteral(
+		"<span style=\"color:%1; font-size:10px; font-weight:600;\">&nbsp;%2</span>")
+					   .arg(platformColor, channelName.toHtmlEscaped());
 
 	/* Qt's rich text drops margins on inline spans, so the gap between the
 	 * nickname and the message has to be real characters or the two run
 	 * together. The colon is what every chat client uses for the same job. */
 	return QStringLiteral("<div style=\"%1\">"
-			      "<div style=\"margin-bottom:2px;\">%2 %3"
-			      "<span style=\"font-size:10px; color:#888;\">&nbsp;%4</span>%5%6</div>"
-			      "<div><b style=\"color:%7;\">%8:</b>&nbsp;%9</div></div>")
-		.arg(rowStyle, PlatformBadgeHtml(msg.platform), RolesHtml(msg, drawnRoles),
-		     msg.timestamp.toHtmlEscaped(),
-		     channelBit, paid, nickColor, msg.senderName.toHtmlEscaped(), msg.messageText.toHtmlEscaped());
+			      "<div style=\"margin-bottom:4px; color:%2;\">%3%4"
+			      "<span style=\"font-size:10px;\">&nbsp;&nbsp;%5</span>%6</div>"
+			      "<div style=\"color:%7;\">%8<b style=\"color:%9;\">%10</b>"
+			      "<span style=\"color:%7;\">:&nbsp;%11</span></div></div>")
+		.arg(rowStyle, colors.muted, PlatformBadgeHtml(msg.platform), channelBit,
+		     msg.timestamp.toHtmlEscaped(), paid, colors.text, RolesHtml(msg, drawnRoles), nickColor,
+		     msg.senderName.toHtmlEscaped(), msg.messageText.toHtmlEscaped());
 }
 } // namespace
 
@@ -191,24 +248,72 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent) : OBSDock(parent)
 
 	auto *layout = new QVBoxLayout(mainWidget);
 	layout->setContentsMargins(8, 8, 8, 8);
-	layout->setSpacing(6);
+	layout->setSpacing(8);
 
-	auto *toolbar = new QHBoxLayout();
-	toolbar->setContentsMargins(0, 0, 0, 0);
-	toolbar->setSpacing(8);
+	auto *header = new QFrame(mainWidget);
+	header->setObjectName(QStringLiteral("unifiedChatHeader"));
+	auto *headerLayout = new QVBoxLayout(header);
+	headerLayout->setContentsMargins(12, 10, 10, 10);
+	headerLayout->setSpacing(6);
 
-	filtersLayout = new QHBoxLayout();
-	filtersLayout->setContentsMargins(0, 0, 0, 0);
-	filtersLayout->setSpacing(8);
-	toolbar->addLayout(filtersLayout);
-	toolbar->addStretch();
+	auto *titleRow = new QHBoxLayout();
+	titleRow->setContentsMargins(0, 0, 0, 0);
+	titleRow->setSpacing(8);
+	auto *headerTitle = new QLabel(QTStr("Multistream.Chat.HeaderTitle"), header);
+	headerTitle->setObjectName(QStringLiteral("unifiedChatHeaderTitle"));
+	clearButton = new QPushButton(QTStr("Multistream.Chat.Clear"), header);
+	clearButton->setObjectName(QStringLiteral("unifiedChatClearButton"));
+	clearButton->setToolTip(QTStr("Multistream.Chat.ClearTip"));
+	clearButton->setEnabled(false);
+	titleRow->addWidget(headerTitle);
+	titleRow->addStretch();
+	titleRow->addWidget(clearButton);
+	headerLayout->addLayout(titleRow);
 
-	autoScroll = new QCheckBox(QTStr("Multistream.Chat.AutoScroll"), mainWidget);
+	auto *statusRow = new QHBoxLayout();
+	statusRow->setContentsMargins(0, 0, 0, 0);
+	statusRow->setSpacing(7);
+	connectionDot = new QFrame(header);
+	connectionDot->setObjectName(QStringLiteral("unifiedChatConnectionDot"));
+	connectionDot->setFixedSize(8, 8);
+	statusLabel = new QLabel(QTStr("Multistream.Chat.Ready"), header);
+	statusLabel->setObjectName(QStringLiteral("unifiedChatStatus"));
+	statusLabel->setWordWrap(true);
+	statusRow->addWidget(connectionDot, 0, Qt::AlignTop);
+	statusRow->addWidget(statusLabel, 1);
+
+	autoScroll = new QCheckBox(QTStr("Multistream.Chat.AutoScroll"), header);
 	autoScroll->setChecked(true);
-	clearButton = new QPushButton(QTStr("Multistream.Chat.Clear"), mainWidget);
-	toolbar->addWidget(autoScroll);
-	toolbar->addWidget(clearButton);
-	layout->addLayout(toolbar);
+	autoScroll->setToolTip(QTStr("Multistream.Chat.AutoScrollTip"));
+	statusRow->addWidget(autoScroll, 0, Qt::AlignTop);
+	headerLayout->addLayout(statusRow);
+	layout->addWidget(header);
+
+	filtersCard = new QFrame(mainWidget);
+	filtersCard->setObjectName(QStringLiteral("unifiedChatFilters"));
+	auto *filtersCardLayout = new QVBoxLayout(filtersCard);
+	filtersCardLayout->setContentsMargins(10, 7, 10, 7);
+	filtersCardLayout->setSpacing(5);
+	auto *filtersTitle = new QLabel(QTStr("Multistream.Chat.VisibleChannels"), filtersCard);
+	filtersTitle->setObjectName(QStringLiteral("unifiedChatSectionLabel"));
+	filtersCardLayout->addWidget(filtersTitle);
+	auto *filtersScroll = new QScrollArea(filtersCard);
+	filtersScroll->setObjectName(QStringLiteral("unifiedChatFiltersScroll"));
+	filtersScroll->setWidgetResizable(true);
+	filtersScroll->setFrameShape(QFrame::NoFrame);
+	filtersScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+	filtersScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	/* Leave room for the horizontal scrollbar when many accounts are shown. */
+	filtersScroll->setFixedHeight(44);
+	auto *filtersContent = new QWidget(filtersScroll);
+	filtersContent->setObjectName(QStringLiteral("unifiedChatFiltersContent"));
+	filtersLayout = new QHBoxLayout(filtersContent);
+	filtersLayout->setContentsMargins(0, 0, 0, 0);
+	filtersLayout->setSpacing(6);
+	filtersLayout->addStretch();
+	filtersScroll->setWidget(filtersContent);
+	filtersCardLayout->addWidget(filtersScroll);
+	layout->addWidget(filtersCard);
 
 	chatView = new QTextBrowser(mainWidget);
 	chatView->setObjectName(QStringLiteral("unifiedChatView"));
@@ -216,48 +321,88 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent) : OBSDock(parent)
 	chatView->setOpenLinks(false);
 	chatView->setReadOnly(true);
 	RegisterPlatformIcons();
-	layout->addWidget(chatView, 1);
 
+	chatStack = new QStackedWidget(mainWidget);
+	chatStack->setObjectName(QStringLiteral("unifiedChatStack"));
+	auto *emptyPage = new QWidget(chatStack);
+	emptyPage->setObjectName(QStringLiteral("unifiedChatEmpty"));
+	auto *emptyLayout = new QVBoxLayout(emptyPage);
+	emptyLayout->setContentsMargins(28, 28, 28, 28);
+	emptyLayout->setSpacing(7);
+	emptyLayout->addStretch();
+	auto *emptyIcon = new QLabel(QStringLiteral("•••"), emptyPage);
+	emptyIcon->setObjectName(QStringLiteral("unifiedChatEmptyIcon"));
+	emptyIcon->setAlignment(Qt::AlignCenter);
+	emptyTitle = new QLabel(QTStr("Multistream.Chat.EmptyTitle"), emptyPage);
+	emptyTitle->setObjectName(QStringLiteral("unifiedChatEmptyTitle"));
+	emptyTitle->setAlignment(Qt::AlignCenter);
+	emptyBody = new QLabel(QTStr("Multistream.Chat.EmptyBody"), emptyPage);
+	emptyBody->setObjectName(QStringLiteral("unifiedChatEmptyBody"));
+	emptyBody->setAlignment(Qt::AlignCenter);
+	emptyBody->setWordWrap(true);
+	emptyLayout->addWidget(emptyIcon);
+	emptyLayout->addWidget(emptyTitle);
+	emptyLayout->addWidget(emptyBody);
+	emptyLayout->addStretch();
+	chatStack->addWidget(emptyPage);
+	chatStack->addWidget(chatView);
+	layout->addWidget(chatStack, 1);
+
+	auto *composer = new QFrame(mainWidget);
+	composer->setObjectName(QStringLiteral("unifiedChatComposer"));
+	auto *composerLayout = new QVBoxLayout(composer);
+	composerLayout->setContentsMargins(10, 8, 10, 8);
+	composerLayout->setSpacing(5);
+	auto *composerTitle = new QLabel(QTStr("Multistream.Chat.ReplyOn"), composer);
+	composerTitle->setObjectName(QStringLiteral("unifiedChatSectionLabel"));
+	composerLayout->addWidget(composerTitle);
 	auto *sendRow = new QHBoxLayout();
 	sendRow->setContentsMargins(0, 0, 0, 0);
 	sendRow->setSpacing(6);
 
-	sendChannel = new QComboBox(mainWidget);
+	sendChannel = new QComboBox(composer);
 	sendChannel->setObjectName(QStringLiteral("unifiedChatSendPlatform"));
 	sendChannel->setMinimumWidth(140);
 
-	sendInput = new QLineEdit(mainWidget);
+	sendInput = new QLineEdit(composer);
 	sendInput->setObjectName(QStringLiteral("unifiedChatSendInput"));
 	sendInput->setPlaceholderText(QTStr("Multistream.Chat.SendPlaceholder"));
 
-	sendButton = new QPushButton(QTStr("Multistream.Chat.Send"), mainWidget);
+	sendButton = new QPushButton(QTStr("Multistream.Chat.Send"), composer);
 	sendButton->setObjectName(QStringLiteral("unifiedChatSendButton"));
 	sendButton->setEnabled(false);
 
 	sendRow->addWidget(sendChannel);
 	sendRow->addWidget(sendInput, 1);
 	sendRow->addWidget(sendButton);
-	layout->addLayout(sendRow);
+	composerLayout->addLayout(sendRow);
 
-	sendHint = new QLabel(mainWidget);
+	sendHint = new QLabel(composer);
 	sendHint->setObjectName(QStringLiteral("unifiedChatSendHint"));
 	sendHint->setWordWrap(true);
-	layout->addWidget(sendHint);
-
-	statusLabel = new QLabel(QTStr("Multistream.Chat.Ready"), mainWidget);
-	statusLabel->setObjectName(QStringLiteral("unifiedChatStatus"));
-	statusLabel->setWordWrap(true);
-	layout->addWidget(statusLabel);
+	composerLayout->addWidget(sendHint);
+	layout->addWidget(composer);
 
 	setWidget(mainWidget);
 
 	connect(aggregator, &MultiStreamChatAggregator::messageReceived, this, &UnifiedChatDock::OnChatMessage);
 	connect(aggregator, &MultiStreamChatAggregator::statusChanged, this, &UnifiedChatDock::OnStatusChanged);
-	connect(clearButton, &QPushButton::clicked, chatView, &QTextBrowser::clear);
+	connect(clearButton, &QPushButton::clicked, this, &UnifiedChatDock::ClearMessages);
 	connect(sendButton, &QPushButton::clicked, this, &UnifiedChatDock::OnSendClicked);
 	connect(sendInput, &QLineEdit::returnPressed, this, &UnifiedChatDock::OnSendClicked);
+	connect(sendInput, &QLineEdit::textChanged, this, &UnifiedChatDock::UpdateSendButton);
 	connect(sendChannel, qOverload<int>(&QComboBox::currentIndexChanged), this,
 		&UnifiedChatDock::OnSendChannelChanged);
+}
+
+void UnifiedChatDock::changeEvent(QEvent *event)
+{
+	OBSDock::changeEvent(event);
+	if (chatView && chatStack &&
+	    (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange)) {
+		RegisterPlatformIcons();
+		RenderMessages();
+	}
 }
 
 void UnifiedChatDock::showEvent(QShowEvent *event)
@@ -294,15 +439,22 @@ void UnifiedChatDock::RebuildFilters(const std::vector<ChatChannelRef> &channels
 		channelNames.insert(channel.channelId, label);
 		channelPlatforms.insert(channel.channelId, channel.platform);
 
-		auto *box = new QCheckBox(label, this->widget());
+		auto *box = new QToolButton(this->widget());
+		box->setObjectName(QStringLiteral("unifiedChatFilter"));
+		box->setText(label);
+		box->setIcon(QIcon(PlatformIconProvider::Badge(channel.platform, 16)));
+		box->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+		box->setCheckable(true);
 		box->setChecked(true);
-		box->setToolTip(PlatformName(channel.platform));
-		box->setStyleSheet(QStringLiteral("QCheckBox { color: %1; font-weight: 600; }")
-					   .arg(PlatformColor(channel.platform)));
-		connect(box, &QCheckBox::toggled, this, &UnifiedChatDock::OnFilterToggled);
+		box->setProperty("platform", StreamPlatformId(channel.platform));
+		box->setToolTip(QTStr("Multistream.Chat.FilterTip").arg(label, PlatformName(channel.platform)));
+		connect(box, &QToolButton::toggled, this, &UnifiedChatDock::OnFilterToggled);
 		filtersLayout->addWidget(box);
 		channelFilters.insert(channel.channelId, box);
 	}
+	filtersLayout->addStretch();
+	filtersCard->setVisible(!channelFilters.isEmpty());
+	RenderMessages();
 }
 
 void UnifiedChatDock::AutoConnectAccounts()
@@ -343,7 +495,10 @@ void UnifiedChatDock::AutoConnectAccounts()
 		connected = false;
 		statusLabel->setText(unsupportedOnly ? QTStr("Multistream.Chat.NoAccounts")
 						     : QTStr("Multistream.Chat.NoChatChannels"));
+		statusLabel->setToolTip(statusLabel->text());
+		SetConnectionAppearance("offline");
 		aggregator->DisconnectAll();
+		UpdateEmptyState();
 		return;
 	}
 
@@ -377,7 +532,8 @@ void UnifiedChatDock::RefreshSendTargets(const std::vector<ChatChannelRef> &chan
 		/* The platform is in the label because two channels can share a
 		 * name across platforms, and the target has to be unambiguous. */
 		const QString label = channel.displayName.isEmpty() ? channel.address : channel.displayName;
-		sendChannel->addItem(QStringLiteral("%1 (%2)").arg(label, PlatformName(channel.platform)),
+		sendChannel->addItem(QIcon(PlatformIconProvider::Badge(channel.platform, 16)),
+				     QStringLiteral("%1 (%2)").arg(label, PlatformName(channel.platform)),
 				     channel.channelId);
 	}
 
@@ -390,7 +546,8 @@ void UnifiedChatDock::RefreshSendTargets(const std::vector<ChatChannelRef> &chan
 void UnifiedChatDock::OnSendChannelChanged(int)
 {
 	if (sendChannel->count() == 0) {
-		sendButton->setEnabled(false);
+		sendTargetReady = false;
+		UpdateSendButton();
 		sendInput->setEnabled(false);
 		sendHint->setText(QTStr("Multistream.Chat.SendUnavailable"));
 		return;
@@ -398,7 +555,8 @@ void UnifiedChatDock::OnSendChannelChanged(int)
 
 	const QString channelId = sendChannel->currentData().toString();
 	const bool can = aggregator->CanSend(channelId);
-	sendButton->setEnabled(can);
+	sendTargetReady = can;
+	UpdateSendButton();
 	sendInput->setEnabled(true);
 
 	const QString name = channelNames.value(channelId, sendChannel->currentText());
@@ -424,7 +582,7 @@ void UnifiedChatDock::OnSendChannelChanged(int)
 
 void UnifiedChatDock::OnSendClicked()
 {
-	if (sendChannel->count() == 0)
+	if (sendChannel->count() == 0 || !sendTargetReady || sendInput->text().trimmed().isEmpty())
 		return;
 
 	const QString channelId = sendChannel->currentData().toString();
@@ -448,7 +606,21 @@ void UnifiedChatDock::OnSendClicked()
 
 void UnifiedChatDock::OnFilterToggled()
 {
-	/* Filters only hide future rows; already rendered messages stay. */
+	RenderMessages();
+}
+
+void UnifiedChatDock::ClearMessages()
+{
+	messageHistory.clear();
+	clearButton->setEnabled(false);
+	chatView->clear();
+	RegisterPlatformIcons();
+	UpdateEmptyState();
+}
+
+void UnifiedChatDock::UpdateSendButton()
+{
+	sendButton->setEnabled(sendTargetReady && !sendInput->text().trimmed().isEmpty());
 }
 
 bool UnifiedChatDock::ChannelFilterEnabled(const QString &channelId) const
@@ -494,15 +666,24 @@ void UnifiedChatDock::AppendHtml(const QString &html)
 		cursor.deleteChar();
 	}
 
+	chatStack->setCurrentWidget(chatView);
 	if (autoScroll->isChecked())
 		chatView->verticalScrollBar()->setValue(chatView->verticalScrollBar()->maximum());
 }
 
 void UnifiedChatDock::OnChatMessage(const ChatMessage &msg)
 {
+	messageHistory.append(msg);
+	clearButton->setEnabled(true);
+	while (messageHistory.size() > MAX_CHAT_MESSAGES)
+		messageHistory.removeFirst();
+
 	if (!ChannelFilterEnabled(msg.channelId))
+	{
+		UpdateEmptyState();
 		return;
-	AppendHtml(MessageRowHtml(msg, drawnRoleBadges));
+	}
+	AppendHtml(MessageRowHtml(msg, drawnRoleBadges, ColorsFor(chatView)));
 }
 
 void UnifiedChatDock::OnStatusChanged(const QString &channelId, StreamPlatform platform, ChatConnectionState state,
@@ -520,13 +701,92 @@ void UnifiedChatDock::UpdateStatusSummary()
 {
 	if (channelStates.isEmpty()) {
 		statusLabel->setText(QTStr("Multistream.Chat.Ready"));
+		statusLabel->setToolTip(statusLabel->text());
+		SetConnectionAppearance("offline");
 		return;
 	}
 
-	/* Named by channel rather than by platform: with two accounts on one
-	 * platform, "Conectado ao chat da Twitch" twice says nothing. */
+	int connectedCount = 0;
+	int connectingCount = 0;
+	bool hasProblem = false;
 	QStringList parts;
-	for (auto it = channelStates.constBegin(); it != channelStates.constEnd(); ++it)
+	for (auto it = channelStates.constBegin(); it != channelStates.constEnd(); ++it) {
+		if (it.value() == ChatConnectionState::Connected)
+			++connectedCount;
+		else if (it.value() == ChatConnectionState::Connecting)
+			++connectingCount;
+		else if (it.value() == ChatConnectionState::Failed ||
+			 it.value() == ChatConnectionState::MissingCredential)
+			hasProblem = true;
 		parts << StatusText(it.value(), channelNames.value(it.key(), it.key()), channelDetails.value(it.key()));
-	statusLabel->setText(parts.join(QStringLiteral(" · ")));
+	}
+
+	const int total = channelStates.size();
+	if (connectedCount == total) {
+		statusLabel->setText(QTStr("Multistream.Chat.AllConnected").arg(total));
+		SetConnectionAppearance("connected");
+	} else if (connectingCount > 0 && connectedCount == 0) {
+		statusLabel->setText(QTStr("Multistream.Chat.ConnectingSummary").arg(total));
+		SetConnectionAppearance("connecting");
+	} else if (connectedCount > 0) {
+		statusLabel->setText(QTStr("Multistream.Chat.PartiallyConnected").arg(connectedCount).arg(total));
+		SetConnectionAppearance(hasProblem ? "warning" : "connecting");
+	} else {
+		statusLabel->setText(QTStr("Multistream.Chat.NoneConnected"));
+		SetConnectionAppearance(hasProblem ? "warning" : "offline");
+	}
+	statusLabel->setToolTip(parts.join(QStringLiteral("\n")));
+}
+
+void UnifiedChatDock::SetConnectionAppearance(const char *state)
+{
+	connectionDot->setProperty("connectionState", state);
+	connectionDot->style()->unpolish(connectionDot);
+	connectionDot->style()->polish(connectionDot);
+}
+
+void UnifiedChatDock::RenderMessages()
+{
+	if (!chatView)
+		return;
+
+	const int oldScroll = chatView->verticalScrollBar()->value();
+	chatView->setUpdatesEnabled(false);
+	chatView->clear();
+	RegisterPlatformIcons();
+	const ChatColors colors = ColorsFor(chatView);
+	for (const ChatMessage &message : std::as_const(messageHistory)) {
+		if (ChannelFilterEnabled(message.channelId))
+			chatView->append(MessageRowHtml(message, drawnRoleBadges, colors));
+	}
+	chatView->setUpdatesEnabled(true);
+	clearButton->setEnabled(!messageHistory.isEmpty());
+	UpdateEmptyState();
+	if (chatStack->currentWidget() == chatView) {
+		if (autoScroll->isChecked())
+			chatView->verticalScrollBar()->setValue(chatView->verticalScrollBar()->maximum());
+		else
+			chatView->verticalScrollBar()->setValue(oldScroll);
+	}
+}
+
+void UnifiedChatDock::UpdateEmptyState()
+{
+	bool hasVisibleMessage = false;
+	for (const ChatMessage &message : std::as_const(messageHistory)) {
+		if (ChannelFilterEnabled(message.channelId)) {
+			hasVisibleMessage = true;
+			break;
+		}
+	}
+
+	if (hasVisibleMessage) {
+		chatStack->setCurrentWidget(chatView);
+		return;
+	}
+
+	const bool filtered = !messageHistory.isEmpty();
+	emptyTitle->setText(QTStr(filtered ? "Multistream.Chat.FilteredTitle" : "Multistream.Chat.EmptyTitle"));
+	emptyBody->setText(QTStr(filtered ? "Multistream.Chat.FilteredBody" : "Multistream.Chat.EmptyBody"));
+	chatStack->setCurrentIndex(0);
 }

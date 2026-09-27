@@ -2953,12 +2953,105 @@ UnifiedChatDock QWidget#unifiedChatDockContent {
     background-color: var(--grey6);
 }
 
+UnifiedChatDock QFrame#unifiedChatHeader,
+UnifiedChatDock QFrame#unifiedChatFilters,
+UnifiedChatDock QFrame#unifiedChatComposer {
+    background-color: var(--grey7);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+}
+
+UnifiedChatDock QLabel#unifiedChatHeaderTitle {
+    color: var(--text);
+    font-size: var(--font_large);
+    font-weight: 700;
+}
+
+UnifiedChatDock QLabel#unifiedChatSectionLabel {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+    font-weight: 600;
+}
+
+UnifiedChatDock QFrame#unifiedChatConnectionDot {
+    background-color: var(--grey3);
+    border: 0;
+    border-radius: 4px;
+}
+
+UnifiedChatDock QFrame#unifiedChatConnectionDot[connectionState="connected"] {
+    background-color: #35c759;
+}
+
+UnifiedChatDock QFrame#unifiedChatConnectionDot[connectionState="connecting"] {
+    background-color: #f5a623;
+}
+
+UnifiedChatDock QFrame#unifiedChatConnectionDot[connectionState="warning"] {
+    background-color: #ff453a;
+}
+
+UnifiedChatDock QScrollArea#unifiedChatFiltersScroll,
+UnifiedChatDock QWidget#unifiedChatFiltersContent {
+    background: transparent;
+    border: 0;
+}
+
+UnifiedChatDock QToolButton#unifiedChatFilter {
+    background-color: var(--grey6);
+    color: var(--text_muted);
+    border: 1px solid var(--grey5);
+    border-radius: 13px;
+    font-size: var(--font_small);
+    font-weight: 600;
+    padding: 3px 9px 3px 6px;
+}
+
+UnifiedChatDock QToolButton#unifiedChatFilter:hover {
+    color: var(--text);
+    border-color: var(--grey3);
+}
+
+UnifiedChatDock QToolButton#unifiedChatFilter:checked {
+    background-color: var(--primary);
+    color: var(--text);
+    border-color: var(--primary_light);
+}
+
+UnifiedChatDock QStackedWidget#unifiedChatStack {
+    background-color: var(--grey7);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+}
+
+UnifiedChatDock QWidget#unifiedChatEmpty {
+    background-color: transparent;
+    border: 0;
+}
+
 UnifiedChatDock QTextBrowser#unifiedChatView {
     background-color: var(--grey7);
     color: var(--text);
-    border: 1px solid var(--grey5);
-    border-radius: 6px;
-    padding: 4px;
+    border: 0;
+    border-radius: 8px;
+    padding: 7px;
+}
+
+UnifiedChatDock QLabel#unifiedChatEmptyIcon {
+    color: var(--primary_light);
+    font-size: 22px;
+    font-weight: 700;
+}
+
+UnifiedChatDock QLabel#unifiedChatEmptyTitle {
+    color: var(--text);
+    font-size: var(--font_large);
+    font-weight: 700;
+}
+
+UnifiedChatDock QLabel#unifiedChatEmptyBody {
+    color: var(--text_muted);
+    font-size: var(--font_small);
 }
 
 UnifiedChatDock QLabel#unifiedChatStatus,
@@ -2988,6 +3081,11 @@ UnifiedChatDock QComboBox#unifiedChatSendPlatform {
 UnifiedChatDock QPushButton#unifiedChatSendButton {
     min-height: 28px;
     padding: 4px 12px;
+    border-radius: 6px;
+}
+
+UnifiedChatDock QPushButton#unifiedChatClearButton {
+    padding: 4px 10px;
     border-radius: 6px;
 }
 
