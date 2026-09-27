@@ -15,12 +15,16 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QHash>
 #include <QLabel>
 #include <QLineEdit>
+#include <QList>
 #include <QPushButton>
+#include <QStackedWidget>
 #include <QTextBrowser>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 class UnifiedChatDock : public OBSDock {
@@ -35,6 +39,7 @@ public:
 	void DisconnectAccounts();
 
 protected:
+	void changeEvent(QEvent *event) override;
 	void showEvent(QShowEvent *event) override;
 	void hideEvent(QHideEvent *event) override;
 
@@ -45,11 +50,16 @@ private slots:
 	void OnSendClicked();
 	void OnSendChannelChanged(int index);
 	void OnFilterToggled();
+	void ClearMessages();
+	void UpdateSendButton();
 
 private:
 	void RebuildFilters(const std::vector<ChatChannelRef> &channels);
 	void RefreshSendTargets(const std::vector<ChatChannelRef> &channels);
 	void UpdateStatusSummary();
+	void SetConnectionAppearance(const char *state);
+	void RenderMessages();
+	void UpdateEmptyState();
 	bool ChannelFilterEnabled(const QString &channelId) const;
 	void AppendHtml(const QString &html);
 	void RegisterPlatformIcons();
@@ -61,15 +71,22 @@ private:
 	QHBoxLayout *filtersLayout = nullptr;
 	/* Keyed by channel id, not by platform: two accounts on one platform get
 	 * a filter each, otherwise one of them would be invisible. */
-	QHash<QString, QCheckBox *> channelFilters;
+	QHash<QString, QToolButton *> channelFilters;
+	QFrame *filtersCard = nullptr;
+	QStackedWidget *chatStack = nullptr;
 	QTextBrowser *chatView = nullptr;
+	QLabel *emptyTitle = nullptr;
+	QLabel *emptyBody = nullptr;
 	QCheckBox *autoScroll = nullptr;
 	QLabel *statusLabel = nullptr;
+	QFrame *connectionDot = nullptr;
 	QPushButton *clearButton = nullptr;
 	QComboBox *sendChannel = nullptr;
 	QLineEdit *sendInput = nullptr;
 	QPushButton *sendButton = nullptr;
 	QLabel *sendHint = nullptr;
+	QList<ChatMessage> messageHistory;
+	bool sendTargetReady = false;
 
 	/* Connection state per channel, for the summary line. */
 	QHash<QString, ChatConnectionState> channelStates;

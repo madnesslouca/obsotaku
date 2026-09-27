@@ -475,6 +475,79 @@ IdianPlayground QVBoxLayout {
     margin: 1px;
 }
 
+/* Unified chat remains readable when OBS follows the native OS palette. */
+UnifiedChatDock QFrame#unifiedChatHeader,
+UnifiedChatDock QFrame#unifiedChatFilters,
+UnifiedChatDock QFrame#unifiedChatComposer,
+UnifiedChatDock QStackedWidget#unifiedChatStack {
+    background-color: palette(base);
+    border: 1px solid palette(mid);
+    border-radius: 8px;
+}
+
+UnifiedChatDock QWidget#unifiedChatEmpty {
+    background-color: transparent;
+    border: 0;
+}
+
+UnifiedChatDock QLabel#unifiedChatHeaderTitle,
+UnifiedChatDock QLabel#unifiedChatEmptyTitle {
+    color: palette(text);
+    font-weight: 700;
+}
+
+UnifiedChatDock QLabel#unifiedChatStatus,
+UnifiedChatDock QLabel#unifiedChatSendHint,
+UnifiedChatDock QLabel#unifiedChatSectionLabel,
+UnifiedChatDock QLabel#unifiedChatEmptyBody {
+    color: palette(window-text);
+}
+
+UnifiedChatDock QFrame#unifiedChatConnectionDot {
+    background-color: palette(mid);
+    border: 0;
+    border-radius: 4px;
+}
+
+UnifiedChatDock QFrame#unifiedChatConnectionDot[connectionState="connected"] {
+    background-color: #218739;
+}
+
+UnifiedChatDock QFrame#unifiedChatConnectionDot[connectionState="connecting"] {
+    background-color: #b56a00;
+}
+
+UnifiedChatDock QFrame#unifiedChatConnectionDot[connectionState="warning"] {
+    background-color: #c8322b;
+}
+
+UnifiedChatDock QScrollArea#unifiedChatFiltersScroll,
+UnifiedChatDock QWidget#unifiedChatFiltersContent {
+    background: transparent;
+    border: 0;
+}
+
+UnifiedChatDock QToolButton#unifiedChatFilter {
+    background-color: palette(button);
+    color: palette(button-text);
+    border: 1px solid palette(mid);
+    border-radius: 13px;
+    padding: 3px 9px 3px 6px;
+}
+
+UnifiedChatDock QToolButton#unifiedChatFilter:checked {
+    background-color: palette(highlight);
+    color: palette(highlighted-text);
+    border-color: palette(highlight);
+}
+
+UnifiedChatDock QTextBrowser#unifiedChatView {
+    background-color: palette(base);
+    color: palette(text);
+    border: 0;
+    padding: 7px;
+}
+
 /* NDI network routing dialog */
 QDialog#ndiNetworkDialog QFrame#ndiHeader,
 QDialog#ndiNetworkDialog QFrame#ndiDetails,
