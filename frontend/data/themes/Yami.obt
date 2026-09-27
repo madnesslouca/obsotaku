@@ -3299,3 +3299,70 @@ StreamInfoDock QScrollArea#streamInfoScroll {
     background: transparent;
     border: none;
 }
+
+/* NDI network routing dialog */
+QDialog#ndiNetworkDialog {
+    background-color: var(--bg_window);
+}
+
+QDialog#ndiNetworkDialog QFrame#ndiHeader,
+QDialog#ndiNetworkDialog QFrame#ndiDetails,
+QDialog#ndiNetworkDialog QFrame#ndiRoute,
+QDialog#ndiNetworkDialog QFrame#ndiStatusCard {
+    background-color: var(--grey6);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiBadge {
+    background-color: var(--primary);
+    color: var(--text);
+    border-radius: 7px;
+    padding: 6px 11px;
+    font-weight: bold;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiTitle {
+    color: var(--text);
+    font-size: var(--font_xlarge);
+    font-weight: bold;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiSectionTitle {
+    color: var(--text);
+    font-size: var(--font_large);
+    font-weight: bold;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiStatusDotReady {
+    color: var(--green2);
+    font-size: var(--font_xlarge);
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiStatusDotMissing {
+    color: var(--yellow2);
+    font-size: var(--font_xlarge);
+}
+
+QDialog#ndiNetworkDialog QLabel#infoBanner {
+    background-color: var(--grey6);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+    color: var(--text_muted);
+    padding: 10px 14px;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiRouteNode,
+QDialog#ndiNetworkDialog QLabel#ndiRouteNodeSelected {
+    background-color: var(--bg_window);
+    border: 1px solid var(--grey4);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 8px 12px;
+    font-weight: bold;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiRouteNodeSelected {
+    border: 2px solid var(--primary_light);
+    padding: 7px 11px;
+}

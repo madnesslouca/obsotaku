@@ -20,7 +20,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
-#include <QPalette>
 #include <QPushButton>
 #include <QStyle>
 #include <QUrl>
@@ -55,22 +54,6 @@ NdiNetworkDialog::NdiNetworkDialog(QWidget *parent) : QDialog(parent), initialAd
 	setModal(true);
 	setMinimumSize(700, 590);
 	resize(740, 640);
-
-	const QColor accent = palette().color(QPalette::Highlight);
-	const QColor surface = palette().color(QPalette::AlternateBase);
-	const QColor border = palette().color(QPalette::Mid);
-	setStyleSheet(QStringLiteral(
-			  "#ndiHeader, #ndiDetails, #ndiRoute, #ndiStatusCard { border: 1px solid %1; border-radius: 8px; }"
-			  "#ndiHeader, #ndiDetails, #ndiRoute, #ndiStatusCard { background: %2; }"
-			  "#ndiBadge { background: %3; color: %4; border-radius: 7px; padding: 6px 11px; font-weight: 700; }"
-			  "#ndiTitle { font-size: 19px; font-weight: 650; }"
-			  "#ndiSectionTitle { font-size: 14px; font-weight: 650; }"
-			  "#ndiStatusDotReady { color: #45c779; font-size: 17px; }"
-			  "#ndiStatusDotMissing { color: #e5a84b; font-size: 17px; }"
-			  "#ndiNetworkDialog #infoBanner { background: %2; border: 1px solid %1; border-radius: 8px; padding: 10px 14px; }"
-			  "#ndiRouteNode { border: 1px solid %1; border-radius: 6px; padding: 8px 12px; font-weight: 600; }"
-			  "#ndiRouteNodeSelected { border: 2px solid %3; border-radius: 6px; padding: 7px 11px; font-weight: 650; }")
-			  .arg(border.name(), surface.name(), accent.name(), palette().color(QPalette::HighlightedText).name()));
 
 	auto *root = new QVBoxLayout(this);
 	root->setContentsMargins(18, 18, 18, 16);

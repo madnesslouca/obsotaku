@@ -474,3 +474,62 @@ IdianPlayground QVBoxLayout {
     border: 1px solid palette(highlight);
     margin: 1px;
 }
+
+/* NDI network routing dialog */
+QDialog#ndiNetworkDialog QFrame#ndiHeader,
+QDialog#ndiNetworkDialog QFrame#ndiDetails,
+QDialog#ndiNetworkDialog QFrame#ndiRoute,
+QDialog#ndiNetworkDialog QFrame#ndiStatusCard {
+    background-color: palette(base);
+    border: 1px solid palette(mid);
+    border-radius: 8px;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiBadge {
+    background-color: palette(highlight);
+    color: palette(highlighted-text);
+    border-radius: 7px;
+    padding: 6px 11px;
+    font-weight: bold;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiTitle {
+    font-size: 19px;
+    font-weight: bold;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiSectionTitle {
+    font-size: 14px;
+    font-weight: bold;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiStatusDotReady {
+    color: rgb(37, 162, 49);
+    font-size: 17px;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiStatusDotMissing {
+    color: rgb(184, 138, 22);
+    font-size: 17px;
+}
+
+QDialog#ndiNetworkDialog QLabel#infoBanner {
+    background-color: palette(base);
+    border: 1px solid palette(mid);
+    border-radius: 8px;
+    padding: 10px 14px;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiRouteNode,
+QDialog#ndiNetworkDialog QLabel#ndiRouteNodeSelected {
+    background-color: palette(window);
+    border: 1px solid palette(mid);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-weight: bold;
+}
+
+QDialog#ndiNetworkDialog QLabel#ndiRouteNodeSelected {
+    border: 2px solid palette(highlight);
+    padding: 7px 11px;
+}
