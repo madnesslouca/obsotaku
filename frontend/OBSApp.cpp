@@ -1521,10 +1521,14 @@ bool OBSApp::notify(QObject *receiver, QEvent *e)
 			messageBox,
 			[guard]() {
 				if (guard)
-					guard->done(QMessageBox::Ok);
+					/* DistroAV opens its Output Settings window when the
+					 * message finishes with Ok. Rejecting this hidden startup
+					 * notice prevents that follow-up without affecting the
+					 * settings action in the Tools menu. */
+					guard->done(QDialog::Rejected);
 			},
 			Qt::QueuedConnection);
-		blog(LOG_INFO, "DistroAV: deferred the missing NDI Runtime notice until an NDI feature is opened");
+		blog(LOG_INFO, "DistroAV: suppressed the missing NDI Runtime startup notice");
 	}
 
 	window = w->windowHandle();
