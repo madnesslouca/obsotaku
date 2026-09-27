@@ -27,6 +27,18 @@ enum class MultiStreamChannelState {
 	Failed,
 };
 
+enum class MultiStreamVideoLayout {
+	Main,
+	Portrait,
+};
+
+enum class MultiStreamPortraitFit {
+	/* Show the complete horizontal program with empty space above and below. */
+	Fit,
+	/* Fill the phone screen and crop the sides of the horizontal program. */
+	Fill,
+};
+
 struct MultiStreamChannel {
 	std::string id;
 	std::string displayName;
@@ -45,6 +57,9 @@ struct MultiStreamChannel {
 	std::string title;
 	std::string categoryId;
 	std::string categoryName;
+	/* Portrait destinations use their own 9:16 canvas and video encoder. */
+	MultiStreamVideoLayout videoLayout = MultiStreamVideoLayout::Main;
+	MultiStreamPortraitFit portraitFit = MultiStreamPortraitFit::Fill;
 	/* Zero-based OBS audio track. Track 1 in the user interface is index 0. */
 	size_t audioMixIndex = 0;
 	bool vodTrackEnabled = false;
@@ -150,6 +165,10 @@ private:
 			 bool countReconnect = false);
 	void ReportFailure(const std::vector<MultiStreamChannel> &failedChannels, const std::string &error);
 	static void PersistEnabled(const std::string &channelId, bool enabled);
+	static void OnMainChannelChanged(void *data, calldata_t *params);
+	bool PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder, MultiStreamPortraitFit fit, std::string &error);
+	void SetPortraitSource(obs_source_t *source, MultiStreamPortraitFit fit);
+	void DestroyPortraitPipeline();
 
 	/* Retires the current destinations instead of freeing them immediately:
 	 * a libobs signal callback may still be running on an output thread. */
@@ -163,5 +182,11 @@ private:
 	std::vector<std::shared_ptr<Destination>> destinations;
 	std::vector<std::shared_ptr<Destination>> retiredDestinations;
 	StateCallback stateCallback;
+	OBSCanvasAutoRelease portraitCanvas;
+	OBSSceneAutoRelease portraitScene;
+	OBSEncoderAutoRelease portraitVideoEncoder;
+	obs_sceneitem_t *portraitSceneItem = nullptr;
+	MultiStreamPortraitFit portraitFit = MultiStreamPortraitFit::Fill;
+	bool mainChannelSignalConnected = false;
 	bool active = false;
 };

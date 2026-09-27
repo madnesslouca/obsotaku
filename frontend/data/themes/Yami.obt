@@ -3104,6 +3104,15 @@ MultistreamChannelBar#multistreamChannelBar QLabel#channelState[channelState="fa
     font-weight: 600;
 }
 
+MultistreamChannelBar#multistreamChannelBar QLabel#channelLayoutBadge {
+    background-color: rgba(255, 0, 80, 0.16);
+    color: #ff5c8a;
+    border-radius: 6px;
+    font-size: var(--font_small);
+    font-weight: 700;
+    padding: 1px 5px;
+}
+
 /* Add channel picker */
 AddChannelDialog {
     background-color: var(--bg_window);
@@ -3147,6 +3156,14 @@ ManualChannelDialog {
 ManualChannelDialog QLabel#manualChannelNote {
     color: var(--text_muted);
     font-size: var(--font_small);
+}
+
+ManualChannelDialog QLabel#manualChannelPortraitHint {
+    background-color: rgba(255, 0, 80, 0.10);
+    color: var(--text);
+    border: 1px solid rgba(255, 0, 80, 0.32);
+    border-radius: 8px;
+    padding: 8px 10px;
 }
 
 ManualChannelDialog QLabel#manualChannelError {

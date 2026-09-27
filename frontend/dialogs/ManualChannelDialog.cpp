@@ -16,6 +16,7 @@
 #include <qt-wrappers.hpp>
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QFormLayout>
@@ -46,8 +47,12 @@ ManualChannelDialog::ManualChannelDialog(QWidget *parent, StreamPlatform platfor
 {
 	const auto &info = GetStreamPlatformInfo(platform);
 	channel.platform = platform;
-	if (channel.id.empty())
+	const bool newChannel = channel.id.empty();
+	if (newChannel) {
 		channel.id = MultistreamChannelStore::NewManualChannelId(platform);
+		if (info.limits.preferredOrientation == StreamOrientation::Portrait)
+			channel.videoLayout = MultiStreamVideoLayout::Portrait;
+	}
 
 	const QString platformName = StreamPlatformDisplayName(platform);
 	setWindowTitle(QTStr("Multistream.ManualChannel.Title").arg(platformName));
@@ -94,7 +99,42 @@ ManualChannelDialog::ManualChannelDialog(QWidget *parent, StreamPlatform platfor
 	});
 	form->addRow(QString(), showKey);
 
+	layoutCombo = new QComboBox(this);
+	layoutCombo->addItem(QTStr("Multistream.ManualChannel.LayoutMain"),
+			     static_cast<int>(MultiStreamVideoLayout::Main));
+	layoutCombo->addItem(QTStr("Multistream.ManualChannel.LayoutPortrait"),
+			     static_cast<int>(MultiStreamVideoLayout::Portrait));
+	layoutCombo->setCurrentIndex(channel.videoLayout == MultiStreamVideoLayout::Portrait ? 1 : 0);
+	layoutCombo->setToolTip(QTStr("Multistream.ManualChannel.LayoutTip"));
+	form->addRow(QTStr("Multistream.ManualChannel.VideoLayout"), layoutCombo);
+
+	portraitFitCombo = new QComboBox(this);
+	portraitFitCombo->addItem(QTStr("Multistream.ManualChannel.PortraitFill"),
+				  static_cast<int>(MultiStreamPortraitFit::Fill));
+	portraitFitCombo->addItem(QTStr("Multistream.ManualChannel.PortraitFit"),
+				  static_cast<int>(MultiStreamPortraitFit::Fit));
+	portraitFitCombo->setCurrentIndex(channel.portraitFit == MultiStreamPortraitFit::Fit ? 1 : 0);
+	form->addRow(QTStr("Multistream.ManualChannel.Framing"), portraitFitCombo);
+
 	layout->addLayout(form);
+
+	portraitHint = new QLabel(QTStr("Multistream.ManualChannel.PortraitHint"), this);
+	portraitHint->setObjectName(QStringLiteral("manualChannelPortraitHint"));
+	portraitHint->setWordWrap(true);
+	layout->addWidget(portraitHint);
+
+	auto updatePortraitControls = [this, form]() {
+		const bool portrait = static_cast<MultiStreamVideoLayout>(layoutCombo->currentData().toInt()) ==
+				      MultiStreamVideoLayout::Portrait;
+		portraitFitCombo->setVisible(portrait);
+		if (QWidget *label = form->labelForField(portraitFitCombo))
+			label->setVisible(portrait);
+		portraitHint->setVisible(portrait);
+	};
+	connect(layoutCombo, &QComboBox::currentIndexChanged, this, [updatePortraitControls](int) {
+		updatePortraitControls();
+	});
+	updatePortraitControls();
 
 	auto *storageNote = new QLabel(QTStr("Multistream.ManualChannel.StorageNote"), this);
 	storageNote->setObjectName(QStringLiteral("manualChannelNote"));
@@ -143,5 +183,7 @@ void ManualChannelDialog::accept()
 					     : name.toStdString();
 	channel.server = server.toStdString();
 	channel.streamKey = key.toStdString();
+	channel.videoLayout = static_cast<MultiStreamVideoLayout>(layoutCombo->currentData().toInt());
+	channel.portraitFit = static_cast<MultiStreamPortraitFit>(portraitFitCombo->currentData().toInt());
 	QDialog::accept();
 }

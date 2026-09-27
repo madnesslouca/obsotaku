@@ -20,6 +20,11 @@
 using namespace std;
 
 namespace {
+constexpr uint32_t PORTRAIT_WIDTH = 1080;
+constexpr uint32_t PORTRAIT_HEIGHT = 1920;
+constexpr uint32_t PORTRAIT_MAX_FPS = 30;
+constexpr int PORTRAIT_VIDEO_BITRATE_KBPS = 6000;
+
 void WipeSecret(string &value)
 {
 	volatile char *data = value.empty() ? nullptr : value.data();
@@ -55,14 +60,17 @@ MultiStreamManager::~MultiStreamManager()
 			obs_output_force_stop(destination->output);
 		WipeSecret(destination->channel.streamKey);
 	}
+	DestroyPortraitPipeline();
 }
 
 bool MultiStreamManager::Configure(vector<MultiStreamChannel> newChannels, string &error)
 {
-	lock_guard lock(mutex);
-	if (active) {
-		error = "Multistream channels cannot be changed while an output is active.";
-		return false;
+	{
+		lock_guard lock(mutex);
+		if (active) {
+			error = "Multistream channels cannot be changed while an output is active.";
+			return false;
+		}
 	}
 
 	unordered_set<string> ids;
@@ -86,10 +94,17 @@ bool MultiStreamManager::Configure(vector<MultiStreamChannel> newChannels, strin
 		}
 	}
 
-	RetireDestinations();
-	CollectRetiredDestinations();
-	WipeChannelSecrets(channels);
-	channels = std::move(newChannels);
+	/* Disconnect the main-canvas callback before taking the manager lock: a
+	 * callback already in flight briefly holds that lock while replacing the
+	 * portrait source. */
+	DestroyPortraitPipeline();
+	{
+		lock_guard lock(mutex);
+		RetireDestinations();
+		CollectRetiredDestinations();
+		WipeChannelSecrets(channels);
+		channels = std::move(newChannels);
+	}
 	error.clear();
 	return true;
 }
@@ -141,6 +156,20 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 		return false;
 	}
 
+	/* Prepare the vertical encoder even when that destination starts disabled.
+	 * Destinations can be enabled while already live, and their output must not
+	 * have been created with a null video encoder. */
+	const auto portraitChannel = find_if(configuredChannels.cbegin(), configuredChannels.cend(),
+					     [](const MultiStreamChannel &channel) {
+						     return channel.videoLayout == MultiStreamVideoLayout::Portrait &&
+						    !channel.server.empty() && !channel.streamKey.empty();
+					     });
+	if (portraitChannel != configuredChannels.cend() &&
+	    !PreparePortraitPipeline(videoEncoder, portraitChannel->portraitFit, error)) {
+		ReportFailure(enabledChannels, error);
+		return false;
+	}
+
 	vector<shared_ptr<Destination>> prepared;
 	auto abort = [&](string &target, string message) {
 		for (const auto &destination : prepared)
@@ -181,7 +210,10 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 				? audioEncodersByTrack[channel.audioMixIndex]
 				: defaultAudioEncoder;
 
-		obs_output_set_video_encoder(destination->output, videoEncoder);
+		obs_encoder_t *selectedVideoEncoder = channel.videoLayout == MultiStreamVideoLayout::Portrait
+							    ? portraitVideoEncoder.Get()
+							    : videoEncoder;
+		obs_output_set_video_encoder(destination->output, selectedVideoEncoder);
 		obs_output_set_audio_encoder(destination->output, selectedAudioEncoder, 0);
 
 		/* Only Twitch accepts a second audio track for the recorded VOD.
@@ -341,10 +373,129 @@ string MultiStreamManager::PrimaryChannelId() const
 MultiStreamChannel MultiStreamManager::FirstReadyChannel() const
 {
 	lock_guard lock(mutex);
-	const auto ready = find_if(channels.begin(), channels.end(), [](const MultiStreamChannel &channel) {
-		return channel.enabled && !channel.server.empty() && !channel.streamKey.empty();
+	auto ready = find_if(channels.begin(), channels.end(), [](const MultiStreamChannel &channel) {
+		return channel.videoLayout == MultiStreamVideoLayout::Main && channel.enabled &&
+		       !channel.server.empty() && !channel.streamKey.empty();
 	});
+	if (ready == channels.end())
+		ready = find_if(channels.begin(), channels.end(), [](const MultiStreamChannel &channel) {
+			return channel.enabled && !channel.server.empty() && !channel.streamKey.empty();
+		});
 	return ready != channels.end() ? *ready : MultiStreamChannel{};
+}
+
+void MultiStreamManager::OnMainChannelChanged(void *data, calldata_t *params)
+{
+	if (calldata_int(params, "channel") != 0)
+		return;
+	auto *manager = static_cast<MultiStreamManager *>(data);
+	lock_guard lock(manager->mutex);
+	if (!manager->portraitScene)
+		return;
+	manager->SetPortraitSource(static_cast<obs_source_t *>(calldata_ptr(params, "source")),
+				   manager->portraitFit);
+}
+
+bool MultiStreamManager::PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder, MultiStreamPortraitFit fit,
+					 std::string &error)
+{
+	DestroyPortraitPipeline();
+
+	obs_video_info videoInfo{};
+	if (!obs_get_video_info(&videoInfo)) {
+		error = "The OBS video pipeline is not ready for the vertical output.";
+		return false;
+	}
+	videoInfo.base_width = PORTRAIT_WIDTH;
+	videoInfo.base_height = PORTRAIT_HEIGHT;
+	videoInfo.output_width = PORTRAIT_WIDTH;
+	videoInfo.output_height = PORTRAIT_HEIGHT;
+	if (videoInfo.fps_den == 0 ||
+	    static_cast<uint64_t>(videoInfo.fps_num) >
+		    static_cast<uint64_t>(PORTRAIT_MAX_FPS) * videoInfo.fps_den) {
+		videoInfo.fps_num = PORTRAIT_MAX_FPS;
+		videoInfo.fps_den = 1;
+	}
+	videoInfo.scale_type = OBS_SCALE_BICUBIC;
+
+	portraitCanvas = obs_canvas_create_private("multistream_portrait_canvas", &videoInfo,
+						    ACTIVATE | SCENE_REF | EPHEMERAL);
+	if (!portraitCanvas) {
+		error = "Could not create the 9:16 video canvas.";
+		return false;
+	}
+	portraitScene = obs_canvas_scene_create(portraitCanvas, "multistream_portrait_program");
+	if (!portraitScene) {
+		error = "Could not create the vertical program scene.";
+		DestroyPortraitPipeline();
+		return false;
+	}
+	portraitFit = fit;
+	OBSSourceAutoRelease program = obs_get_output_source(0);
+	SetPortraitSource(program, fit);
+	obs_canvas_set_channel(portraitCanvas, 0, obs_scene_get_source(portraitScene));
+
+	OBSDataAutoRelease encoderSettings = obs_encoder_get_settings(mainVideoEncoder);
+	if (!encoderSettings)
+		encoderSettings = obs_data_create();
+	const int64_t configuredBitrate = obs_data_get_int(encoderSettings, "bitrate");
+	if (configuredBitrate <= 0 || configuredBitrate > PORTRAIT_VIDEO_BITRATE_KBPS)
+		obs_data_set_int(encoderSettings, "bitrate", PORTRAIT_VIDEO_BITRATE_KBPS);
+	obs_data_set_int(encoderSettings, "keyint_sec", 2);
+
+	const char *encoderId = obs_encoder_get_id(mainVideoEncoder);
+	portraitVideoEncoder =
+		obs_video_encoder_create(encoderId, "multistream_portrait_video", encoderSettings, nullptr);
+	if (!portraitVideoEncoder) {
+		error = "Could not create a second video encoder for the vertical output.";
+		DestroyPortraitPipeline();
+		return false;
+	}
+	obs_encoder_set_video(portraitVideoEncoder, obs_canvas_get_video(portraitCanvas));
+
+	signal_handler_connect(obs_get_signal_handler(), "channel_change", OnMainChannelChanged, this);
+	mainChannelSignalConnected = true;
+	error.clear();
+	return true;
+}
+
+void MultiStreamManager::SetPortraitSource(obs_source_t *source, MultiStreamPortraitFit fit)
+{
+	if (portraitSceneItem) {
+		obs_sceneitem_remove(portraitSceneItem);
+		portraitSceneItem = nullptr;
+	}
+	if (!portraitScene || !source)
+		return;
+
+	portraitSceneItem = obs_scene_add(portraitScene, source);
+	if (!portraitSceneItem)
+		return;
+
+	obs_sceneitem_set_alignment(portraitSceneItem, OBS_ALIGN_CENTER);
+	obs_sceneitem_set_bounds_alignment(portraitSceneItem, OBS_ALIGN_CENTER);
+	obs_sceneitem_set_bounds_type(portraitSceneItem,
+				      fit == MultiStreamPortraitFit::Fill ? OBS_BOUNDS_SCALE_OUTER
+									   : OBS_BOUNDS_SCALE_INNER);
+	obs_sceneitem_set_scale_filter(portraitSceneItem, OBS_SCALE_LANCZOS);
+	const vec2 bounds{static_cast<float>(PORTRAIT_WIDTH), static_cast<float>(PORTRAIT_HEIGHT)};
+	const vec2 position{PORTRAIT_WIDTH / 2.0f, PORTRAIT_HEIGHT / 2.0f};
+	obs_sceneitem_set_bounds(portraitSceneItem, &bounds);
+	obs_sceneitem_set_pos(portraitSceneItem, &position);
+}
+
+void MultiStreamManager::DestroyPortraitPipeline()
+{
+	if (mainChannelSignalConnected) {
+		signal_handler_disconnect(obs_get_signal_handler(), "channel_change", OnMainChannelChanged, this);
+		mainChannelSignalConnected = false;
+	}
+	portraitVideoEncoder = nullptr;
+	if (portraitCanvas)
+		obs_canvas_set_channel(portraitCanvas, 0, nullptr);
+	portraitSceneItem = nullptr;
+	portraitScene = nullptr;
+	portraitCanvas = nullptr;
 }
 
 bool MultiStreamManager::IsActive() const

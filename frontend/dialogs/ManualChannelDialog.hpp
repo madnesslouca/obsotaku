@@ -15,6 +15,7 @@
 
 class QLineEdit;
 class QLabel;
+class QComboBox;
 
 /* Server and stream key form for the platforms that do not expose the ingest
  * credentials through an API (Facebook Live, TikTok, X, Trovo, custom RTMP).
@@ -38,5 +39,8 @@ private:
 	QLineEdit *nameEdit = nullptr;
 	QLineEdit *serverEdit = nullptr;
 	QLineEdit *keyEdit = nullptr;
+	QComboBox *layoutCombo = nullptr;
+	QComboBox *portraitFitCombo = nullptr;
+	QLabel *portraitHint = nullptr;
 	QLabel *errorLabel = nullptr;
 };

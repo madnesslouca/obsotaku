@@ -29,7 +29,8 @@ constexpr const char *MANUAL_KEY_STORE = "manual-rtmp";
 constexpr int MAX_STORED_CHANNELS = 32;
 constexpr const char *CHANNEL_FIELDS[] = {
 	"Id",    "Platform",   "DisplayName",  "AccountId",  "ChatAddress",     "Server",        "AvatarUrl",
-	"Title", "CategoryId", "CategoryName", "AudioTrack", "VodTrackEnabled", "VodTrackIndex", "Enabled"};
+	"Title", "CategoryId", "CategoryName", "VideoLayout", "PortraitFit",     "AudioTrack",
+	"VodTrackEnabled", "VodTrackIndex", "Enabled"};
 
 string Key(int index, const char *name)
 {
@@ -71,6 +72,10 @@ void WriteStoredChannels(config_t *config, const vector<MultiStreamChannel> &cha
 		config_set_string(config, SECTION, Key(index, "Title").c_str(), channel.title.c_str());
 		config_set_string(config, SECTION, Key(index, "CategoryId").c_str(), channel.categoryId.c_str());
 		config_set_string(config, SECTION, Key(index, "CategoryName").c_str(), channel.categoryName.c_str());
+		config_set_string(config, SECTION, Key(index, "VideoLayout").c_str(),
+				  channel.videoLayout == MultiStreamVideoLayout::Portrait ? "portrait" : "main");
+		config_set_string(config, SECTION, Key(index, "PortraitFit").c_str(),
+				  channel.portraitFit == MultiStreamPortraitFit::Fit ? "fit" : "fill");
 		config_set_int(config, SECTION, Key(index, "AudioTrack").c_str(),
 			       static_cast<int64_t>(channel.audioMixIndex));
 		config_set_bool(config, SECTION, Key(index, "VodTrackEnabled").c_str(), channel.vodTrackEnabled);
@@ -176,6 +181,16 @@ vector<MultiStreamChannel> MultistreamChannelStore::Load()
 		channel.title = StringValue(config, Key(index, "Title"));
 		channel.categoryId = StringValue(config, Key(index, "CategoryId"));
 		channel.categoryName = StringValue(config, Key(index, "CategoryName"));
+		const string videoLayout = StringValue(config, Key(index, "VideoLayout"));
+		/* Existing TikTok destinations migrate to the portrait pipeline. Other
+		 * existing destinations keep the main canvas exactly as before. */
+		channel.videoLayout = videoLayout == "portrait" ||
+					      (videoLayout.empty() && *platform == StreamPlatform::TikTok)
+					      ? MultiStreamVideoLayout::Portrait
+					      : MultiStreamVideoLayout::Main;
+		channel.portraitFit = StringValue(config, Key(index, "PortraitFit")) == "fit"
+					      ? MultiStreamPortraitFit::Fit
+					      : MultiStreamPortraitFit::Fill;
 		channel.audioMixIndex = ClampTrack(config_get_int(config, SECTION, Key(index, "AudioTrack").c_str()), 0);
 		channel.vodTrackEnabled = config_get_bool(config, SECTION, Key(index, "VodTrackEnabled").c_str());
 		channel.vodTrackIndex =
