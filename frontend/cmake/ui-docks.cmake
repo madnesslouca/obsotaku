@@ -7,4 +7,6 @@ target_sources(
     docks/StreamInfoDock.hpp
     docks/UnifiedChatDock.cpp
     docks/UnifiedChatDock.hpp
+    docks/VerticalPreviewDock.cpp
+    docks/VerticalPreviewDock.hpp
 )

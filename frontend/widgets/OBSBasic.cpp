@@ -32,6 +32,7 @@
 #endif
 #include <docks/StreamInfoDock.hpp>
 #include <docks/UnifiedChatDock.hpp>
+#include <docks/VerticalPreviewDock.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
 #include <dialogs/OBSBasicAdvAudio.hpp>
@@ -43,6 +44,7 @@
 #include <settings/OBSBasicSettings.hpp>
 #include <utility/QuickTransition.hpp>
 #include <utility/SceneRenameDelegate.hpp>
+#include <utility/MultistreamChannelStore.hpp>
 #if defined(_WIN32) || defined(WHATSNEW_ENABLED)
 #include <utility/WhatsNewInfoThread.hpp>
 #endif
@@ -413,6 +415,38 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 
 	streamInfoDock = new StreamInfoDock(this);
 	AddDockWidget(streamInfoDock, Qt::RightDockWidgetArea);
+
+	verticalPreviewDock = new VerticalPreviewDock(this);
+	AddDockWidget(verticalPreviewDock, Qt::RightDockWidgetArea);
+	verticalPreviewDock->SetChannels(MultistreamChannelStore::Load());
+	connect(verticalPreviewDock, &VerticalPreviewDock::addChannelRequested, this,
+		&OBSBasic::AddMultistreamChannel);
+	connect(verticalPreviewDock, &VerticalPreviewDock::editChannelRequested, this,
+		&OBSBasic::EditMultistreamChannel);
+	connect(verticalPreviewDock, &VerticalPreviewDock::portraitFitChanged, this,
+		[this](const QString &channelId, MultiStreamPortraitFit fit) {
+			if (!outputHandler || outputHandler->multiStreamManager->IsActive()) {
+				QMessageBox::information(this, QTStr("Multistream.Vertical.Title"),
+						 QTStr("Multistream.ChannelBar.BusyWhileLive"));
+				if (verticalPreviewDock)
+					verticalPreviewDock->SetChannels(MultistreamChannelStore::Load());
+				return;
+			}
+			auto channels = MultistreamChannelStore::Load();
+			auto channel = std::find_if(channels.begin(), channels.end(), [&](const auto &item) {
+				return item.id == channelId.toStdString();
+			});
+			if (channel == channels.end())
+				return;
+			channel->portraitFit = fit;
+			std::string error;
+			if (!MultistreamChannelStore::Save(channels, error)) {
+				QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"),
+						     QString::fromStdString(error));
+				return;
+			}
+			ApplyMultistreamChannels(std::move(channels));
+		});
 
 	copyActionsDynamicProperties();
 
@@ -1302,6 +1336,11 @@ void OBSBasic::OBSInit()
 		unifiedChatDock->setVisible(true);
 		config_set_bool(App()->GetUserConfig(), "BasicWindow", "UnifiedChatDockVisible", true);
 	}
+	if (verticalPreviewDock &&
+	    !config_has_user_value(App()->GetUserConfig(), "BasicWindow", "VerticalPreviewDockVisible")) {
+		verticalPreviewDock->setVisible(true);
+		config_set_bool(App()->GetUserConfig(), "BasicWindow", "VerticalPreviewDockVisible", true);
+	}
 	if (pre23Defaults) {
 		bool resetDockLock23 = config_get_bool(App()->GetUserConfig(), "General", "ResetDockLock23");
 		if (!resetDockLock23) {
@@ -2023,6 +2062,16 @@ void OBSBasic::closeWindow()
 	blog(LOG_INFO, SHUTDOWN_SEPARATOR);
 
 	isClosing_ = true;
+
+	/* Custom docks own sockets, timers, asynchronous callbacks and an OBS
+	 * display. Quiesce them before the application starts dismantling libobs
+	 * and Qt network/graphics services. */
+	if (unifiedChatDock)
+		unifiedChatDock->Shutdown();
+	if (streamInfoDock)
+		streamInfoDock->Shutdown();
+	if (verticalPreviewDock)
+		verticalPreviewDock->Shutdown();
 
 	/* While closing, a resize event to OBSQTDisplay could be triggered.
 	 * The graphics thread on macOS dispatches a lambda function to be

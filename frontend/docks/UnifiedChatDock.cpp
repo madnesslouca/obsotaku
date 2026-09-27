@@ -11,6 +11,7 @@
 
 #include <utility/ChatBadgeIcons.hpp>
 #include <utility/MultistreamChannelStore.hpp>
+#include <utility/MultistreamTaskPool.hpp>
 #include <utility/PlatformIconProvider.hpp>
 #include <utility/StreamPlatformDisplay.hpp>
 
@@ -18,6 +19,7 @@
 #include <qt-wrappers.hpp>
 
 #include <QColor>
+#include <QCoreApplication>
 #include <QEvent>
 #include <QFrame>
 #include <QIcon>
@@ -395,6 +397,33 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent) : OBSDock(parent)
 		&UnifiedChatDock::OnSendChannelChanged);
 }
 
+UnifiedChatDock::~UnifiedChatDock()
+{
+	Shutdown();
+}
+
+void UnifiedChatDock::Shutdown()
+{
+	if (shuttingDown)
+		return;
+	shuttingDown = true;
+	/* Stop socket/timer activity while all child widgets and the Qt network
+	 * event dispatcher still exist. Waiting until QObject tears the dock down
+	 * lets late status signals touch partially destroyed controls. */
+	QObject::disconnect(aggregator, nullptr, this, nullptr);
+	aggregator->StopAll();
+	/* Token refresh/category work has a bounded 30 s network timeout. Keep the
+	 * guarded QObjects alive until those workers can no longer enqueue a late
+	 * callback into a dock that is being destroyed. */
+	MultistreamTaskPool().clear();
+	MultistreamTaskPool().waitForDone(35000);
+	aggregator->DisconnectAll();
+	connected = false;
+	channelStates.clear();
+	channelDetails.clear();
+	QCoreApplication::removePostedEvents(this);
+}
+
 void UnifiedChatDock::changeEvent(QEvent *event)
 {
 	OBSDock::changeEvent(event);
@@ -408,12 +437,14 @@ void UnifiedChatDock::changeEvent(QEvent *event)
 void UnifiedChatDock::showEvent(QShowEvent *event)
 {
 	OBSDock::showEvent(event);
-	AutoConnectAccounts();
+	if (!shuttingDown)
+		AutoConnectAccounts();
 }
 
 void UnifiedChatDock::hideEvent(QHideEvent *event)
 {
-	DisconnectAccounts();
+	if (!shuttingDown)
+		DisconnectAccounts();
 	OBSDock::hideEvent(event);
 }
 
@@ -459,6 +490,8 @@ void UnifiedChatDock::RebuildFilters(const std::vector<ChatChannelRef> &channels
 
 void UnifiedChatDock::AutoConnectAccounts()
 {
+	if (shuttingDown)
+		return;
 	std::vector<ChatChannelRef> targets;
 	bool unsupportedOnly = true;
 

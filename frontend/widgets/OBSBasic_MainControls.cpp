@@ -41,6 +41,7 @@
 #include <dialogs/OBSRemux.hpp>
 #include <settings/OBSBasicSettings.hpp>
 #ifdef _WIN32
+#include <docks/VerticalPreviewDock.hpp>
 #include <oauth/ConnectedAccountManager.hpp>
 #include <utility/AutoUpdateThread.hpp>
 #include <utility/MultistreamChannelStore.hpp>
@@ -716,6 +717,8 @@ void OBSBasic::ApplyMultistreamChannels(std::vector<MultiStreamChannel> channels
 		return;
 	}
 	BindMultistreamManager();
+	if (verticalPreviewDock)
+		verticalPreviewDock->SetChannels(MultistreamChannelStore::Load());
 
 	if (needsResolve)
 		RestoreMultistreamAccounts();
