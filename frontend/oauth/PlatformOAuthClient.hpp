@@ -15,6 +15,8 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <vector>
 
 struct OAuthClientRegistration {
 	std::string clientId;
@@ -66,6 +68,12 @@ public:
 	static bool CreateAuthorizationSession(StreamPlatform platform, const OAuthClientRegistration &registration,
 					       const std::string &redirectUri, OAuthAuthorizationSession &session,
 					       std::string &error);
+	static bool CreateAuthorizationSessionWithScopes(StreamPlatform platform,
+						 const OAuthClientRegistration &registration,
+						 const std::string &redirectUri,
+						 const std::vector<std::string_view> &scopes,
+						 bool includeGrantedScopes,
+						 OAuthAuthorizationSession &session, std::string &error);
 	static bool ExchangeAuthorizationCode(const OAuthClientRegistration &registration,
 					      const OAuthAuthorizationSession &session, const std::string &code,
 					      OAuthTokenSet &tokens, std::string &error);

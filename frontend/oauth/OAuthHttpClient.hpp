@@ -16,6 +16,7 @@
 struct OAuthHttpResponse {
 	long statusCode = 0;
 	std::string body;
+	std::string location;
 };
 
 class OAuthHttpClient {
@@ -31,6 +32,9 @@ public:
 	 * method is PATCH, PUT or POST. */
 	static bool SendJson(const std::string &method, const std::string &url, const std::string &json,
 			     const Headers &headers, OAuthHttpResponse &response, std::string &error);
+	static bool SendBytes(const std::string &method, const std::string &url, const std::string &body,
+			      const std::string &contentType, const Headers &headers, OAuthHttpResponse &response,
+			      std::string &error);
 
 	static std::string UrlEncode(const std::string &value);
 };

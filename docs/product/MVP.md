@@ -23,6 +23,9 @@ terminology. Advanced OBS controls remain available, but are not part of the def
 - A 1080×1920/30 vertical canvas with fit/fill framing for TikTok-style output.
 - Preflight checks for estimated upload, missing stream keys, codec, resolution,
   frame rate, and platform bitrate limits.
+- Google Drive configuration backups with private app storage, history,
+  automatic retention, selective restore, path/device preservation, and
+  optional encrypted credentials.
 - A single **Go live** action and a clear partial-failure state.
 
 Aggregated Twitch/YouTube/Kick chat and simultaneous vertical output are built in.

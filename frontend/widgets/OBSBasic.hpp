@@ -653,6 +653,7 @@ private slots:
 	void on_autoConfigure_triggered();
 	void on_multistreamAccounts_triggered();
 	void on_ndiNetworkSettings_triggered();
+	void on_googleDriveBackup_triggered();
 	void on_stats_triggered();
 	void on_idianPlayground_triggered();
 
@@ -692,6 +693,10 @@ private:
 	/* Ingest credentials expire; resolving them only at boot leaves a long
 	 * session going live with a stale key. */
 	QTimer multistreamCredentialTimer;
+	QTimer googleDriveBackupTimer;
+	bool googleDriveBackupRunning = false;
+	void InitializeGoogleDriveBackupScheduler();
+	void RunAutomaticGoogleDriveBackup();
 	uint64_t multistreamRestoreGeneration = 0;
 	void BindMultistreamManager();
 	void RestoreMultistreamAccounts();

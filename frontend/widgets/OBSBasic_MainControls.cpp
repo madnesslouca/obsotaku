@@ -21,6 +21,7 @@
 #include "OBSBasicStats.hpp"
 
 #include <dialogs/AddChannelDialog.hpp>
+#include <dialogs/GoogleDriveBackupDialog.hpp>
 #include <dialogs/LogUploadDialog.hpp>
 #include <dialogs/ManualChannelDialog.hpp>
 #include <dialogs/MultistreamAccountsDialog.hpp>
@@ -789,6 +790,23 @@ void OBSBasic::on_ndiNetworkSettings_triggered()
 
 	const auto answer = OBSMessageBox::question(this, QTStr("Restart"), QTStr("NdiNetwork.RestartPrompt"));
 	if (answer == QMessageBox::Yes) {
+		restart = true;
+		close();
+	}
+}
+
+void OBSBasic::on_googleDriveBackup_triggered()
+{
+	if (StreamingActive() || RecordingActive()) {
+		QMessageBox::information(this, QTStr("CloudBackup.Title"), QTStr("CloudBackup.Busy"));
+		return;
+	}
+	SaveProjectNow();
+	config_save_safe(App()->GetAppConfig(), "tmp", nullptr);
+	config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
+	GoogleDriveBackupDialog dialog(this);
+	dialog.exec();
+	if (dialog.RestartRequired()) {
 		restart = true;
 		close();
 	}

@@ -21,6 +21,7 @@
 #include <dialogs/LogUploadDialog.hpp>
 #include <plugin-manager/PluginManager.hpp>
 #include <utility/CrashHandler.hpp>
+#include <utility/CloudBackupArchive.hpp>
 #include <utility/NdiNetworkConfig.hpp>
 #include <utility/OBSEventFilter.hpp>
 #include <utility/OBSProxyStyle.hpp>
@@ -618,6 +619,28 @@ bool OBSApp::InitGlobalConfig()
 		userPluginManagerSettingsLocation = (std::filesystem::exists(currentUserPluginManagerLocation))
 							    ? std::move(currentUserPluginManagerLocation)
 							    : std::move(defaultPluginManagerLocation);
+	}
+
+	/* Restores are staged by the UI and applied here, after all storage roots
+	 * are known but before user.ini, profiles, and scene collections are read.
+	 * This also prevents shutdown from overwriting freshly restored files. */
+	const bool hadPendingRestore = CloudBackupArchive::HasPendingRestore();
+	QString restoreError;
+	if (!CloudBackupArchive::ApplyPendingRestore(restoreError)) {
+		blog(LOG_ERROR, "Could not apply the pending Google Drive backup: %s", QT_TO_UTF8(restoreError));
+		OBSErrorBox(nullptr, "%s", QT_TO_UTF8(restoreError));
+	} else if (hadPendingRestore) {
+		/* global.ini may have been part of the restore. Reload it so shutdown
+		 * cannot overwrite the restored values with the pre-restore copy. */
+		char restoredGlobalPath[512]{};
+		ConfigFile restoredConfig;
+		if (GetAppConfigPath(restoredGlobalPath, sizeof(restoredGlobalPath), "obs-studio/global.ini") > 0 &&
+		    restoredConfig.Open(restoredGlobalPath, CONFIG_OPEN_ALWAYS) == CONFIG_SUCCESS) {
+			appConfig.Swap(restoredConfig);
+			InitGlobalConfigDefaults();
+			InitGlobalLocationDefaults();
+			lastVersion = config_get_int(appConfig, "General", "LastVersion");
+		}
 	}
 
 	bool userConfigResult = InitUserConfig(userConfigLocation, lastVersion);

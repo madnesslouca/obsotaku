@@ -948,6 +948,7 @@
     </property>
     <addaction name="multistreamAccounts"/>
     <addaction name="ndiNetworkSettings"/>
+    <addaction name="googleDriveBackup"/>
     <addaction name="autoConfigure"/>
     <addaction name="idianPlayground"/>
     <addaction name="actionOpenPluginManager"/>
@@ -2052,6 +2053,11 @@
   <action name="ndiNetworkSettings">
    <property name="text">
     <string>NdiNetwork.Menu</string>
+   </property>
+  </action>
+  <action name="googleDriveBackup">
+   <property name="text">
+    <string>CloudBackup.Menu</string>
    </property>
   </action>
   <action name="actionOpenPluginManager">

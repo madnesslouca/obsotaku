@@ -351,6 +351,17 @@ bool PlatformOAuthClient::CreateAuthorizationSession(StreamPlatform platform,
 					      const string &redirectUri, OAuthAuthorizationSession &session,
 					      string &error)
 {
+	return CreateAuthorizationSessionWithScopes(platform, registration, redirectUri,
+						    GetStreamPlatformInfo(platform).scopes, true, session, error);
+}
+
+bool PlatformOAuthClient::CreateAuthorizationSessionWithScopes(StreamPlatform platform,
+							const OAuthClientRegistration &registration,
+							const string &redirectUri,
+							const vector<string_view> &scopes,
+							bool includeGrantedScopes,
+							OAuthAuthorizationSession &session, string &error)
+{
 	const auto &info = GetStreamPlatformInfo(platform);
 	if (info.oauthFlow != StreamOAuthFlow::AuthorizationCodePkce) {
 		error = "The selected platform does not use the PKCE authorization flow.";
@@ -371,14 +382,16 @@ bool PlatformOAuthClient::CreateAuthorizationSession(StreamPlatform platform,
 		{"response_type", "code"},
 		{"client_id", registration.clientId},
 		{"redirect_uri", redirectUri},
-		{"scope", JoinScopes(info.scopes)},
+		{"scope", JoinScopes(scopes)},
 		{"state", pkce.state},
 		{"code_challenge", pkce.challenge},
 		{"code_challenge_method", "S256"},
 	};
 	if (platform == StreamPlatform::YouTube) {
 		fields.emplace_back("access_type", "offline");
-		fields.emplace_back("include_granted_scopes", "true");
+		if (includeGrantedScopes)
+			fields.emplace_back("include_granted_scopes", "true");
+		fields.emplace_back("prompt", "consent");
 	}
 
 	const string query = Query(fields);
