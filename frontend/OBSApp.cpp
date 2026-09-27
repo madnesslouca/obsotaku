@@ -39,6 +39,8 @@
 
 #include <QCheckBox>
 #include <QDesktopServices>
+#include <QMessageBox>
+#include <QPointer>
 #if defined(_WIN32) || defined(ENABLE_SPARKLE_UPDATER)
 #include <QFile>
 #endif
@@ -83,6 +85,19 @@ extern "C" __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 #endif
 
 namespace {
+
+bool IsDistroAVMissingRuntimeMessage(const QMessageBox *messageBox)
+{
+	if (!messageBox)
+		return false;
+	/* DistroAV 6.2.1 treats a missing NDI Runtime as a soft requirement but
+	 * still opens a modal during every OBS startup. Match the stable error id
+	 * and download URL so unrelated DistroAV failures remain visible. */
+	const QString contents = messageBox->windowTitle() + QLatin1Char('\n') + messageBox->text() +
+				 messageBox->informativeText() + QLatin1Char('\n') + messageBox->detailedText();
+	return contents.contains(QStringLiteral("Error-401"), Qt::CaseInsensitive) &&
+	       contents.contains(QStringLiteral("distroav.org/ndi/redist-windows"), Qt::CaseInsensitive);
+}
 
 typedef struct UncleanLaunchAction {
 	bool useSafeMode = false;
@@ -1493,6 +1508,23 @@ bool OBSApp::notify(QObject *receiver, QEvent *e)
 
 	if (!w->isWindow()) {
 		goto skip;
+	}
+
+	if (auto *messageBox = qobject_cast<QMessageBox *>(w); IsDistroAVMissingRuntimeMessage(messageBox)) {
+		/* Keep startup quiet. The custom NDI Network dialog and DistroAV's own
+		 * settings page explain the missing Runtime when the user actually
+		 * opens an NDI feature. WA_DontShowOnScreen prevents a one-frame flash
+		 * before the queued close releases QMessageBox::exec(). */
+		messageBox->setAttribute(Qt::WA_DontShowOnScreen, true);
+		QPointer<QMessageBox> guard(messageBox);
+		QMetaObject::invokeMethod(
+			messageBox,
+			[guard]() {
+				if (guard)
+					guard->done(QMessageBox::Ok);
+			},
+			Qt::QueuedConnection);
+		blog(LOG_INFO, "DistroAV: deferred the missing NDI Runtime notice until an NDI feature is opened");
 	}
 
 	window = w->windowHandle();
