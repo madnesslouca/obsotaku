@@ -548,6 +548,97 @@ UnifiedChatDock QTextBrowser#unifiedChatView {
     padding: 7px;
 }
 
+/* Stream information follows the same card hierarchy in the native theme. */
+StreamInfoDock QFrame#streamInfoHeader,
+StreamInfoDock QFrame#streamInfoSharedCard,
+StreamInfoDock QFrame#streamInfoFooter,
+StreamInfoDock QFrame#streamInfoEmpty,
+StreamInfoDock QFrame#streamInfoRow {
+    background-color: palette(base);
+    border: 1px solid palette(mid);
+    border-radius: 8px;
+}
+
+StreamInfoDock QFrame#streamInfoRow {
+    border-left: 3px solid palette(highlight);
+}
+
+StreamInfoDock QLabel#streamInfoHeaderTitle,
+StreamInfoDock QLabel#streamInfoSectionTitle,
+StreamInfoDock QLabel#streamInfoName,
+StreamInfoDock QLabel#streamInfoEmptyTitle {
+    color: palette(text);
+    font-weight: 700;
+}
+
+StreamInfoDock QLabel#streamInfoHint,
+StreamInfoDock QLabel#streamInfoLabel,
+StreamInfoDock QLabel#streamInfoResult,
+StreamInfoDock QLabel#streamInfoCategoryStatus,
+StreamInfoDock QLabel#streamInfoFooterStatus {
+    color: palette(window-text);
+}
+
+StreamInfoDock QLabel#streamInfoPlatform,
+StreamInfoDock QLabel#streamInfoState,
+StreamInfoDock QLabel#streamInfoCount,
+StreamInfoDock QLabel#streamInfoSharedBadge {
+    background-color: palette(button);
+    color: palette(button-text);
+    border-radius: 8px;
+    padding: 2px 7px;
+}
+
+StreamInfoDock QLabel#streamInfoSharedBadge,
+StreamInfoDock QLabel#streamInfoState[titleState="own"] {
+    background-color: palette(highlight);
+    color: palette(highlighted-text);
+}
+
+StreamInfoDock QLabel#streamInfoResult[resultState="ok"],
+StreamInfoDock QLabel#streamInfoFooterStatus[resultState="ok"] {
+    color: #218739;
+}
+
+StreamInfoDock QLabel#streamInfoResult[resultState="error"],
+StreamInfoDock QLabel#streamInfoCategoryStatus[resultState="error"],
+StreamInfoDock QLabel#streamInfoFooterStatus[resultState="error"] {
+    color: #c8322b;
+}
+
+StreamInfoDock QLabel#streamInfoResult[resultState="pending"],
+StreamInfoDock QLabel#streamInfoCategoryStatus[resultState="pending"],
+StreamInfoDock QLabel#streamInfoFooterStatus[resultState="pending"] {
+    color: #b56a00;
+}
+
+StreamInfoDock QScrollArea#streamInfoScroll,
+StreamInfoDock QWidget#streamInfoRows {
+    background: transparent;
+    border: 0;
+}
+
+StreamInfoDock QLineEdit#streamInfoSharedTitle,
+StreamInfoDock QLineEdit#streamInfoTitle,
+StreamInfoDock QComboBox#streamInfoCategory {
+    background-color: palette(base);
+    color: palette(text);
+    border: 1px solid palette(mid);
+    border-radius: 6px;
+    padding: 5px 8px;
+    min-height: 28px;
+}
+
+StreamInfoDock QPushButton#streamInfoApply {
+    background-color: palette(highlight);
+    color: palette(highlighted-text);
+    border: 1px solid palette(highlight);
+    border-radius: 6px;
+    min-height: 28px;
+    padding: 5px 14px;
+    font-weight: 700;
+}
+
 /* NDI network routing dialog */
 QDialog#ndiNetworkDialog QFrame#ndiHeader,
 QDialog#ndiNetworkDialog QFrame#ndiDetails,
