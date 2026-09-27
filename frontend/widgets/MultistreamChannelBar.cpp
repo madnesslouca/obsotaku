@@ -307,6 +307,12 @@ QWidget *MultistreamChannelBar::CreateChannelCard(const MultiStreamChannel &chan
 
 	stateRow->addWidget(state);
 	stateRow->addWidget(health);
+	if (channel.videoLayout == MultiStreamVideoLayout::Portrait) {
+		auto *layoutBadge = new QLabel(QTStr("Multistream.ChannelBar.Portrait"), card);
+		layoutBadge->setObjectName(QStringLiteral("channelLayoutBadge"));
+		layoutBadge->setToolTip(QTStr("Multistream.ChannelBar.PortraitTip"));
+		stateRow->addWidget(layoutBadge);
+	}
 	stateRow->addStretch(1);
 
 	labels->addWidget(name);

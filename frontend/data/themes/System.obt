@@ -639,6 +639,21 @@ StreamInfoDock QPushButton#streamInfoApply {
     font-weight: 700;
 }
 
+ManualChannelDialog QLabel#manualChannelPortraitHint {
+    background-color: palette(base);
+    color: palette(text);
+    border: 1px solid palette(highlight);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+MultistreamChannelBar#multistreamChannelBar QLabel#channelLayoutBadge {
+    background-color: palette(highlight);
+    color: palette(highlighted-text);
+    border-radius: 6px;
+    padding: 1px 5px;
+}
+
 /* NDI network routing dialog */
 QDialog#ndiNetworkDialog QFrame#ndiHeader,
 QDialog#ndiNetworkDialog QFrame#ndiDetails,

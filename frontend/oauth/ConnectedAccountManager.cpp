@@ -178,6 +178,8 @@ void ConnectedAccountManager::PreserveUserSettings(const MultiStreamChannel &sto
 	resolved.title = stored.title;
 	resolved.categoryId = stored.categoryId;
 	resolved.categoryName = stored.categoryName;
+	resolved.videoLayout = stored.videoLayout;
+	resolved.portraitFit = stored.portraitFit;
 	/* Keep the cached avatar when the platform did not return one. */
 	if (resolved.avatarUrl.empty())
 		resolved.avatarUrl = stored.avatarUrl;

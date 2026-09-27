@@ -117,13 +117,21 @@ vector<PreflightFinding> MultistreamPreflight::Check(const vector<MultiStreamCha
 	if (settings.width == 0 || settings.height == 0)
 		return findings;
 
-	const bool outputIsPortrait = settings.height > settings.width;
-
 	for (const auto &channel : channels) {
 		if (!channel.enabled)
 			continue;
 
 		const auto &limits = GetStreamPlatformInfo(channel.platform).limits;
+		OutputVideoSettings channelSettings = settings;
+		if (channel.videoLayout == MultiStreamVideoLayout::Portrait) {
+			channelSettings.width = 1080;
+			channelSettings.height = 1920;
+			channelSettings.framerate = min(channelSettings.framerate, 30u);
+			channelSettings.videoBitrateKbps = channelSettings.videoBitrateKbps == 0
+								   ? 6000
+								   : min(channelSettings.videoBitrateKbps, 6000u);
+		}
+		const bool outputIsPortrait = channelSettings.height > channelSettings.width;
 		const QString platform = PlatformName(channel.platform);
 		const QString name = QString::fromStdString(channel.displayName);
 
@@ -134,41 +142,42 @@ vector<PreflightFinding> MultistreamPreflight::Check(const vector<MultiStreamCha
 		if (limits.preferredOrientation == StreamOrientation::Portrait && !outputIsPortrait) {
 			add(PreflightSeverity::Warning, QTStr("Multistream.Preflight.NeedsPortrait")
 								.arg(name, platform)
-								.arg(settings.width)
-								.arg(settings.height));
+								.arg(channelSettings.width)
+								.arg(channelSettings.height));
 		} else if (limits.preferredOrientation == StreamOrientation::Landscape && outputIsPortrait) {
 			add(PreflightSeverity::Warning, QTStr("Multistream.Preflight.NeedsLandscape")
 								.arg(name, platform)
-								.arg(settings.width)
-								.arg(settings.height));
+								.arg(channelSettings.width)
+								.arg(channelSettings.height));
 		}
 
 		/* Compare the long and short edges instead of width/height so a
 		 * vertical canvas is not reported as exceeding a horizontal limit. */
-		const uint32_t longEdge = max(settings.width, settings.height);
-		const uint32_t shortEdge = min(settings.width, settings.height);
+		const uint32_t longEdge = max(channelSettings.width, channelSettings.height);
+		const uint32_t shortEdge = min(channelSettings.width, channelSettings.height);
 		const uint32_t limitLong = max(limits.maxWidth, limits.maxHeight);
 		const uint32_t limitShort = min(limits.maxWidth, limits.maxHeight);
 		if (limitLong > 0 && (longEdge > limitLong || shortEdge > limitShort)) {
 			add(PreflightSeverity::Advisory, QTStr("Multistream.Preflight.ResolutionTooHigh")
 								 .arg(name, platform)
-								 .arg(settings.width)
-								 .arg(settings.height)
+								 .arg(channelSettings.width)
+								 .arg(channelSettings.height)
 								 .arg(limits.maxWidth)
 								 .arg(limits.maxHeight));
 		}
 
-		if (limits.maxFramerate > 0 && settings.framerate > limits.maxFramerate) {
+		if (limits.maxFramerate > 0 && channelSettings.framerate > limits.maxFramerate) {
 			add(PreflightSeverity::Advisory, QTStr("Multistream.Preflight.FramerateTooHigh")
 								 .arg(name, platform)
-								 .arg(settings.framerate)
+								 .arg(channelSettings.framerate)
 								 .arg(limits.maxFramerate));
 		}
 
-		if (limits.maxVideoBitrateKbps > 0 && settings.videoBitrateKbps > limits.maxVideoBitrateKbps) {
+		if (limits.maxVideoBitrateKbps > 0 &&
+		    channelSettings.videoBitrateKbps > limits.maxVideoBitrateKbps) {
 			add(PreflightSeverity::Warning, QTStr("Multistream.Preflight.BitrateTooHigh")
 								.arg(name, platform)
-								.arg(settings.videoBitrateKbps)
+								.arg(channelSettings.videoBitrateKbps)
 								.arg(limits.maxVideoBitrateKbps));
 		}
 
