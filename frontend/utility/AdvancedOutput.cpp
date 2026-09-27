@@ -753,6 +753,18 @@ bool AdvancedOutput::StartStreaming(obs_service_t *service)
 	obs_data_set_bool(settings, "dyn_bitrate", enableDynBitrate);
 
 	auto streamOutput = StreamingOutput(); // shadowing is sort of bad, but also convenient
+	obs_encoder_t *mainVideoEncoder = videoStreaming ? videoStreaming.Get() : obs_output_get_video_encoder(streamOutput);
+	if (!multiStreamManager->PrimaryChannelId().empty()) {
+		std::string primaryEncoderError;
+		obs_encoder_t *primaryVideoEncoder =
+			multiStreamManager->PreparePrimaryVideoEncoder(mainVideoEncoder, primaryEncoderError);
+		if (!primaryVideoEncoder) {
+			lastError = primaryEncoderError;
+			blog(LOG_WARNING, "Could not prepare the multistream primary encoder: %s", lastError.c_str());
+			return false;
+		}
+		obs_output_set_video_encoder(streamOutput, primaryVideoEncoder);
+	}
 
 	obs_output_update(streamOutput, settings);
 
@@ -770,17 +782,27 @@ bool AdvancedOutput::StartStreaming(obs_service_t *service)
 		if (multitrackVideo && multitrackVideoActive) {
 			multitrackVideo->StartedStreaming();
 		}
-		if (multiStreamManager->HasEnabledChannels()) {
-			MultiStreamReconnectSettings multistreamReconnect{maxRetries, retryDelay};
+		if (multiStreamManager->HasAdditionalChannels()) {
+			MultiStreamOutputSettings multistreamSettings;
+			multistreamSettings.reconnect = {maxRetries, retryDelay};
+			multistreamSettings.bindIp = bindIP ? bindIP : "";
+			multistreamSettings.ipFamily = ipFamily ? ipFamily : "";
+			multistreamSettings.delaySeconds = useDelay ? delaySec : 0;
+			multistreamSettings.preserveDelay = preserveDelay;
+			multistreamSettings.dynamicBitrate = enableDynBitrate;
+#ifdef _WIN32
+			multistreamSettings.newSocketLoop = enableNewSocketLoop;
+			multistreamSettings.lowLatency = enableLowLatencyMode;
+#endif
 			string multistreamError;
 			/* Indexed by audio track so a channel always gets the track it
 			 * selected; null entries are expected and stay in place. */
 			vector<obs_encoder_t *> audioEncodersByTrack(MAX_AUDIO_MIXES, nullptr);
 			for (int i = 0; i < MAX_AUDIO_MIXES; i++)
 				audioEncodersByTrack[i] = streamTrack[i];
-			if (!multiStreamManager->Start(obs_output_get_video_encoder(streamOutput),
+			if (!multiStreamManager->Start(mainVideoEncoder,
 						       obs_output_get_audio_encoder(streamOutput, 0),
-						       audioEncodersByTrack, multistreamReconnect,
+						       audioEncodersByTrack, multistreamSettings,
 						       multistreamError)) {
 				blog(LOG_WARNING, "Additional multistream outputs failed to start: %s",
 				     multistreamError.c_str());

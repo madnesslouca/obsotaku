@@ -22,6 +22,7 @@ struct OutputVideoSettings {
 	 * which is the case for advanced mode with a custom encoder. */
 	uint32_t videoBitrateKbps = 0;
 	uint32_t audioBitrateKbps = 0;
+	std::string videoCodec;
 };
 
 enum class PreflightSeverity {

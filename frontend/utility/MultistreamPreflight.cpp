@@ -8,6 +8,7 @@
 ******************************************************************************/
 
 #include "MultistreamPreflight.hpp"
+#include "MultistreamChannelPlan.hpp"
 
 #include <widgets/OBSBasic.hpp>
 
@@ -25,6 +26,8 @@
 #include <filesystem>
 
 using namespace std;
+
+const char *get_simple_output_encoder(const char *encoder);
 
 namespace {
 QString PlatformName(StreamPlatform platform)
@@ -103,9 +106,16 @@ OutputVideoSettings MultistreamPreflight::CurrentOutputSettings()
 	if (mode && astrcmpi(mode, "Advanced") == 0) {
 		settings.videoBitrateKbps = AdvancedVideoBitrate();
 		settings.audioBitrateKbps = AdvancedAudioBitrate(config);
+		const char *encoderId = config_get_string(config, "AdvOut", "Encoder");
+		const char *codec = encoderId ? obs_get_encoder_codec(encoderId) : nullptr;
+		settings.videoCodec = codec ? codec : "";
 	} else {
 		settings.videoBitrateKbps = SimpleVideoBitrate(config);
 		settings.audioBitrateKbps = SimpleAudioBitrate(config);
+		const char *simpleEncoder = config_get_string(config, "SimpleOutput", "StreamEncoder");
+		const char *encoderId = get_simple_output_encoder(simpleEncoder ? simpleEncoder : "");
+		const char *codec = encoderId ? obs_get_encoder_codec(encoderId) : nullptr;
+		settings.videoCodec = codec ? codec : "";
 	}
 	return settings;
 }
@@ -114,12 +124,18 @@ vector<PreflightFinding> MultistreamPreflight::Check(const vector<MultiStreamCha
 						     const OutputVideoSettings &settings)
 {
 	vector<PreflightFinding> findings;
-	if (settings.width == 0 || settings.height == 0)
-		return findings;
+	uint64_t estimatedUploadKbps = 0;
+	bool countedUpload = false;
 
 	for (const auto &channel : channels) {
 		if (!channel.enabled)
 			continue;
+		const QString name = QString::fromStdString(channel.displayName);
+		if (channel.server.empty() || channel.streamKey.empty()) {
+			findings.push_back({channel.id, channel.displayName, PreflightSeverity::Warning,
+					    QT_TO_UTF8(QTStr("Multistream.Preflight.MissingCredentials").arg(name))});
+			continue;
+		}
 
 		const auto &limits = GetStreamPlatformInfo(channel.platform).limits;
 		OutputVideoSettings channelSettings = settings;
@@ -130,21 +146,25 @@ vector<PreflightFinding> MultistreamPreflight::Check(const vector<MultiStreamCha
 			channelSettings.videoBitrateKbps = channelSettings.videoBitrateKbps == 0
 								   ? 6000
 								   : min(channelSettings.videoBitrateKbps, 6000u);
+			channelSettings.videoCodec = "h264";
 		}
 		const bool outputIsPortrait = channelSettings.height > channelSettings.width;
 		const QString platform = PlatformName(channel.platform);
-		const QString name = QString::fromStdString(channel.displayName);
+		estimatedUploadKbps += channelSettings.videoBitrateKbps + channelSettings.audioBitrateKbps;
+		countedUpload = countedUpload || channelSettings.videoBitrateKbps > 0;
 
 		auto add = [&](PreflightSeverity severity, const QString &message) {
 			findings.push_back({channel.id, channel.displayName, severity, QT_TO_UTF8(message)});
 		};
 
-		if (limits.preferredOrientation == StreamOrientation::Portrait && !outputIsPortrait) {
+		if (channelSettings.width > 0 && channelSettings.height > 0 &&
+		    limits.preferredOrientation == StreamOrientation::Portrait && !outputIsPortrait) {
 			add(PreflightSeverity::Warning, QTStr("Multistream.Preflight.NeedsPortrait")
 								.arg(name, platform)
 								.arg(channelSettings.width)
 								.arg(channelSettings.height));
-		} else if (limits.preferredOrientation == StreamOrientation::Landscape && outputIsPortrait) {
+		} else if (channelSettings.width > 0 && channelSettings.height > 0 &&
+			   limits.preferredOrientation == StreamOrientation::Landscape && outputIsPortrait) {
 			add(PreflightSeverity::Warning, QTStr("Multistream.Preflight.NeedsLandscape")
 								.arg(name, platform)
 								.arg(channelSettings.width)
@@ -187,6 +207,21 @@ vector<PreflightFinding> MultistreamPreflight::Check(const vector<MultiStreamCha
 								 .arg(settings.audioBitrateKbps)
 								 .arg(limits.maxAudioBitrateKbps));
 		}
+
+		const bool requiresH264 = MultistreamChannelPlan::RequiresH264(channel.platform);
+		if (requiresH264 && !channelSettings.videoCodec.empty() && channelSettings.videoCodec != "h264") {
+			add(PreflightSeverity::Warning,
+			    QTStr("Multistream.Preflight.CodecUnsupported")
+				    .arg(name, platform, QString::fromStdString(channelSettings.videoCodec).toUpper()));
+		}
+	}
+
+	if (countedUpload) {
+		const uint64_t recommendedKbps = (estimatedUploadKbps * 125 + 99) / 100;
+		findings.push_back({{}, {}, PreflightSeverity::Advisory,
+				    QT_TO_UTF8(QTStr("Multistream.Preflight.EstimatedUpload")
+						.arg(estimatedUploadKbps)
+						.arg(recommendedKbps))});
 	}
 
 	return findings;

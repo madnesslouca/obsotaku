@@ -11,7 +11,6 @@
 
 #include <utility/ChatBadgeIcons.hpp>
 #include <utility/MultistreamChannelStore.hpp>
-#include <utility/MultistreamTaskPool.hpp>
 #include <utility/PlatformIconProvider.hpp>
 #include <utility/StreamPlatformDisplay.hpp>
 
@@ -412,11 +411,6 @@ void UnifiedChatDock::Shutdown()
 	 * lets late status signals touch partially destroyed controls. */
 	QObject::disconnect(aggregator, nullptr, this, nullptr);
 	aggregator->StopAll();
-	/* Token refresh/category work has a bounded 30 s network timeout. Keep the
-	 * guarded QObjects alive until those workers can no longer enqueue a late
-	 * callback into a dock that is being destroyed. */
-	MultistreamTaskPool().clear();
-	MultistreamTaskPool().waitForDone(35000);
 	aggregator->DisconnectAll();
 	connected = false;
 	channelStates.clear();
@@ -443,8 +437,9 @@ void UnifiedChatDock::showEvent(QShowEvent *event)
 
 void UnifiedChatDock::hideEvent(QHideEvent *event)
 {
-	if (!shuttingDown)
-		DisconnectAccounts();
+	/* Layout restoration briefly hides and shows docks several times during
+	 * startup. Keeping connections alive avoids duplicate API lookups and also
+	 * lets the user retain messages while the dock is temporarily hidden. */
 	OBSDock::hideEvent(event);
 }
 

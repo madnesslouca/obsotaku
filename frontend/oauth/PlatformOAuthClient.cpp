@@ -151,7 +151,7 @@ bool AuthorizedGet(const string &url, const OAuthTokenSet &tokens, const OAuthHt
 bool ResolveYouTube(const OAuthTokenSet &tokens, ResolvedStreamIngest &ingest, string &error)
 {
 	OAuthHttpResponse response;
-	if (!AuthorizedGet("https://www.googleapis.com/youtube/v3/liveStreams?part=cdn&mine=true&maxResults=50", tokens,
+	if (!AuthorizedGet("https://www.googleapis.com/youtube/v3/liveStreams?part=cdn%2Cstatus&mine=true&maxResults=50", tokens,
 			   {}, response, error))
 		return false;
 
@@ -163,21 +163,38 @@ bool ResolveYouTube(const OAuthTokenSet &tokens, ResolvedStreamIngest &ingest, s
 		return false;
 	}
 
-	string server;
-	string streamKey;
+	struct Candidate {
+		string server;
+		string streamKey;
+		bool active = false;
+	};
+	vector<Candidate> candidates;
 	for (const auto &item : json["items"].array_items()) {
 		const Json info = item["cdn"]["ingestionInfo"];
-		server = info["rtmpsIngestionAddress"].string_value();
+		string server = info["rtmpsIngestionAddress"].string_value();
 		if (server.empty())
 			server = info["ingestionAddress"].string_value();
-		streamKey = info["streamName"].string_value();
+		string streamKey = info["streamName"].string_value();
 		if (!server.empty() && !streamKey.empty())
-			break;
+			candidates.push_back({std::move(server), std::move(streamKey),
+					      item["status"]["streamStatus"].string_value() == "active"});
 	}
-	if (server.empty() || streamKey.empty()) {
+	if (candidates.empty()) {
 		error = "No reusable YouTube live stream with ingest credentials was found.";
 		return false;
 	}
+	vector<Candidate *> active;
+	for (auto &candidate : candidates) {
+		if (candidate.active)
+			active.push_back(&candidate);
+	}
+	if (active.size() > 1 || (active.empty() && candidates.size() > 1)) {
+		error = "YouTube returned multiple possible ingest streams. Keep one stream active or remove obsolete reusable streams in YouTube Studio.";
+		return false;
+	}
+	Candidate &selected = active.empty() ? candidates.front() : *active.front();
+	string server = std::move(selected.server);
+	string streamKey = std::move(selected.streamKey);
 
 	if (!AuthorizedGet("https://www.googleapis.com/youtube/v3/channels?part=id%2Csnippet&mine=true&maxResults=1",
 			   tokens, {}, response, error))

@@ -113,8 +113,33 @@ bool UpdateKick(const OAuthTokenSet &tokens, const StreamMetadata &metadata, str
 	return true;
 }
 
-/* YouTube edits the broadcast, so the active one has to be found first, and its
- * snippet resent whole: a partial update would clear the fields left out. */
+bool FindYouTubeBroadcast(const OAuthTokenSet &tokens, const char *status, Json &broadcast, string &error)
+{
+	OAuthHttpResponse response;
+	const string listUrl = string("https://www.googleapis.com/youtube/v3/liveBroadcasts") +
+			       "?part=snippet&maxResults=50&broadcastType=all&broadcastStatus=" + status;
+	if (!OAuthHttpClient::Get(listUrl, BearerHeaders(tokens), response, error))
+		return false;
+	if (!Succeeded(response)) {
+		error = ApiError(response);
+		return false;
+	}
+	Json listJson;
+	if (!ParseJson(response, listJson, error))
+		return false;
+	const auto &items = listJson["items"].array_items();
+	if (items.size() > 1) {
+		error = string("YouTube has multiple ") + status +
+			" broadcasts. Select a single broadcast in YouTube Studio before applying changes.";
+		return false;
+	}
+	broadcast = items.empty() ? Json{} : items.front();
+	return true;
+}
+
+/* YouTube edits the broadcast, so prefer the single active one and fall back
+ * to a single upcoming broadcast. Refusing ambiguous lists is safer than
+ * silently editing whichever item the API happened to return first. */
 bool UpdateYouTube(const OAuthTokenSet &tokens, const StreamMetadata &metadata, string &error)
 {
 	if (metadata.title.empty()) {
@@ -122,27 +147,16 @@ bool UpdateYouTube(const OAuthTokenSet &tokens, const StreamMetadata &metadata, 
 		return true;
 	}
 
-	OAuthHttpResponse response;
-	const string listUrl = "https://www.googleapis.com/youtube/v3/liveBroadcasts"
-			       "?part=snippet&broadcastStatus=active&broadcastType=all";
-	if (!OAuthHttpClient::Get(listUrl, BearerHeaders(tokens), response, error))
+	Json broadcast;
+	if (!FindYouTubeBroadcast(tokens, "active", broadcast, error))
 		return false;
-	if (!Succeeded(response)) {
-		error = ApiError(response);
+	if (broadcast.is_null() && !FindYouTubeBroadcast(tokens, "upcoming", broadcast, error))
 		return false;
-	}
-
-	Json listJson;
-	if (!ParseJson(response, listJson, error))
-		return false;
-
-	const auto &items = listJson["items"].array_items();
-	if (items.empty()) {
-		error = "YouTube has no active broadcast to update.";
+	if (broadcast.is_null()) {
+		error = "YouTube has no active or upcoming broadcast to update.";
 		return false;
 	}
 
-	const Json broadcast = items.front();
 	const string broadcastId = broadcast["id"].string_value();
 	if (broadcastId.empty()) {
 		error = "YouTube returned a broadcast without an id.";
@@ -163,6 +177,7 @@ bool UpdateYouTube(const OAuthTokenSet &tokens, const StreamMetadata &metadata, 
 	body["id"] = broadcastId;
 	body["snippet"] = snippet;
 
+	OAuthHttpResponse response;
 	if (!OAuthHttpClient::SendJson("PUT", "https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet",
 				       Json(body).dump(), BearerHeaders(tokens), response, error))
 		return false;

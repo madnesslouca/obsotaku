@@ -18,12 +18,15 @@ terminology. Advanced OBS controls remain available, but are not part of the def
 - Facebook Live, TikTok, X, and Trovo destinations through a pasted stream key, because none of them exposes a
   public ingest API. The server is pre-filled from the platform catalog and the key is stored in the credential
   vault, so they behave like any other destination once configured.
-- One shared video/audio encode when channel requirements are compatible.
-- Automatic encoder selection and 720p/1080p quality presets.
-- Preflight checks for upload capacity, missing stream keys, and unsupported settings.
+- One shared video/audio encode for compatible horizontal destinations, plus a
+  dedicated H.264 encoder created lazily when vertical delivery is used.
+- A 1080×1920/30 vertical canvas with fit/fill framing for TikTok-style output.
+- Preflight checks for estimated upload, missing stream keys, codec, resolution,
+  frame rate, and platform bitrate limits.
 - A single **Go live** action and a clear partial-failure state.
 
-Aggregated chat, cloud relay, vertical output, and subscriptions are outside the first release.
+Aggregated Twitch/YouTube/Kick chat and simultaneous vertical output are built in.
+Cloud relay and subscriptions remain outside the first release.
 
 ## Architecture decision
 

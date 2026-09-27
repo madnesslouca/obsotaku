@@ -282,6 +282,15 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 		[this](const QString &channelId, bool enabled) {
 			if (!outputHandler)
 				return;
+			if (StreamingActive() && channelId.toStdString() ==
+						 outputHandler->multiStreamManager->PrimaryChannelId()) {
+				multistreamChannelBar->SetChannels(
+					outputHandler->multiStreamManager->ConfiguredChannels());
+				RefreshMultistreamPrimaryState();
+				QMessageBox::information(this, QTStr("Multistream.ChannelBar.ToggleFailed"),
+						 QTStr("Multistream.ChannelBar.PrimaryLocked"));
+				return;
+			}
 			std::string error;
 			if (!outputHandler->multiStreamManager->SetChannelEnabled(channelId.toStdString(), enabled, error)) {
 				multistreamChannelBar->SetChannels(
@@ -425,7 +434,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 		&OBSBasic::EditMultistreamChannel);
 	connect(verticalPreviewDock, &VerticalPreviewDock::portraitFitChanged, this,
 		[this](const QString &channelId, MultiStreamPortraitFit fit) {
-			if (!outputHandler || outputHandler->multiStreamManager->IsActive()) {
+			if (!outputHandler || StreamingActive() || outputHandler->multiStreamManager->IsActive()) {
 				QMessageBox::information(this, QTStr("Multistream.Vertical.Title"),
 						 QTStr("Multistream.ChannelBar.BusyWhileLive"));
 				if (verticalPreviewDock)
@@ -438,7 +447,13 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 			});
 			if (channel == channels.end())
 				return;
-			channel->portraitFit = fit;
+			/* All portrait destinations share one canvas/encoder. Treat framing
+			 * as a global portrait-layout setting instead of presenting choices
+			 * that cannot be honoured independently. */
+			for (auto &item : channels) {
+				if (item.videoLayout == MultiStreamVideoLayout::Portrait)
+					item.portraitFit = fit;
+			}
 			std::string error;
 			if (!MultistreamChannelStore::Save(channels, error)) {
 				QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"),

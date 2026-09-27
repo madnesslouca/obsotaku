@@ -4,6 +4,7 @@
 #include <oauth/PlatformMetadataClient.hpp>
 #include <oauth/PlatformOAuthClient.hpp>
 #include <utility/StreamPlatform.hpp>
+#include <utility/MultistreamChannelPlan.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -74,6 +75,32 @@ int main()
 	}
 	if (find(kick.scopes.cbegin(), kick.scopes.cend(), "streamkey:read") == kick.scopes.cend())
 		return Fail("Kick streamkey:read scope is missing.");
+
+	MultiStreamChannel portrait;
+	portrait.id = "portrait";
+	portrait.displayName = "Portrait";
+	portrait.server = "rtmps://example.invalid/live";
+	portrait.streamKey = "test";
+	portrait.videoLayout = MultiStreamVideoLayout::Portrait;
+	MultiStreamChannel landscape = portrait;
+	landscape.id = "landscape";
+	landscape.displayName = "Landscape";
+	landscape.videoLayout = MultiStreamVideoLayout::Main;
+	if (MultistreamChannelPlan::FirstReady({portrait, landscape}).id != landscape.id)
+		return Fail("The primary planner did not prefer a landscape destination.");
+	if (MultistreamChannelPlan::FirstReady({portrait}).id != portrait.id)
+		return Fail("A portrait-only setup has no usable primary destination.");
+	portrait.portraitFit = MultiStreamPortraitFit::Fit;
+	MultiStreamChannel secondPortrait = portrait;
+	secondPortrait.id = "portrait-2";
+	secondPortrait.portraitFit = MultiStreamPortraitFit::Fill;
+	vector<MultiStreamChannel> portraitChannels{portrait, secondPortrait};
+	MultistreamChannelPlan::NormalizePortraitFit(portraitChannels);
+	if (portraitChannels[1].portraitFit != MultiStreamPortraitFit::Fit)
+		return Fail("Portrait destinations did not normalize to one shared framing mode.");
+	if (!MultistreamChannelPlan::RequiresH264(StreamPlatform::TikTok) ||
+	    MultistreamChannelPlan::RequiresH264(StreamPlatform::YouTube))
+		return Fail("Platform codec compatibility rules are incorrect.");
 
 	/* Every component must derive the account section from this helper, or the
 	 * saved account state silently splits across configuration sections. */

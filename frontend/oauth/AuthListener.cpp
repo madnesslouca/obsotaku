@@ -13,6 +13,10 @@
 
 #include "moc_AuthListener.cpp"
 
+namespace {
+constexpr qsizetype MAX_OAUTH_REQUEST_BYTES = 64 * 1024;
+}
+
 #define LOGO_URL "https://obsproject.com/assets/images/new_icon_small-r.png"
 
 static const QString serverResponseHeader = QStringLiteral("HTTP/1.0 200 OK\r\n"
@@ -63,7 +67,12 @@ void AuthListener::NewConnection()
 		connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
 		auto buffer = std::make_shared<QByteArray>();
 		connect(socket, &QTcpSocket::readyRead, socket, [this, socket, buffer]() {
-			buffer->append(socket->readAll());
+			const QByteArray chunk = socket->readAll();
+			if (buffer->size() + chunk.size() > MAX_OAUTH_REQUEST_BYTES) {
+				socket->disconnectFromHost();
+				return;
+			}
+			buffer->append(chunk);
 			if (!buffer->contains("\r\n\r\n"))
 				return;
 

@@ -33,6 +33,8 @@ target_sources(
     utility/ChatBadgeIcons.hpp
     utility/MultiStreamManager.cpp
     utility/MultiStreamManager.hpp
+    utility/MultistreamChannelPlan.cpp
+    utility/MultistreamChannelPlan.hpp
     utility/MultistreamChannelStore.cpp
     utility/MultistreamChannelStore.hpp
     utility/MultistreamPreflight.cpp

@@ -23,7 +23,6 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QScrollArea>
-#include <QSignalBlocker>
 #include <QStyle>
 #include <QTimer>
 #include <QToolButton>
@@ -258,6 +257,7 @@ void MultistreamChannelBar::SetChannels(const std::vector<MultiStreamChannel> &c
 	for (const auto &channel : channels)
 		channelsLayout->addWidget(CreateChannelCard(channel));
 	channelsLayout->addStretch(1);
+	SetPrimaryChannel(primaryChannelId, primaryLive);
 	UpdateSummary();
 }
 
@@ -405,6 +405,25 @@ void MultistreamChannelBar::ShowRestoreFailure(const QString &details)
 	}
 }
 
+void MultistreamChannelBar::ShowRestoreWarning(const QString &details)
+{
+	warningIcon->setText(QStringLiteral("⚠"));
+	warningText->setText(QTStr("Multistream.ChannelBar.RestorePartial"));
+	warningText->setToolTip(details);
+	warningRow->setVisible(true);
+}
+
+void MultistreamChannelBar::SetPrimaryChannel(const QString &channelId, bool live)
+{
+	primaryChannelId = channelId;
+	primaryLive = live;
+	for (auto item = channelWidgets.begin(); item != channelWidgets.end(); ++item) {
+		const bool locked = live && item.key() == channelId;
+		item->enabled->setEnabled(!locked);
+		item->enabled->setToolTip(locked ? QTStr("Multistream.ChannelBar.PrimaryLocked") : QString{});
+	}
+}
+
 void MultistreamChannelBar::ShowPreflightFindings(const std::vector<PreflightFinding> &findings)
 {
 	if (findings.empty()) {
@@ -495,17 +514,8 @@ void MultistreamChannelBar::UpdateState(const MultiStreamChannelSnapshot &snapsh
 	item->state->setToolTip(tip);
 	item->health->setToolTip(tip);
 
-	/* A destination that dropped on its own must not keep showing as enabled,
-	 * otherwise the toggle no longer matches what is actually being sent. */
-	if (snapshot.state == MultiStreamChannelState::Failed && item->enabled->isChecked()) {
-		QSignalBlocker blocker(item->enabled);
-		item->enabled->setChecked(false);
-		item->card->setProperty("channelEnabled", false);
-		if (item->card->style()) {
-			item->card->style()->unpolish(item->card);
-			item->card->style()->polish(item->card);
-		}
-	}
+	/* Failure is a delivery state, not a configuration change. Keep the switch
+	 * enabled so the card matches the stored model and the user can retry. */
 
 	channelStates.insert(id, snapshot.state);
 	UpdateSummary();
