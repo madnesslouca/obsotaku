@@ -692,6 +692,7 @@ private:
 	/* Ingest credentials expire; resolving them only at boot leaves a long
 	 * session going live with a stale key. */
 	QTimer multistreamCredentialTimer;
+	uint64_t multistreamRestoreGeneration = 0;
 	void BindMultistreamManager();
 	void RestoreMultistreamAccounts();
 	/* Fills the main output with the first channel from the bar when Stream

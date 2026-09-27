@@ -675,6 +675,11 @@ void OBSBasic::ReconnectMultistreamChannel(const QString &channelId)
 {
 	if (!outputHandler)
 		return;
+	if (StreamingActive() && channelId.toStdString() == outputHandler->multiStreamManager->PrimaryChannelId()) {
+		QMessageBox::information(this, QTStr("Multistream.ChannelBar.Reconnect"),
+					 QTStr("Multistream.ChannelBar.PrimaryReconnect"));
+		return;
+	}
 
 	/* Stop and start the single destination: the other outputs and the main
 	 * stream keep running. */
@@ -691,6 +696,7 @@ void OBSBasic::ApplyMultistreamChannels(std::vector<MultiStreamChannel> channels
 {
 	if (!outputHandler)
 		return;
+	++multistreamRestoreGeneration;
 
 	/* OAuth channels come out of the store without a server or key: those are
 	 * resolved on demand and never written to disk. Handing them to the output
@@ -727,11 +733,16 @@ void OBSBasic::ApplyMultistreamChannels(std::vector<MultiStreamChannel> channels
 void OBSBasic::OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedChannels,
 				       std::optional<StreamPlatform> focusedPlatform)
 {
+	if (outputHandler && (StreamingActive() || outputHandler->multiStreamManager->IsActive())) {
+		QMessageBox::information(this, QTStr("Multistream.Accounts.Title"),
+					 QTStr("Multistream.ChannelBar.BusyWhileLive"));
+		return;
+	}
 	MultistreamAccountsDialog dialog(this, std::move(managedChannels), focusedPlatform);
 	dialog.exec();
 	if (!outputHandler)
 		return;
-	if (outputHandler->multiStreamManager->IsActive()) {
+	if (StreamingActive() || outputHandler->multiStreamManager->IsActive()) {
 		BindMultistreamManager();
 		return;
 	}
@@ -799,7 +810,7 @@ void OBSBasic::ManageMultistreamAccount(const QString &channelId)
 
 void OBSBasic::AddMultistreamChannel()
 {
-	if (outputHandler && outputHandler->multiStreamManager->IsActive()) {
+	if (outputHandler && (StreamingActive() || outputHandler->multiStreamManager->IsActive())) {
 		QMessageBox::information(this, QTStr("Multistream.AddChannel.Title"),
 					 QTStr("Multistream.ChannelBar.BusyWhileLive"));
 		return;
@@ -838,7 +849,7 @@ void OBSBasic::AddMultistreamChannel()
 
 void OBSBasic::EditMultistreamChannel(const QString &channelId)
 {
-	if (outputHandler && outputHandler->multiStreamManager->IsActive()) {
+	if (outputHandler && (StreamingActive() || outputHandler->multiStreamManager->IsActive())) {
 		QMessageBox::information(this, QTStr("Multistream.AddChannel.Title"),
 					 QTStr("Multistream.ChannelBar.BusyWhileLive"));
 		return;
@@ -865,7 +876,7 @@ void OBSBasic::EditMultistreamChannel(const QString &channelId)
 
 void OBSBasic::RemoveMultistreamChannel(const QString &channelId)
 {
-	if (outputHandler && outputHandler->multiStreamManager->IsActive()) {
+	if (outputHandler && (StreamingActive() || outputHandler->multiStreamManager->IsActive())) {
 		QMessageBox::information(this, QTStr("Multistream.AddChannel.Title"),
 					 QTStr("Multistream.ChannelBar.BusyWhileLive"));
 		return;

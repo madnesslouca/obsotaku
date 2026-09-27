@@ -74,7 +74,7 @@ private:
 	void ApplyAll();
 	void ApplyRow(int index, const QString &sharedTitle);
 	void ReportResult(int index, bool success, const QString &message);
-	void SaveToStore();
+	bool SaveToStore(QString &error);
 	void UpdateApplyButton();
 	void SetEditingEnabled(bool enabled);
 	void SetFooterStatus(const QString &text, const char *state);

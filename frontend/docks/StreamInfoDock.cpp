@@ -530,7 +530,7 @@ void StreamInfoDock::MarkEdited()
 		SetFooterStatus(QTStr("Multistream.Info.ReadySummary").arg(rows.size()), "ready");
 }
 
-void StreamInfoDock::SaveToStore()
+bool StreamInfoDock::SaveToStore(QString &saveError)
 {
 	auto stored = MultistreamChannelStore::Load();
 	for (const auto &row : rows) {
@@ -546,8 +546,13 @@ void StreamInfoDock::SaveToStore()
 	}
 
 	std::string error;
-	if (!MultistreamChannelStore::Save(stored, error))
+	if (!MultistreamChannelStore::Save(stored, error)) {
 		blog(LOG_WARNING, "Could not store the broadcast metadata: %s", error.c_str());
+		saveError = QString::fromStdString(error);
+		return false;
+	}
+	saveError.clear();
+	return true;
 }
 
 void StreamInfoDock::ApplyAll()
@@ -570,10 +575,25 @@ void StreamInfoDock::ApplyAll()
 	}
 
 	const QString sharedTitle = sharedTitleEdit->text().trimmed();
-	config_set_string(App()->GetUserConfig(), SHARED_TITLE_SECTION, SHARED_TITLE_KEY,
+	config_t *userConfig = App()->GetUserConfig();
+	const char *storedSharedTitle = config_get_string(userConfig, SHARED_TITLE_SECTION, SHARED_TITLE_KEY);
+	const QString previousSharedTitle = storedSharedTitle ? QString::fromUtf8(storedSharedTitle) : QString{};
+	config_set_string(userConfig, SHARED_TITLE_SECTION, SHARED_TITLE_KEY,
 			  sharedTitle.toUtf8().constData());
-	config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
-	SaveToStore();
+	if (config_save_safe(userConfig, "tmp", nullptr) != CONFIG_SUCCESS) {
+		config_set_string(userConfig, SHARED_TITLE_SECTION, SHARED_TITLE_KEY,
+				  previousSharedTitle.toUtf8().constData());
+		SetFooterStatus(QTStr("Multistream.Info.LocalConfigError"), "error");
+		return;
+	}
+	QString saveError;
+	if (!SaveToStore(saveError)) {
+		config_set_string(userConfig, SHARED_TITLE_SECTION, SHARED_TITLE_KEY,
+				  previousSharedTitle.toUtf8().constData());
+		config_save_safe(userConfig, "tmp", nullptr);
+		SetFooterStatus(QTStr("Multistream.Info.LocalSaveFailed").arg(saveError), "error");
+		return;
+	}
 
 	pendingApplies = static_cast<int>(rows.size());
 	successfulApplies = 0;

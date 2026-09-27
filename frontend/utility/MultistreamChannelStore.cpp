@@ -8,6 +8,7 @@
 ******************************************************************************/
 
 #include "MultistreamChannelStore.hpp"
+#include "MultistreamChannelPlan.hpp"
 #include "SecureTokenStore.hpp"
 
 #include <OBSApp.hpp>
@@ -138,6 +139,10 @@ vector<MultiStreamChannel> LoadLegacyAccounts(config_t *config)
 					  : true;
 		channels.emplace_back(std::move(channel));
 	}
+	/* Portrait destinations share one canvas and therefore one framing mode.
+	 * Normalize older configurations that stored different values per channel
+	 * so the preview can never disagree with the encoded output. */
+	MultistreamChannelPlan::NormalizePortraitFit(channels);
 	return channels;
 }
 } // namespace
@@ -306,6 +311,12 @@ bool MultistreamChannelStore::Upsert(const MultiStreamChannel &channel, string &
 	}
 
 	auto channels = Load();
+	if (channel.videoLayout == MultiStreamVideoLayout::Portrait) {
+		for (auto &item : channels) {
+			if (item.videoLayout == MultiStreamVideoLayout::Portrait)
+				item.portraitFit = channel.portraitFit;
+		}
+	}
 	auto existing = find_if(channels.begin(), channels.end(),
 				[&](const MultiStreamChannel &item) { return item.id == channel.id; });
 	if (existing != channels.end())

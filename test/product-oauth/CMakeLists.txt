@@ -23,12 +23,14 @@ target_sources(
     "${PRODUCT_FRONTEND_DIR}/oauth/PlatformOAuthClient.hpp"
     "${PRODUCT_FRONTEND_DIR}/utility/SecureTokenStore.hpp"
     "${PRODUCT_FRONTEND_DIR}/utility/SecureTokenStore_Windows.cpp"
+    "${PRODUCT_FRONTEND_DIR}/utility/MultistreamChannelPlan.cpp"
+    "${PRODUCT_FRONTEND_DIR}/utility/MultistreamChannelPlan.hpp"
     "${PRODUCT_FRONTEND_DIR}/utility/StreamPlatform.cpp"
     "${PRODUCT_FRONTEND_DIR}/utility/StreamPlatform.hpp"
 )
 
 target_include_directories(product-oauth-tests PRIVATE "${PRODUCT_FRONTEND_DIR}")
-target_link_libraries(product-oauth-tests PRIVATE Qt::Core CURL::libcurl OBS::json11 advapi32)
+target_link_libraries(product-oauth-tests PRIVATE Qt::Core CURL::libcurl OBS::json11 OBS::libobs advapi32)
 
 set_target_properties(product-oauth-tests PROPERTIES FOLDER tests)
 

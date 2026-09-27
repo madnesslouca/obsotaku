@@ -36,8 +36,10 @@ public:
 	void ApplySnapshots(const std::vector<MultiStreamChannelSnapshot> &snapshots);
 	void ShowRestoringAccounts();
 	void ShowRestoreFailure(const QString &details);
+	void ShowRestoreWarning(const QString &details);
 	void UpdateState(const MultiStreamChannelSnapshot &snapshot);
 	void ShowPreflightFindings(const std::vector<PreflightFinding> &findings);
+	void SetPrimaryChannel(const QString &channelId, bool live);
 
 signals:
 	void channelEnabledChanged(const QString &channelId, bool enabled);
@@ -84,6 +86,8 @@ private:
 	QTimer *healthTimer = nullptr;
 	QHash<QString, ChannelWidgets> channelWidgets;
 	QHash<QString, MultiStreamChannelState> channelStates;
+	QString primaryChannelId;
 	int totalChannels = 0;
 	bool collapsed = false;
+	bool primaryLive = false;
 };

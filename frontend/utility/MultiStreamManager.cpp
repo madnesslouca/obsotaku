@@ -8,6 +8,7 @@
 ******************************************************************************/
 
 #include "MultiStreamManager.hpp"
+#include "MultistreamChannelPlan.hpp"
 #include "MultistreamChannelStore.hpp"
 
 #include <util/base.h>
@@ -110,14 +111,14 @@ bool MultiStreamManager::Configure(vector<MultiStreamChannel> newChannels, strin
 }
 
 bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defaultAudioEncoder,
-			       const MultiStreamReconnectSettings &reconnect, string &error)
+			       const MultiStreamOutputSettings &outputSettings, string &error)
 {
-	return Start(videoEncoder, defaultAudioEncoder, {}, reconnect, error);
+	return Start(videoEncoder, defaultAudioEncoder, {}, outputSettings, error);
 }
 
 bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defaultAudioEncoder,
 			       const vector<obs_encoder_t *> &audioEncodersByTrack,
-			       const MultiStreamReconnectSettings &reconnect, string &error)
+			       const MultiStreamOutputSettings &outputSettings, string &error)
 {
 	if (!videoEncoder || !defaultAudioEncoder) {
 		error = "Multistream requires initialized video and audio encoders.";
@@ -135,6 +136,7 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 		CollectRetiredDestinations();
 		configuredChannels = channels;
 		primaryId = primaryChannelId;
+		sessionMainVideoEncoder = OBSEncoderAutoRelease{obs_encoder_get_ref(videoEncoder)};
 	}
 
 	/* The main output is already sending this one. */
@@ -151,20 +153,17 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 		if (channel.enabled && !channel.server.empty() && !channel.streamKey.empty())
 			enabledChannels.push_back(channel);
 	}
-	if (enabledChannels.empty()) {
-		error = "Enable at least one multistream channel before going live.";
-		return false;
-	}
-
-	/* Prepare the vertical encoder even when that destination starts disabled.
-	 * Destinations can be enabled while already live, and their output must not
-	 * have been created with a null video encoder. */
+	/* A portrait primary is prepared before the main OBS output starts. For
+	 * additional destinations, create the shared portrait pipeline only when
+	 * at least one of them is enabled; disabled vertical destinations are wired
+	 * lazily by SetChannelEnabled(). */
 	const auto portraitChannel = find_if(configuredChannels.cbegin(), configuredChannels.cend(),
 					     [](const MultiStreamChannel &channel) {
-						     return channel.videoLayout == MultiStreamVideoLayout::Portrait &&
+						     return channel.enabled &&
+						    channel.videoLayout == MultiStreamVideoLayout::Portrait &&
 						    !channel.server.empty() && !channel.streamKey.empty();
 					     });
-	if (portraitChannel != configuredChannels.cend() &&
+	if (portraitChannel != configuredChannels.cend() && !portraitVideoEncoder &&
 	    !PreparePortraitPipeline(videoEncoder, portraitChannel->portraitFit, error)) {
 		ReportFailure(enabledChannels, error);
 		return false;
@@ -227,8 +226,19 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 						     1);
 		}
 		obs_output_set_service(destination->output, destination->service);
-		obs_output_set_reconnect_settings(destination->output, reconnect.maxRetries,
-						  reconnect.retryDelaySeconds);
+		OBSDataAutoRelease settings = obs_data_create();
+		obs_data_set_string(settings, "bind_ip", outputSettings.bindIp.c_str());
+		obs_data_set_string(settings, "ip_family", outputSettings.ipFamily.c_str());
+		obs_data_set_bool(settings, "dyn_bitrate", outputSettings.dynamicBitrate);
+#ifdef _WIN32
+		obs_data_set_bool(settings, "new_socket_loop_enabled", outputSettings.newSocketLoop);
+		obs_data_set_bool(settings, "low_latency_mode_enabled", outputSettings.lowLatency);
+#endif
+		obs_output_update(destination->output, settings);
+		obs_output_set_delay(destination->output, outputSettings.delaySeconds,
+				     outputSettings.preserveDelay ? OBS_OUTPUT_DELAY_PRESERVE : 0);
+		obs_output_set_reconnect_settings(destination->output, outputSettings.reconnect.maxRetries,
+						  outputSettings.reconnect.retryDelaySeconds);
 		destination->state = MultiStreamChannelState::Idle;
 		ConnectSignals(*destination);
 		prepared.emplace_back(std::move(destination));
@@ -259,7 +269,7 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 			    lastError && *lastError ? lastError : "The output could not be started.");
 	}
 
-	if (!anyStarted) {
+	if (!anyStarted && !toStart.empty()) {
 		{
 			lock_guard lock(mutex);
 			active = false;
@@ -304,6 +314,9 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 {
 	shared_ptr<Destination> destination;
 	string channelIdToPersist;
+	bool previousEnabled = false;
+	MultiStreamVideoLayout layout = MultiStreamVideoLayout::Main;
+	MultiStreamPortraitFit fit = MultiStreamPortraitFit::Fill;
 	{
 		lock_guard lock(mutex);
 		auto channel = find_if(channels.begin(), channels.end(),
@@ -312,21 +325,53 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 			error = "The selected multistream channel does not exist.";
 			return false;
 		}
-		channel->enabled = enabled;
-		channelIdToPersist = channelId;
-
 		auto output = find_if(destinations.begin(), destinations.end(),
 				      [&](const auto &item) { return item->channel.id == channelId; });
 		if (output != destinations.end()) {
 			destination = *output;
-			destination->channel.enabled = enabled;
-		} else if (!destinations.empty() && enabled) {
+		} else if (!destinations.empty() && enabled && active) {
 			error = "This channel has no prepared streaming output.";
 			return false;
 		}
+		previousEnabled = channel->enabled;
+		layout = channel->videoLayout;
+		fit = channel->portraitFit;
+		channelIdToPersist = channelId;
 	}
 
-	PersistEnabled(channelIdToPersist, enabled);
+	if (enabled && destination && layout == MultiStreamVideoLayout::Portrait && !portraitVideoEncoder) {
+		if (!sessionMainVideoEncoder || !PreparePortraitPipeline(sessionMainVideoEncoder, fit, error))
+			return false;
+		lock_guard lock(mutex);
+		for (const auto &item : destinations) {
+			if (item->channel.videoLayout == MultiStreamVideoLayout::Portrait)
+				obs_output_set_video_encoder(item->output, portraitVideoEncoder);
+		}
+	}
+
+	{
+		lock_guard lock(mutex);
+		auto channel = find_if(channels.begin(), channels.end(),
+				       [&](const MultiStreamChannel &item) { return item.id == channelId; });
+		if (channel == channels.end()) {
+			error = "The selected multistream channel no longer exists.";
+			return false;
+		}
+		channel->enabled = enabled;
+		if (destination)
+			destination->channel.enabled = enabled;
+	}
+
+	if (!PersistEnabled(channelIdToPersist, enabled, error)) {
+		lock_guard lock(mutex);
+		auto channel = find_if(channels.begin(), channels.end(),
+				       [&](const MultiStreamChannel &item) { return item.id == channelId; });
+		if (channel != channels.end())
+			channel->enabled = previousEnabled;
+		if (destination)
+			destination->channel.enabled = previousEnabled;
+		return false;
+	}
 	if (!destination) {
 		error.clear();
 		return true;
@@ -373,15 +418,34 @@ string MultiStreamManager::PrimaryChannelId() const
 MultiStreamChannel MultiStreamManager::FirstReadyChannel() const
 {
 	lock_guard lock(mutex);
-	auto ready = find_if(channels.begin(), channels.end(), [](const MultiStreamChannel &channel) {
-		return channel.videoLayout == MultiStreamVideoLayout::Main && channel.enabled &&
-		       !channel.server.empty() && !channel.streamKey.empty();
-	});
-	if (ready == channels.end())
-		ready = find_if(channels.begin(), channels.end(), [](const MultiStreamChannel &channel) {
-			return channel.enabled && !channel.server.empty() && !channel.streamKey.empty();
-		});
-	return ready != channels.end() ? *ready : MultiStreamChannel{};
+	return MultistreamChannelPlan::FirstReady(channels);
+}
+
+obs_encoder_t *MultiStreamManager::PreparePrimaryVideoEncoder(obs_encoder_t *mainVideoEncoder, string &error)
+{
+	if (!mainVideoEncoder) {
+		error = "The main video encoder is not ready.";
+		return nullptr;
+	}
+
+	MultiStreamChannel primary;
+	{
+		lock_guard lock(mutex);
+		auto item = find_if(channels.cbegin(), channels.cend(),
+				    [this](const MultiStreamChannel &channel) { return channel.id == primaryChannelId; });
+		if (item != channels.cend())
+			primary = *item;
+	}
+
+	if (primary.id.empty() || primary.videoLayout != MultiStreamVideoLayout::Portrait) {
+		DestroyPortraitPipeline();
+		error.clear();
+		return mainVideoEncoder;
+	}
+
+	if (!PreparePortraitPipeline(mainVideoEncoder, primary.portraitFit, error))
+		return nullptr;
+	return portraitVideoEncoder;
 }
 
 void MultiStreamManager::OnMainChannelChanged(void *data, calldata_t *params)
@@ -435,7 +499,38 @@ bool MultiStreamManager::PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder
 	SetPortraitSource(program, fit);
 	obs_canvas_set_channel(portraitCanvas, 0, obs_scene_get_source(portraitScene));
 
-	OBSDataAutoRelease encoderSettings = obs_encoder_get_settings(mainVideoEncoder);
+	const char *mainEncoderId = obs_encoder_get_id(mainVideoEncoder);
+	const char *mainCodec = obs_encoder_get_codec(mainVideoEncoder);
+	const bool mainIsH264 = mainCodec && string(mainCodec) == "h264";
+	const char *encoderId = mainEncoderId;
+	if (!mainIsH264) {
+		/* Vertical RTMP destinations are overwhelmingly H.264-only. Preserve
+		 * hardware acceleration when the primary encoder has an H.264 sibling,
+		 * otherwise fall back to the encoder OBS always ships. */
+		const string id = mainEncoderId ? mainEncoderId : "";
+		const char *candidates[3] = {nullptr, nullptr, "obs_x264"};
+		if (id.find("nvenc") != string::npos) {
+			candidates[0] = "obs_nvenc_h264_tex";
+			candidates[1] = "ffmpeg_nvenc";
+		} else if (id.find("qsv") != string::npos) {
+			candidates[0] = "obs_qsv11_v2";
+			candidates[1] = "obs_qsv11";
+		} else if (id.find("amf") != string::npos) {
+			candidates[0] = "h264_texture_amf";
+		} else if (id.find("videotoolbox") != string::npos || id.find("apple") != string::npos) {
+			candidates[0] = "com.apple.videotoolbox.videoencoder.ave.avc";
+		}
+		for (const char *candidate : candidates) {
+			if (candidate && obs_get_encoder_codec(candidate)) {
+				encoderId = candidate;
+				break;
+			}
+		}
+		blog(LOG_INFO, "Multistream: portrait output uses H.264 encoder '%s' instead of '%s'",
+		     encoderId, mainEncoderId ? mainEncoderId : "unknown");
+	}
+
+	OBSDataAutoRelease encoderSettings = mainIsH264 ? obs_encoder_get_settings(mainVideoEncoder) : obs_data_create();
 	if (!encoderSettings)
 		encoderSettings = obs_data_create();
 	const int64_t configuredBitrate = obs_data_get_int(encoderSettings, "bitrate");
@@ -443,7 +538,6 @@ bool MultiStreamManager::PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder
 		obs_data_set_int(encoderSettings, "bitrate", PORTRAIT_VIDEO_BITRATE_KBPS);
 	obs_data_set_int(encoderSettings, "keyint_sec", 2);
 
-	const char *encoderId = obs_encoder_get_id(mainVideoEncoder);
 	portraitVideoEncoder =
 		obs_video_encoder_create(encoderId, "multistream_portrait_video", encoderSettings, nullptr);
 	if (!portraitVideoEncoder) {
@@ -504,14 +598,13 @@ bool MultiStreamManager::IsActive() const
 	return active;
 }
 
-bool MultiStreamManager::HasEnabledChannels() const
+bool MultiStreamManager::HasAdditionalChannels() const
 {
 	lock_guard lock(mutex);
-	/* The primary channel does not count: it travels on the main output, so a
-	 * setup with only that one has nothing extra to fan out. */
+	/* Prepare disabled destinations too, allowing them to be switched on while
+	 * the primary output is already live. */
 	return any_of(channels.begin(), channels.end(), [this](const MultiStreamChannel &channel) {
-		return channel.enabled && !channel.server.empty() && !channel.streamKey.empty() &&
-		       channel.id != primaryChannelId;
+		return !channel.server.empty() && !channel.streamKey.empty() && channel.id != primaryChannelId;
 	});
 }
 
@@ -563,13 +656,13 @@ void MultiStreamManager::SetStateCallback(StateCallback callback)
 	stateCallback = std::move(callback);
 }
 
-void MultiStreamManager::PersistEnabled(const string &channelId, bool enabled)
+bool MultiStreamManager::PersistEnabled(const string &channelId, bool enabled, string &error)
 {
-	if (channelId.empty())
-		return;
-	string error;
-	if (!MultistreamChannelStore::SetEnabled(channelId, enabled, error))
-		blog(LOG_WARNING, "Could not store the multistream channel state: %s", error.c_str());
+	if (channelId.empty()) {
+		error.clear();
+		return true;
+	}
+	return MultistreamChannelStore::SetEnabled(channelId, enabled, error);
 }
 
 void MultiStreamManager::ReportFailure(const vector<MultiStreamChannel> &failedChannels, const string &error)

@@ -13,6 +13,7 @@
 #include <QObject>
 #include <QPixmap>
 #include <QString>
+#include <QStringList>
 
 class QNetworkAccessManager;
 
@@ -40,6 +41,6 @@ private:
 
 	QNetworkAccessManager *netManager = nullptr;
 	QHash<QString, QPixmap> memoryCache;
-	QHash<QString, QString> inFlight;
+	QHash<QString, QStringList> inFlight;
 	QString cacheDirectory;
 };

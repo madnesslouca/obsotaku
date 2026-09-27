@@ -23,7 +23,6 @@
 #include <QRandomGenerator>
 #include <QUrl>
 
-#include <limits>
 #include <vector>
 
 #include "moc_KickChatConnection.cpp"
@@ -35,6 +34,8 @@ constexpr const char *PUSHER_HOST = "ws-us2.pusher.com";
  * a secret — it is in the page's JavaScript — but it does change: when chat
  * stops arriving, read it back from a kick.com WebSocket request. */
 constexpr const char *PUSHER_APP = "32cbd69e4b950bf97679";
+constexpr qsizetype MAX_CHAT_BUFFER_BYTES = 4 * 1024 * 1024;
+constexpr quint64 MAX_CHAT_FRAME_BYTES = 1024 * 1024;
 
 QByteArray RandomBytes(int count)
 {
@@ -174,7 +175,13 @@ void KickChatConnection::OnReadyRead()
 	if (!socket)
 		return;
 
-	buffer.append(socket->readAll());
+	const QByteArray chunk = socket->readAll();
+	if (buffer.size() + chunk.size() > MAX_CHAT_BUFFER_BYTES) {
+		EmitStatus(ChatConnectionState::Failed, QStringLiteral("Kick sent an oversized chat payload."));
+		socket->abort();
+		return;
+	}
+	buffer.append(chunk);
 	if (!handshakeComplete && !ProcessHandshake())
 		return;
 	ProcessFrames();
@@ -281,7 +288,7 @@ void KickChatConnection::ProcessFrames()
 			offset += 4;
 		}
 
-		if (length > static_cast<quint64>(std::numeric_limits<int>::max())) {
+		if (length > MAX_CHAT_FRAME_BYTES) {
 			socket->abort();
 			return;
 		}
@@ -297,6 +304,10 @@ void KickChatConnection::ProcessFrames()
 
 		switch (opcode) {
 		case 0x0:
+			if (fragment.size() + payload.size() > MAX_CHAT_BUFFER_BYTES) {
+				socket->abort();
+				return;
+			}
 			fragment.append(payload);
 			if (fin) {
 				if (fragmentOpcode == 0x1)

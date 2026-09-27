@@ -129,25 +129,59 @@ bool NdiNetworkConfig::WriteAdapterConfig(const QString &address, QString &error
 bool NdiNetworkConfig::SaveSelectedAddress(const QString &address, QString &error)
 {
 	const QString normalizedAddress = address.trimmed();
-	if (!normalizedAddress.isEmpty() && !WriteAdapterConfig(normalizedAddress, error))
-		return false;
-
 	config_t *config = App()->GetAppConfig();
 	const QString previous = SelectedAddress();
+	const QString directory = ConfigDirectory();
+	if (directory.isEmpty()) {
+		error = QTStr("NdiNetwork.Error.ConfigPath");
+		return false;
+	}
+	const QString configPath = QDir(directory).filePath(QStringLiteral("ndi-config.v1.json"));
+	if (!normalizedAddress.isEmpty()) {
+		if (!WriteAdapterConfig(normalizedAddress, error))
+			return false;
+	} else if (QFileInfo::exists(configPath) && !QFile::remove(configPath)) {
+		error = QTStr("NdiNetwork.Error.WriteConfig").arg(configPath);
+		return false;
+	}
+
 	config_set_string(config, CONFIG_SECTION, CONFIG_KEY, normalizedAddress.toUtf8().constData());
 	if (config_save_safe(config, "tmp", nullptr) != CONFIG_SUCCESS) {
 		config_set_string(config, CONFIG_SECTION, CONFIG_KEY, previous.toUtf8().constData());
+		QString ignored;
+		if (!previous.isEmpty())
+			WriteAdapterConfig(previous, ignored);
 		error = QTStr("NdiNetwork.Error.SaveSettings");
 		return false;
 	}
+
+	/* An in-app restart inherits this process' environment. Without clearing
+	 * our old directory here, selecting Automatic would still load the stale
+	 * adapter restriction in the child process. */
+	const QByteArray ourDirectory = QFile::encodeName(QDir::toNativeSeparators(directory));
+	if (normalizedAddress.isEmpty() && qgetenv("NDI_CONFIG_DIR") == ourDirectory)
+		qunsetenv("NDI_CONFIG_DIR");
 	return true;
 }
 
 bool NdiNetworkConfig::PrepareEnvironment(QString *error)
 {
 	const QString address = SelectedAddress();
-	if (address.isEmpty())
+	if (address.isEmpty()) {
+		const QString directory = ConfigDirectory();
+		if (directory.isEmpty())
+			return true;
+		const QByteArray ourDirectory = QFile::encodeName(QDir::toNativeSeparators(directory));
+		if (qgetenv("NDI_CONFIG_DIR") == ourDirectory)
+			qunsetenv("NDI_CONFIG_DIR");
+		const QString staleConfig = QDir(directory).filePath(QStringLiteral("ndi-config.v1.json"));
+		if (QFileInfo::exists(staleConfig) && !QFile::remove(staleConfig)) {
+			if (error)
+				*error = QTStr("NdiNetwork.Error.WriteConfig").arg(staleConfig);
+			return false;
+		}
 		return true;
+	}
 
 	QString localError;
 	if (!WriteAdapterConfig(address, localError)) {

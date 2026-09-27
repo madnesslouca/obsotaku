@@ -92,6 +92,20 @@ struct MultiStreamReconnectSettings {
 	int retryDelaySeconds = 2;
 };
 
+/* Network behaviour shared with OBS' primary stream output. Keeping these
+ * values together prevents secondary destinations from silently ignoring the
+ * selected adapter, stream delay, or dynamic-bitrate policy. */
+struct MultiStreamOutputSettings {
+	MultiStreamReconnectSettings reconnect;
+	std::string bindIp;
+	std::string ipFamily;
+	int delaySeconds = 0;
+	bool preserveDelay = false;
+	bool dynamicBitrate = false;
+	bool newSocketLoop = false;
+	bool lowLatency = false;
+};
+
 class MultiStreamManager {
 public:
 	using StateCallback = std::function<void(const MultiStreamChannelSnapshot &)>;
@@ -113,18 +127,25 @@ public:
 	 * there is none. Used to fill the main output when it has no service. */
 	MultiStreamChannel FirstReadyChannel() const;
 
+	/* Returns the encoder the primary output must use. For a portrait primary
+	 * this prepares the 9:16 canvas before OBS starts its main output. */
+	obs_encoder_t *PreparePrimaryVideoEncoder(obs_encoder_t *mainVideoEncoder, std::string &error);
+
 	/* audioEncodersByTrack is indexed by OBS audio track, so entries may be
 	 * null. Compacting it would silently remap the track a channel selected. */
 	bool Start(obs_encoder_t *videoEncoder, obs_encoder_t *defaultAudioEncoder,
 		   const std::vector<obs_encoder_t *> &audioEncodersByTrack,
-		   const MultiStreamReconnectSettings &reconnect, std::string &error);
+		   const MultiStreamOutputSettings &outputSettings, std::string &error);
 	bool Start(obs_encoder_t *videoEncoder, obs_encoder_t *defaultAudioEncoder,
-		   const MultiStreamReconnectSettings &reconnect, std::string &error);
+		   const MultiStreamOutputSettings &outputSettings, std::string &error);
 	void Stop(bool force = false);
 	bool SetChannelEnabled(const std::string &channelId, bool enabled, std::string &error);
 
 	bool IsActive() const;
-	bool HasEnabledChannels() const;
+	/* True when an additional destination can be prepared. It deliberately
+	 * includes disabled channels so the user can enable one while already
+	 * live without getting a silent no-op. */
+	bool HasAdditionalChannels() const;
 	std::vector<MultiStreamChannel> ConfiguredChannels() const;
 	std::vector<MultiStreamChannelSnapshot> Snapshot() const;
 
@@ -164,7 +185,7 @@ private:
 	void UpdateState(Destination &destination, MultiStreamChannelState state, const char *lastError = nullptr,
 			 bool countReconnect = false);
 	void ReportFailure(const std::vector<MultiStreamChannel> &failedChannels, const std::string &error);
-	static void PersistEnabled(const std::string &channelId, bool enabled);
+	static bool PersistEnabled(const std::string &channelId, bool enabled, std::string &error);
 	static void OnMainChannelChanged(void *data, calldata_t *params);
 	bool PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder, MultiStreamPortraitFit fit, std::string &error);
 	void SetPortraitSource(obs_source_t *source, MultiStreamPortraitFit fit);
@@ -185,6 +206,7 @@ private:
 	OBSCanvasAutoRelease portraitCanvas;
 	OBSSceneAutoRelease portraitScene;
 	OBSEncoderAutoRelease portraitVideoEncoder;
+	OBSEncoderAutoRelease sessionMainVideoEncoder;
 	obs_sceneitem_t *portraitSceneItem = nullptr;
 	MultiStreamPortraitFit portraitFit = MultiStreamPortraitFit::Fill;
 	bool mainChannelSignalConnected = false;

@@ -97,8 +97,10 @@ void OBSBasic::RefreshMultistreamPrimaryState()
 	 * the manager, so no destination callback ever reports on it. Without this
 	 * its card would sit on "offline" through an entire broadcast. */
 	const std::string primaryId = outputHandler->multiStreamManager->PrimaryChannelId();
-	if (primaryId.empty())
+	if (primaryId.empty()) {
+		multistreamChannelBar->SetPrimaryChannel({}, false);
 		return;
+	}
 
 	MultiStreamChannelSnapshot snapshot;
 	snapshot.id = primaryId;
@@ -109,8 +111,11 @@ void OBSBasic::RefreshMultistreamPrimaryState()
 		}
 	}
 
-	obs_output_t *output = outputHandler->streamOutput;
-	if (!output || !obs_output_active(output)) {
+	OBSOutputAutoRelease activeOutput = outputHandler->StreamingOutput();
+	obs_output_t *output = activeOutput;
+	const bool live = output && obs_output_active(output);
+	multistreamChannelBar->SetPrimaryChannel(QString::fromStdString(primaryId), live);
+	if (!live) {
 		snapshot.state = streamingStopping ? MultiStreamChannelState::Stopping : MultiStreamChannelState::Idle;
 		multistreamChannelBar->UpdateState(snapshot);
 		return;
@@ -212,6 +217,7 @@ void OBSBasic::RestoreMultistreamAccounts()
 {
 	if (!outputHandler || !multistreamChannelBar)
 		return;
+	const uint64_t generation = ++multistreamRestoreGeneration;
 
 	/* Ingest keys and access tokens go stale during a long session, and the
 	 * boot resolve may have failed with no network. Refreshing on a timer
@@ -219,7 +225,7 @@ void OBSBasic::RestoreMultistreamAccounts()
 	if (!multistreamCredentialTimer.isActive()) {
 		multistreamCredentialTimer.setInterval(20 * 60 * 1000);
 		connect(&multistreamCredentialTimer, &QTimer::timeout, this, [this]() {
-			if (!outputHandler || outputHandler->multiStreamManager->IsActive())
+			if (!outputHandler || StreamingActive() || outputHandler->multiStreamManager->IsActive())
 				return;
 			RestoreMultistreamAccounts();
 		});
@@ -254,7 +260,7 @@ void OBSBasic::RestoreMultistreamAccounts()
 		multistreamChannelBar->ShowRestoringAccounts();
 	QPointer<OBSBasic> guard(this);
 	const QString incompleteRegistration = QTStr("Multistream.Accounts.IntegrationPending");
-	MultistreamTaskPool().start([guard, incompleteRegistration, readyChannels = std::move(readyChannels),
+	MultistreamTaskPool().start([guard, generation, incompleteRegistration, readyChannels = std::move(readyChannels),
 				     oauthChannels = std::move(oauthChannels)]() mutable {
 		std::vector<MultiStreamChannel> channels = std::move(readyChannels);
 		std::ostringstream failures;
@@ -290,8 +296,9 @@ void OBSBasic::RestoreMultistreamAccounts()
 		const QString failureText = QString::fromStdString(failures.str()).trimmed();
 		QMetaObject::invokeMethod(
 			guard.data(),
-			[guard, channels = std::move(channels), failureText]() mutable {
+			[guard, generation, channels = std::move(channels), failureText]() mutable {
 				if (!guard || !guard->outputHandler ||
+				    generation != guard->multistreamRestoreGeneration || guard->StreamingActive() ||
 				    guard->outputHandler->multiStreamManager->IsActive())
 					return;
 				std::string error;
@@ -318,9 +325,11 @@ void OBSBasic::RestoreMultistreamAccounts()
 				if (guard->outputHandler->multiStreamManager->ConfiguredChannels().empty() &&
 				    !failureText.isEmpty())
 					guard->multistreamChannelBar->ShowRestoreFailure(failureText);
-				else if (!failureText.isEmpty())
+				else if (!failureText.isEmpty()) {
+					guard->multistreamChannelBar->ShowRestoreWarning(failureText);
 					blog(LOG_WARNING, "Some multistream accounts could not be restored: %s",
 					     QT_TO_UTF8(failureText));
+				}
 			},
 			Qt::QueuedConnection);
 	});

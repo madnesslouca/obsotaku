@@ -24,6 +24,8 @@
 #include <QStandardPaths>
 #include <QUrl>
 
+#include <memory>
+
 #include "moc_ChannelAvatarCache.cpp"
 
 namespace {
@@ -101,8 +103,11 @@ QPixmap ChannelAvatarCache::Avatar(const QString &channelId, const QString &url,
 
 void ChannelAvatarCache::Download(const QString &channelId, const QString &url)
 {
-	if (inFlight.contains(url))
+	if (inFlight.contains(url)) {
+		if (!inFlight[url].contains(channelId))
+			inFlight[url].append(channelId);
 		return;
+	}
 
 	const QUrl parsed(url);
 	/* Profile pictures come from the platform APIs over HTTPS; anything else
@@ -110,24 +115,33 @@ void ChannelAvatarCache::Download(const QString &channelId, const QString &url)
 	if (!parsed.isValid() || parsed.scheme() != QStringLiteral("https"))
 		return;
 
-	inFlight.insert(url, channelId);
+	inFlight.insert(url, QStringList{channelId});
 	QNetworkRequest request(parsed);
 	request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("OBS-Multistream/0.1"));
 	request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+	request.setAttribute(QNetworkRequest::MaximumDownloadBufferSizeAttribute, MAX_AVATAR_BYTES);
 
 	QNetworkReply *reply = netManager->get(request);
-	connect(reply, &QNetworkReply::finished, this, [this, reply, url, channelId]() {
+	auto data = std::make_shared<QByteArray>();
+	connect(reply, &QIODevice::readyRead, this, [reply, data]() {
+		const QByteArray chunk = reply->readAll();
+		if (data->size() + chunk.size() > MAX_AVATAR_BYTES) {
+			reply->abort();
+			return;
+		}
+		data->append(chunk);
+	});
+	connect(reply, &QNetworkReply::finished, this, [this, reply, data, url]() {
 		reply->deleteLater();
-		inFlight.remove(url);
+		const QStringList waitingChannels = inFlight.take(url);
 
 		if (reply->error() != QNetworkReply::NoError)
 			return;
-		const QByteArray data = reply->readAll();
-		if (data.isEmpty() || data.size() > MAX_AVATAR_BYTES)
+		if (data->isEmpty() || data->size() > MAX_AVATAR_BYTES)
 			return;
 
 		QImage image;
-		if (!image.loadFromData(data))
+		if (!image.loadFromData(*data))
 			return;
 
 		/* Store normalized: the platforms serve wildly different sizes and
@@ -136,6 +150,7 @@ void ChannelAvatarCache::Download(const QString &channelId, const QString &url)
 		if (!image.save(CacheFilePath(url), "PNG"))
 			blog(LOG_DEBUG, "Could not cache a channel avatar on disk");
 
-		emit avatarReady(channelId);
+		for (const QString &waitingChannel : waitingChannels)
+			emit avatarReady(waitingChannel);
 	});
 }
