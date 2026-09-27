@@ -45,6 +45,14 @@ constexpr const char *SHARED_TITLE_KEY = "SharedTitle";
 /* Long enough that typing a game name does not fire a request per keystroke. */
 constexpr int CATEGORY_SEARCH_DELAY_MS = 500;
 
+void RefreshStyle(QWidget *widget)
+{
+	if (!widget || !widget->style())
+		return;
+	widget->style()->unpolish(widget);
+	widget->style()->polish(widget);
+}
+
 QString FromStd(const std::string &value)
 {
 	return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
@@ -69,49 +77,114 @@ StreamInfoDock::StreamInfoDock(QWidget *parent) : OBSDock(parent)
 	content->setObjectName(QStringLiteral("streamInfoContent"));
 
 	auto *layout = new QVBoxLayout(content);
-	layout->setContentsMargins(10, 10, 10, 10);
+	layout->setContentsMargins(8, 8, 8, 8);
 	layout->setSpacing(8);
 
-	auto *sharedLabel = new QLabel(QTStr("Multistream.Info.SharedTitle"), content);
-	sharedLabel->setObjectName(QStringLiteral("streamInfoLabel"));
-	layout->addWidget(sharedLabel);
+	auto *header = new QFrame(content);
+	header->setObjectName(QStringLiteral("streamInfoHeader"));
+	auto *headerLayout = new QVBoxLayout(header);
+	headerLayout->setContentsMargins(12, 10, 12, 10);
+	headerLayout->setSpacing(3);
+	auto *headerTitle = new QLabel(QTStr("Multistream.Info.HeaderTitle"), header);
+	headerTitle->setObjectName(QStringLiteral("streamInfoHeaderTitle"));
+	auto *headerBody = new QLabel(QTStr("Multistream.Info.HeaderBody"), header);
+	headerBody->setObjectName(QStringLiteral("streamInfoHint"));
+	headerBody->setWordWrap(true);
+	headerLayout->addWidget(headerTitle);
+	headerLayout->addWidget(headerBody);
+	layout->addWidget(header);
 
-	sharedTitleEdit = new QLineEdit(content);
+	auto *sharedCard = new QFrame(content);
+	sharedCard->setObjectName(QStringLiteral("streamInfoSharedCard"));
+	auto *sharedLayout = new QVBoxLayout(sharedCard);
+	sharedLayout->setContentsMargins(12, 9, 12, 10);
+	sharedLayout->setSpacing(6);
+	auto *sharedHeader = new QHBoxLayout();
+	sharedHeader->setContentsMargins(0, 0, 0, 0);
+	auto *sharedLabel = new QLabel(QTStr("Multistream.Info.SharedTitle"), sharedCard);
+	sharedLabel->setObjectName(QStringLiteral("streamInfoSectionTitle"));
+	auto *sharedBadge = new QLabel(QTStr("Multistream.Info.SharedBadge"), sharedCard);
+	sharedBadge->setObjectName(QStringLiteral("streamInfoSharedBadge"));
+	sharedHeader->addWidget(sharedLabel);
+	sharedHeader->addStretch();
+	sharedHeader->addWidget(sharedBadge);
+	sharedLayout->addLayout(sharedHeader);
+
+	sharedTitleEdit = new QLineEdit(sharedCard);
 	sharedTitleEdit->setObjectName(QStringLiteral("streamInfoSharedTitle"));
 	sharedTitleEdit->setPlaceholderText(QTStr("Multistream.Info.TitlePlaceholder"));
 	const char *storedTitle = config_get_string(App()->GetUserConfig(), SHARED_TITLE_SECTION, SHARED_TITLE_KEY);
 	sharedTitleEdit->setText(QString::fromUtf8(storedTitle ? storedTitle : ""));
-	layout->addWidget(sharedTitleEdit);
+	sharedLayout->addWidget(sharedTitleEdit);
 
-	auto *hint = new QLabel(QTStr("Multistream.Info.SharedHint"), content);
+	auto *hint = new QLabel(QTStr("Multistream.Info.SharedHint"), sharedCard);
 	hint->setObjectName(QStringLiteral("streamInfoHint"));
 	hint->setWordWrap(true);
-	layout->addWidget(hint);
+	sharedLayout->addWidget(hint);
+	layout->addWidget(sharedCard);
+
+	auto *channelsHeader = new QHBoxLayout();
+	channelsHeader->setContentsMargins(2, 1, 2, 0);
+	auto *channelsTitle = new QLabel(QTStr("Multistream.Info.Channels"), content);
+	channelsTitle->setObjectName(QStringLiteral("streamInfoSectionTitle"));
+	channelCountLabel = new QLabel(content);
+	channelCountLabel->setObjectName(QStringLiteral("streamInfoCount"));
+	channelsHeader->addWidget(channelsTitle);
+	channelsHeader->addStretch();
+	channelsHeader->addWidget(channelCountLabel);
+	layout->addLayout(channelsHeader);
 
 	/* Channels scroll so the dock stays usable docked to a narrow side. */
-	auto *scroll = new QScrollArea(content);
-	scroll->setObjectName(QStringLiteral("streamInfoScroll"));
-	scroll->setWidgetResizable(true);
-	scroll->setFrameShape(QFrame::NoFrame);
-	scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	channelsScroll = new QScrollArea(content);
+	channelsScroll->setObjectName(QStringLiteral("streamInfoScroll"));
+	channelsScroll->setWidgetResizable(true);
+	channelsScroll->setFrameShape(QFrame::NoFrame);
+	channelsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
-	auto *rowsContainer = new QWidget(scroll);
+	auto *rowsContainer = new QWidget(channelsScroll);
+	rowsContainer->setObjectName(QStringLiteral("streamInfoRows"));
 	rowsLayout = new QVBoxLayout(rowsContainer);
 	rowsLayout->setContentsMargins(0, 0, 0, 0);
 	rowsLayout->setSpacing(8);
 	rowsLayout->addStretch(1);
-	scroll->setWidget(rowsContainer);
-	layout->addWidget(scroll, 1);
+	channelsScroll->setWidget(rowsContainer);
+	layout->addWidget(channelsScroll, 1);
 
-	emptyHint = new QLabel(QTStr("Multistream.Info.NoChannels"), content);
-	emptyHint->setObjectName(QStringLiteral("streamInfoHint"));
-	emptyHint->setWordWrap(true);
-	layout->addWidget(emptyHint);
+	emptyState = new QFrame(content);
+	emptyState->setObjectName(QStringLiteral("streamInfoEmpty"));
+	auto *emptyLayout = new QVBoxLayout(emptyState);
+	emptyLayout->setContentsMargins(24, 24, 24, 24);
+	emptyLayout->setSpacing(6);
+	auto *emptyIcon = new QLabel(QStringLiteral("•••"), emptyState);
+	emptyIcon->setObjectName(QStringLiteral("streamInfoEmptyIcon"));
+	emptyIcon->setAlignment(Qt::AlignCenter);
+	auto *emptyTitle = new QLabel(QTStr("Multistream.Info.EmptyTitle"), emptyState);
+	emptyTitle->setObjectName(QStringLiteral("streamInfoEmptyTitle"));
+	emptyTitle->setAlignment(Qt::AlignCenter);
+	auto *emptyBody = new QLabel(QTStr("Multistream.Info.NoChannels"), emptyState);
+	emptyBody->setObjectName(QStringLiteral("streamInfoHint"));
+	emptyBody->setAlignment(Qt::AlignCenter);
+	emptyBody->setWordWrap(true);
+	emptyLayout->addWidget(emptyIcon);
+	emptyLayout->addWidget(emptyTitle);
+	emptyLayout->addWidget(emptyBody);
+	layout->addWidget(emptyState, 1);
 
-	applyButton = new QPushButton(QTStr("Multistream.Info.Apply"), content);
+	auto *footer = new QFrame(content);
+	footer->setObjectName(QStringLiteral("streamInfoFooter"));
+	auto *footerLayout = new QHBoxLayout(footer);
+	footerLayout->setContentsMargins(10, 8, 10, 8);
+	footerLayout->setSpacing(10);
+	footerStatus = new QLabel(footer);
+	footerStatus->setObjectName(QStringLiteral("streamInfoFooterStatus"));
+	footerStatus->setWordWrap(true);
+	applyButton = new QPushButton(QTStr("Multistream.Info.Apply"), footer);
 	applyButton->setObjectName(QStringLiteral("streamInfoApply"));
 	connect(applyButton, &QPushButton::clicked, this, &StreamInfoDock::ApplyAll);
-	layout->addWidget(applyButton);
+	footerLayout->addWidget(footerStatus, 1);
+	footerLayout->addWidget(applyButton);
+	layout->addWidget(footer);
+	connect(sharedTitleEdit, &QLineEdit::textEdited, this, &StreamInfoDock::MarkEdited);
 
 	setWidget(content);
 	RefreshChannels();
@@ -157,7 +230,13 @@ void StreamInfoDock::RefreshChannels()
 	}
 
 	BuildRows();
-	emptyHint->setVisible(rows.empty());
+	const bool hasRows = !rows.empty();
+	channelsScroll->setVisible(hasRows);
+	emptyState->setVisible(!hasRows);
+	channelCountLabel->setText(QString::number(rows.size()));
+	SetFooterStatus(hasRows ? QTStr("Multistream.Info.ReadySummary").arg(rows.size())
+				    : QTStr("Multistream.Info.NoChannelsShort"),
+			hasRows ? "ready" : "idle");
 	UpdateApplyButton();
 }
 
@@ -198,48 +277,62 @@ QWidget *StreamInfoDock::BuildRow(int index)
 	row.nameLabel = new QLabel(FromStd(row.channel.displayName), widget);
 	row.nameLabel->setObjectName(QStringLiteral("streamInfoName"));
 	header->addWidget(row.nameLabel);
+	header->addStretch(1);
+	auto *platformLabel = new QLabel(StreamPlatformDisplayName(platform), widget);
+	platformLabel->setObjectName(QStringLiteral("streamInfoPlatform"));
+	header->addWidget(platformLabel);
+	outer->addLayout(header);
 
+	auto *titleModeRow = new QHBoxLayout();
+	titleModeRow->setContentsMargins(0, 0, 0, 0);
+	titleModeRow->setSpacing(8);
 	row.titleStateLabel = new QLabel(widget);
 	row.titleStateLabel->setObjectName(QStringLiteral("streamInfoState"));
-	header->addWidget(row.titleStateLabel);
-	header->addStretch(1);
+	titleModeRow->addWidget(row.titleStateLabel);
+	titleModeRow->addStretch(1);
 
 	row.overrideButton = new QPushButton(widget);
 	row.overrideButton->setObjectName(QStringLiteral("streamInfoOverride"));
 	connect(row.overrideButton, &QPushButton::clicked, this, [this, index]() {
 		ChannelRow *target = RowAt(index);
-		if (target)
+		if (target) {
 			SetOverrideEnabled(index, !target->titleEdit->isVisible());
+			MarkEdited();
+		}
 	});
-	header->addWidget(row.overrideButton);
-	outer->addLayout(header);
+	titleModeRow->addWidget(row.overrideButton);
+	outer->addLayout(titleModeRow);
 
 	row.titleEdit = new QLineEdit(FromStd(row.channel.title), widget);
 	row.titleEdit->setObjectName(QStringLiteral("streamInfoTitle"));
 	row.titleEdit->setPlaceholderText(QTStr("Multistream.Info.TitlePlaceholder"));
+	row.titleEdit->setToolTip(QTStr("Multistream.Info.OwnTitleTip"));
+	connect(row.titleEdit, &QLineEdit::textEdited, this, &StreamInfoDock::MarkEdited);
 	outer->addWidget(row.titleEdit);
 
 	if (PlatformMetadataClient::SupportsCategories(platform)) {
-		auto *categoryRow = new QHBoxLayout();
-		categoryRow->setContentsMargins(0, 0, 0, 0);
-		categoryRow->setSpacing(8);
-
 		auto *categoryLabel = new QLabel(QTStr("Multistream.Info.Category"), widget);
 		categoryLabel->setObjectName(QStringLiteral("streamInfoLabel"));
-		categoryRow->addWidget(categoryLabel);
+		outer->addWidget(categoryLabel);
 
 		row.categoryCombo = new QComboBox(widget);
 		row.categoryCombo->setObjectName(QStringLiteral("streamInfoCategory"));
 		row.categoryCombo->setEditable(true);
 		row.categoryCombo->setInsertPolicy(QComboBox::NoInsert);
 		row.categoryCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		row.categoryCombo->setToolTip(QTStr("Multistream.Info.CategoryTip"));
+		row.categoryCombo->lineEdit()->setPlaceholderText(QTStr("Multistream.Info.CategoryPlaceholder"));
 		if (!row.channel.categoryName.empty()) {
 			row.categoryCombo->addItem(FromStd(row.channel.categoryName),
 						   FromStd(row.channel.categoryId));
 			row.categoryCombo->setCurrentIndex(0);
 		}
-		categoryRow->addWidget(row.categoryCombo, 1);
-		outer->addLayout(categoryRow);
+		outer->addWidget(row.categoryCombo);
+
+		row.categoryStatusLabel = new QLabel(widget);
+		row.categoryStatusLabel->setObjectName(QStringLiteral("streamInfoCategoryStatus"));
+		row.categoryStatusLabel->setVisible(false);
+		outer->addWidget(row.categoryStatusLabel);
 
 		row.categorySearchTimer = new QTimer(widget);
 		row.categorySearchTimer->setSingleShot(true);
@@ -250,10 +343,18 @@ QWidget *StreamInfoDock::BuildRow(int index)
 				SearchCategories(index, target->categoryCombo->currentText());
 		});
 
-		connect(row.categoryCombo, &QComboBox::editTextChanged, this, [this, index](const QString &) {
+		connect(row.categoryCombo, &QComboBox::editTextChanged, this, [this, index](const QString &text) {
 			ChannelRow *target = RowAt(index);
-			if (target && !target->populatingCategories)
+			if (target && !target->populatingCategories) {
+				const int selected = target->categoryCombo->currentIndex();
+				if (selected < 0 || target->categoryCombo->itemText(selected) != text) {
+					target->channel.categoryId.clear();
+					target->channel.categoryName.clear();
+				}
+				target->categoryStatusLabel->setVisible(false);
 				target->categorySearchTimer->start();
+				MarkEdited();
+			}
 		});
 		connect(row.categoryCombo, &QComboBox::activated, this, [this, index](int comboIndex) {
 			ChannelRow *target = RowAt(index);
@@ -261,6 +362,8 @@ QWidget *StreamInfoDock::BuildRow(int index)
 				return;
 			target->channel.categoryId = target->categoryCombo->itemData(comboIndex).toString().toStdString();
 			target->channel.categoryName = target->categoryCombo->itemText(comboIndex).toStdString();
+			target->categoryStatusLabel->setVisible(false);
+			MarkEdited();
 		});
 	}
 
@@ -288,13 +391,24 @@ void StreamInfoDock::SetOverrideEnabled(int index, bool enabled)
 					     : QTStr("Multistream.Info.UseOwn"));
 	if (!enabled)
 		row->titleEdit->clear();
+	RefreshStyle(row->titleStateLabel);
+	RefreshStyle(row->overrideButton);
 }
 
 void StreamInfoDock::SearchCategories(int index, const QString &query)
 {
 	ChannelRow *row = RowAt(index);
-	if (!row || !row->categoryCombo || query.trimmed().size() < 2)
+	if (!row || !row->categoryCombo)
 		return;
+	if (query.trimmed().size() < 2) {
+		row->categoryStatusLabel->setVisible(false);
+		return;
+	}
+
+	row->categoryStatusLabel->setText(QTStr("Multistream.Info.CategorySearching"));
+	row->categoryStatusLabel->setProperty("resultState", "pending");
+	row->categoryStatusLabel->setVisible(true);
+	RefreshStyle(row->categoryStatusLabel);
 
 	const MultiStreamChannel channel = row->channel;
 	const auto registration = MultistreamAccountsDialog::RegistrationForPlatform(channel.platform);
@@ -308,22 +422,40 @@ void StreamInfoDock::SearchCategories(int index, const QString &query)
 		OAuthTokenSet tokens;
 		std::string error;
 		std::vector<StreamCategory> results;
-		if (LoadUsableTokens(channel, registration, tokens, error))
-			PlatformMetadataClient::SearchCategories(channel.platform, registration, tokens, text, results,
-								 error);
+		bool success = LoadUsableTokens(channel, registration, tokens, error);
+		if (success)
+			success = PlatformMetadataClient::SearchCategories(channel.platform, registration, tokens, text,
+									    results, error);
+		const QString message = QString::fromUtf8(error.data(), static_cast<qsizetype>(error.size()));
 		if (!guard)
 			return;
 		QMetaObject::invokeMethod(
 			guard.data(),
 			[guard, index, channelId = channel.id, rowSet, searchGeneration, requestedText,
-			 results = std::move(results)]() {
+			 success, message, results = std::move(results)]() {
 				if (!guard)
 					return;
 				ChannelRow *target = guard->RowAt(index);
-				if (!target || !target->categoryCombo || results.empty() ||
-				    guard->rowsGeneration != rowSet || target->channel.id != channelId ||
+				if (!target || !target->categoryCombo || guard->rowsGeneration != rowSet ||
+				    target->channel.id != channelId ||
 				    target->categorySearchGeneration != searchGeneration ||
 				    target->categoryCombo->currentText().trimmed() != requestedText) {
+					return;
+				}
+				if (!success) {
+					target->categoryStatusLabel->setText(
+						message.isEmpty() ? QTStr("Multistream.Info.CategorySearchFailed")
+								  : QTStr("Multistream.Info.CategorySearchFailedWith").arg(message));
+					target->categoryStatusLabel->setProperty("resultState", "error");
+					target->categoryStatusLabel->setVisible(true);
+					RefreshStyle(target->categoryStatusLabel);
+					return;
+				}
+				if (results.empty()) {
+					target->categoryStatusLabel->setText(QTStr("Multistream.Info.CategoryNoResults"));
+					target->categoryStatusLabel->setProperty("resultState", "idle");
+					target->categoryStatusLabel->setVisible(true);
+					RefreshStyle(target->categoryStatusLabel);
 					return;
 				}
 
@@ -335,7 +467,9 @@ void StreamInfoDock::SearchCategories(int index, const QString &query)
 					target->categoryCombo->addItem(FromStd(category.name), FromStd(category.id));
 				target->categoryCombo->setEditText(typed);
 				target->populatingCategories = false;
-				target->categoryCombo->showPopup();
+				target->categoryStatusLabel->setVisible(false);
+				if (target->categoryCombo->hasFocus())
+					target->categoryCombo->showPopup();
 			},
 			Qt::QueuedConnection);
 	});
@@ -346,6 +480,34 @@ void StreamInfoDock::UpdateApplyButton()
 	applyButton->setEnabled(!rows.empty() && pendingApplies == 0);
 	applyButton->setText(pendingApplies > 0 ? QTStr("Multistream.Info.Applying")
 						: QTStr("Multistream.Info.Apply"));
+}
+
+void StreamInfoDock::SetEditingEnabled(bool enabled)
+{
+	sharedTitleEdit->setEnabled(enabled);
+	for (const auto &row : rows) {
+		if (!enabled && row->categorySearchTimer) {
+			row->categorySearchTimer->stop();
+			++row->categorySearchGeneration;
+		}
+		row->overrideButton->setEnabled(enabled);
+		row->titleEdit->setEnabled(enabled);
+		if (row->categoryCombo)
+			row->categoryCombo->setEnabled(enabled);
+	}
+}
+
+void StreamInfoDock::SetFooterStatus(const QString &text, const char *state)
+{
+	footerStatus->setText(text);
+	footerStatus->setProperty("resultState", state);
+	RefreshStyle(footerStatus);
+}
+
+void StreamInfoDock::MarkEdited()
+{
+	if (pendingApplies == 0 && !rows.empty())
+		SetFooterStatus(QTStr("Multistream.Info.ReadySummary").arg(rows.size()), "ready");
 }
 
 void StreamInfoDock::SaveToStore()
@@ -372,6 +534,20 @@ void StreamInfoDock::ApplyAll()
 {
 	if (rows.empty() || pendingApplies > 0)
 		return;
+	for (const auto &row : rows) {
+		if (!row->categoryCombo || row->categoryCombo->currentText().trimmed().isEmpty() ||
+		    !row->channel.categoryId.empty()) {
+			continue;
+		}
+		row->categoryStatusLabel->setText(QTStr("Multistream.Info.CategorySelectionRequired"));
+		row->categoryStatusLabel->setProperty("resultState", "error");
+		row->categoryStatusLabel->setVisible(true);
+		RefreshStyle(row->categoryStatusLabel);
+		SetFooterStatus(QTStr("Multistream.Info.CheckFields"), "error");
+		channelsScroll->ensureWidgetVisible(row->widget);
+		row->categoryCombo->setFocus();
+		return;
+	}
 
 	const QString sharedTitle = sharedTitleEdit->text().trimmed();
 	config_set_string(App()->GetUserConfig(), SHARED_TITLE_SECTION, SHARED_TITLE_KEY,
@@ -380,6 +556,10 @@ void StreamInfoDock::ApplyAll()
 	SaveToStore();
 
 	pendingApplies = static_cast<int>(rows.size());
+	successfulApplies = 0;
+	failedApplies = 0;
+	SetEditingEnabled(false);
+	SetFooterStatus(QTStr("Multistream.Info.ApplyingSummary").arg(pendingApplies), "pending");
 	UpdateApplyButton();
 	for (int index = 0; index < static_cast<int>(rows.size()); ++index)
 		ApplyRow(index, sharedTitle);
@@ -396,6 +576,7 @@ void StreamInfoDock::ApplyRow(int index, const QString &sharedTitle)
 	row->resultLabel->setVisible(true);
 	row->resultLabel->setText(QTStr("Multistream.Info.Sending"));
 	row->resultLabel->setProperty("resultState", "pending");
+	RefreshStyle(row->resultLabel);
 
 	StreamMetadata metadata;
 	metadata.title = (row->titleEdit->isVisible() ? row->titleEdit->text().trimmed() : sharedTitle).toStdString();
@@ -432,15 +613,28 @@ void StreamInfoDock::ReportResult(int index, bool success, const QString &messag
 	if (ChannelRow *row = RowAt(index)) {
 		row->resultLabel->setVisible(true);
 		row->resultLabel->setText(success ? QTStr("Multistream.Info.Updated")
-						  : QTStr("Multistream.Info.FailedWith").arg(message));
+						  : message.isEmpty() ? QTStr("Multistream.Info.Failed")
+								      : QTStr("Multistream.Info.FailedWith").arg(message));
 		row->resultLabel->setProperty("resultState", success ? "ok" : "error");
-		if (row->resultLabel->style()) {
-			row->resultLabel->style()->unpolish(row->resultLabel);
-			row->resultLabel->style()->polish(row->resultLabel);
-		}
+		RefreshStyle(row->resultLabel);
 	}
+	if (success)
+		++successfulApplies;
+	else
+		++failedApplies;
 
 	if (pendingApplies > 0)
 		--pendingApplies;
+	if (pendingApplies == 0) {
+		SetEditingEnabled(true);
+		if (failedApplies == 0) {
+			SetFooterStatus(QTStr("Multistream.Info.AllUpdated").arg(successfulApplies), "ok");
+		} else {
+			SetFooterStatus(QTStr("Multistream.Info.UpdateSummary")
+					.arg(successfulApplies)
+					.arg(failedApplies),
+					"error");
+		}
+	}
 	UpdateApplyButton();
 }

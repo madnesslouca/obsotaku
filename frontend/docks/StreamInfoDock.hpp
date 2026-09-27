@@ -24,6 +24,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QScrollArea;
 class QTimer;
 class QVBoxLayout;
 
@@ -54,6 +55,7 @@ private:
 		QLineEdit *titleEdit = nullptr;
 		QPushButton *overrideButton = nullptr;
 		QComboBox *categoryCombo = nullptr;
+		QLabel *categoryStatusLabel = nullptr;
 		QTimer *categorySearchTimer = nullptr;
 		QLabel *resultLabel = nullptr;
 		/* Guards against the combo's own repopulation looking like a pick. */
@@ -72,12 +74,20 @@ private:
 	void ReportResult(int index, bool success, const QString &message);
 	void SaveToStore();
 	void UpdateApplyButton();
+	void SetEditingEnabled(bool enabled);
+	void SetFooterStatus(const QString &text, const char *state);
+	void MarkEdited();
 
 	QLineEdit *sharedTitleEdit = nullptr;
 	QPushButton *applyButton = nullptr;
-	QLabel *emptyHint = nullptr;
+	QWidget *emptyState = nullptr;
+	QScrollArea *channelsScroll = nullptr;
+	QLabel *channelCountLabel = nullptr;
+	QLabel *footerStatus = nullptr;
 	QVBoxLayout *rowsLayout = nullptr;
 	std::vector<std::unique_ptr<ChannelRow>> rows;
 	int pendingApplies = 0;
+	int successfulApplies = 0;
+	int failedApplies = 0;
 	uint64_t rowsGeneration = 0;
 };

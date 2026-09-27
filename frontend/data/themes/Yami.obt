@@ -3350,8 +3350,29 @@ StreamInfoDock QWidget#streamInfoContent {
     background-color: var(--grey6);
 }
 
-StreamInfoDock QLabel#streamInfoLabel {
+StreamInfoDock QFrame#streamInfoHeader,
+StreamInfoDock QFrame#streamInfoSharedCard,
+StreamInfoDock QFrame#streamInfoFooter,
+StreamInfoDock QFrame#streamInfoEmpty {
+    background-color: var(--grey7);
+    border: 1px solid var(--grey5);
+    border-radius: 8px;
+}
+
+StreamInfoDock QLabel#streamInfoHeaderTitle {
     color: var(--text);
+    font-size: var(--font_large);
+    font-weight: 700;
+}
+
+StreamInfoDock QLabel#streamInfoSectionTitle {
+    color: var(--text);
+    font-weight: 700;
+}
+
+StreamInfoDock QLabel#streamInfoLabel {
+    color: var(--text_muted);
+    font-size: var(--font_small);
     font-weight: 600;
 }
 
@@ -3363,37 +3384,139 @@ StreamInfoDock QLabel#streamInfoHint {
 StreamInfoDock QFrame#streamInfoRow {
     background-color: var(--grey7);
     border: 1px solid var(--grey5);
+    border-left: 3px solid var(--grey4);
     border-radius: 8px;
+}
+
+StreamInfoDock QFrame#streamInfoRow[platform="twitch"] {
+    border-left-color: #9146ff;
+}
+
+StreamInfoDock QFrame#streamInfoRow[platform="youtube"] {
+    border-left-color: #ff0033;
+}
+
+StreamInfoDock QFrame#streamInfoRow[platform="kick"] {
+    border-left-color: #53fc18;
 }
 
 StreamInfoDock QLabel#streamInfoName {
     color: var(--text);
+    font-weight: 700;
+}
+
+StreamInfoDock QLabel#streamInfoPlatform,
+StreamInfoDock QLabel#streamInfoState,
+StreamInfoDock QLabel#streamInfoCount,
+StreamInfoDock QLabel#streamInfoSharedBadge {
+    background-color: var(--grey5);
+    color: var(--text_muted);
+    border-radius: 8px;
+    font-size: var(--font_small);
     font-weight: 600;
+    padding: 2px 7px;
+}
+
+StreamInfoDock QLabel#streamInfoSharedBadge {
+    background-color: var(--primary);
+    color: var(--text);
 }
 
 StreamInfoDock QLabel#streamInfoState {
-    color: var(--text_muted);
-    font-size: var(--font_small);
+    background-color: var(--grey6);
 }
 
 StreamInfoDock QLabel#streamInfoState[titleState="own"] {
+    background-color: rgba(59, 130, 246, 0.16);
     color: #60a5fa;
 }
 
-StreamInfoDock QLabel#streamInfoResult {
+StreamInfoDock QLabel#streamInfoResult,
+StreamInfoDock QLabel#streamInfoCategoryStatus,
+StreamInfoDock QLabel#streamInfoFooterStatus {
     font-size: var(--font_small);
     color: var(--text_muted);
 }
 
-StreamInfoDock QLabel#streamInfoResult[resultState="ok"] {
+StreamInfoDock QLabel#streamInfoResult[resultState="ok"],
+StreamInfoDock QLabel#streamInfoFooterStatus[resultState="ok"] {
     color: #4ade80;
 }
 
-StreamInfoDock QLabel#streamInfoResult[resultState="error"] {
+StreamInfoDock QLabel#streamInfoResult[resultState="error"],
+StreamInfoDock QLabel#streamInfoCategoryStatus[resultState="error"],
+StreamInfoDock QLabel#streamInfoFooterStatus[resultState="error"] {
     color: #ff453a;
 }
 
-StreamInfoDock QScrollArea#streamInfoScroll {
+StreamInfoDock QLabel#streamInfoResult[resultState="pending"],
+StreamInfoDock QLabel#streamInfoCategoryStatus[resultState="pending"],
+StreamInfoDock QLabel#streamInfoFooterStatus[resultState="pending"] {
+    color: #f5a623;
+}
+
+StreamInfoDock QLabel#streamInfoEmptyIcon {
+    color: var(--primary_light);
+    font-size: 22px;
+    font-weight: 700;
+}
+
+StreamInfoDock QLabel#streamInfoEmptyTitle {
+    color: var(--text);
+    font-size: var(--font_large);
+    font-weight: 700;
+}
+
+StreamInfoDock QLineEdit#streamInfoSharedTitle,
+StreamInfoDock QLineEdit#streamInfoTitle,
+StreamInfoDock QComboBox#streamInfoCategory {
+    background-color: var(--grey6);
+    color: var(--text);
+    border: 1px solid var(--grey5);
+    border-radius: 6px;
+    padding: 5px 8px;
+    min-height: 28px;
+}
+
+StreamInfoDock QLineEdit#streamInfoSharedTitle:focus,
+StreamInfoDock QLineEdit#streamInfoTitle:focus,
+StreamInfoDock QComboBox#streamInfoCategory:focus {
+    border-color: var(--primary_light);
+}
+
+StreamInfoDock QPushButton#streamInfoOverride {
+    background-color: var(--grey6);
+    border: 1px solid var(--grey5);
+    border-radius: 6px;
+    padding: 4px 9px;
+}
+
+StreamInfoDock QPushButton#streamInfoOverride:hover {
+    border-color: var(--grey3);
+}
+
+StreamInfoDock QPushButton#streamInfoApply {
+    background-color: var(--primary);
+    color: var(--text);
+    border: 1px solid var(--primary_light);
+    border-radius: 6px;
+    min-height: 28px;
+    padding: 5px 14px;
+    font-weight: 700;
+}
+
+StreamInfoDock QPushButton#streamInfoApply:hover {
+    background-color: var(--primary_light);
+}
+
+StreamInfoDock QPushButton#streamInfoApply:disabled {
+    background-color: var(--grey5);
+    color: var(--text_muted);
+    border-color: var(--grey5);
+}
+
+StreamInfoDock QScrollArea#streamInfoScroll,
+StreamInfoDock QWidget#streamInfoRows {
     background: transparent;
     border: none;
 }
