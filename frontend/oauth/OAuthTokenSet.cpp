@@ -53,6 +53,11 @@ bool OAuthTokenSet::AccessTokenExpired(int64_t skewSeconds) const
 
 bool OAuthTokenSet::Save(StreamPlatform platform, const string &accountId, string &error) const
 {
+	return SaveAs(string(GetStreamPlatformInfo(platform).id), accountId, error);
+}
+
+bool OAuthTokenSet::SaveAs(const string &credentialNamespace, const string &accountId, string &error) const
+{
 	if (accessToken.empty() && refreshToken.empty()) {
 		error = "An OAuth token set must contain an access or refresh token.";
 		return false;
@@ -66,12 +71,18 @@ bool OAuthTokenSet::Save(StreamPlatform platform, const string &accountId, strin
 		{"expires_at", static_cast<double>(expiresAt)},
 		{"refresh_expires_at", static_cast<double>(refreshExpiresAt)},
 	};
-	return SecureTokenStore::Save(string(GetStreamPlatformInfo(platform).id), accountId, json.dump(), error);
+	return SecureTokenStore::Save(credentialNamespace, accountId, json.dump(), error);
 }
 
 optional<OAuthTokenSet> OAuthTokenSet::Load(StreamPlatform platform, const string &accountId, string &error)
 {
-	auto secret = SecureTokenStore::Load(string(GetStreamPlatformInfo(platform).id), accountId, error);
+	return LoadAs(string(GetStreamPlatformInfo(platform).id), accountId, error);
+}
+
+optional<OAuthTokenSet> OAuthTokenSet::LoadAs(const string &credentialNamespace, const string &accountId,
+					      string &error)
+{
+	auto secret = SecureTokenStore::Load(credentialNamespace, accountId, error);
 	if (!secret)
 		return nullopt;
 
@@ -102,5 +113,10 @@ optional<OAuthTokenSet> OAuthTokenSet::Load(StreamPlatform platform, const strin
 
 bool OAuthTokenSet::Remove(StreamPlatform platform, const string &accountId, string &error)
 {
-	return SecureTokenStore::Remove(string(GetStreamPlatformInfo(platform).id), accountId, error);
+	return RemoveAs(string(GetStreamPlatformInfo(platform).id), accountId, error);
+}
+
+bool OAuthTokenSet::RemoveAs(const string &credentialNamespace, const string &accountId, string &error)
+{
+	return SecureTokenStore::Remove(credentialNamespace, accountId, error);
 }

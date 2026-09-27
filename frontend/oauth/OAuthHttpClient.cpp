@@ -85,6 +85,26 @@ size_t WriteResponse(char *data, size_t size, size_t count, void *userData)
 	return bytes;
 }
 
+size_t WriteHeader(char *data, size_t size, size_t count, void *userData)
+{
+	auto *response = static_cast<OAuthHttpResponse *>(userData);
+	const size_t bytes = size * count;
+	string header(data, bytes);
+	constexpr string_view prefix = "location:";
+	if (header.size() >= prefix.size()) {
+		string name = header.substr(0, prefix.size());
+		transform(name.begin(), name.end(), name.begin(),
+			  [](unsigned char character) { return static_cast<char>(tolower(character)); });
+		if (name == prefix) {
+			size_t start = header.find_first_not_of(" \t", prefix.size());
+			size_t end = header.find_last_not_of("\r\n \t");
+			if (start != string::npos && end != string::npos && end >= start)
+				response->location = header.substr(start, end - start + 1);
+		}
+	}
+	return bytes;
+}
+
 bool Configure(CURL *curl, const string &url, const OAuthHttpClient::Headers &headers, OAuthHttpResponse &response,
 	       CurlHeaders &nativeHeaders, string &error)
 {
@@ -119,6 +139,8 @@ bool Configure(CURL *curl, const string &url, const OAuthHttpClient::Headers &he
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteResponse);
 	curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response.body);
+	curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, WriteHeader);
+	curl_easy_setopt(curl, CURLOPT_HEADERDATA, &response);
 	return true;
 }
 
@@ -227,6 +249,37 @@ bool OAuthHttpClient::SendJson(const string &method, const string &url, const st
 		curl_easy_setopt(curl.get(), CURLOPT_CUSTOMREQUEST, method.c_str());
 		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, json.c_str());
 		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE, static_cast<long>(json.size()));
+		if (!Perform(curl.get(), response, error))
+			return false;
+		if (attempt >= MAX_ATTEMPTS || !ShouldRetry(response))
+			return true;
+		this_thread::sleep_for(chrono::seconds(attempt));
+	}
+}
+
+bool OAuthHttpClient::SendBytes(const string &method, const string &url, const string &body,
+				const string &contentType, const Headers &headers, OAuthHttpResponse &response,
+				string &error)
+{
+	CurlHandle curl(curl_easy_init());
+	if (!curl) {
+		error = "Could not initialize the OAuth HTTP client.";
+		return false;
+	}
+
+	Headers requestHeaders = headers;
+	if (!contentType.empty())
+		requestHeaders.emplace_back("Content-Type: " + contentType);
+
+	for (int attempt = 1;; ++attempt) {
+		response = {};
+		CurlHeaders nativeHeaders;
+		if (!Configure(curl.get(), url, requestHeaders, response, nativeHeaders, error))
+			return false;
+		curl_easy_setopt(curl.get(), CURLOPT_CUSTOMREQUEST, method.c_str());
+		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, body.empty() ? "" : body.data());
+		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body.size()));
+		curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, 300L);
 		if (!Perform(curl.get(), response, error))
 			return false;
 		if (attempt >= MAX_ATTEMPTS || !ShouldRetry(response))

@@ -5,6 +5,7 @@
 #include <oauth/PlatformOAuthClient.hpp>
 #include <utility/StreamPlatform.hpp>
 #include <utility/MultistreamChannelPlan.hpp>
+#include <utility/CloudBackupCrypto.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -117,8 +118,17 @@ int main()
 		return Fail("Could not create a YouTube authorization session.");
 	if (youtubeSession.authorizationUrl.find("code_challenge=") == string::npos ||
 	    youtubeSession.authorizationUrl.find("client_id=test%20client") == string::npos ||
-	    youtubeSession.authorizationUrl.find("access_type=offline") == string::npos)
+	    youtubeSession.authorizationUrl.find("access_type=offline") == string::npos ||
+	    youtubeSession.authorizationUrl.find("prompt=consent") == string::npos)
 		return Fail("YouTube authorization URL is incomplete.");
+	OAuthAuthorizationSession driveSession;
+	if (!PlatformOAuthClient::CreateAuthorizationSessionWithScopes(
+		    StreamPlatform::YouTube, {"test client", {}}, "http://127.0.0.1:9876/callback",
+		    {"https://www.googleapis.com/auth/drive.appdata"}, false, driveSession, error) ||
+	    driveSession.authorizationUrl.find("drive.appdata") == string::npos ||
+	    driveSession.authorizationUrl.find("auth%2Fyoutube") != string::npos ||
+	    driveSession.authorizationUrl.find("include_granted_scopes") != string::npos)
+		return Fail("Google Drive authorization did not isolate the app-data scope.");
 
 	OAuthAuthorizationSession kickSession;
 	if (PlatformOAuthClient::CreateAuthorizationSession(StreamPlatform::Kick, {"test-client", {}},
@@ -189,6 +199,33 @@ int main()
 	error.clear();
 	if (OAuthTokenSet::Load(StreamPlatform::YouTube, string(credentialAccount), error) || !error.empty())
 		return Fail("Disposable OAuth credential still exists after removal.");
+	if (!tokenSet.SaveAs("product-cloud-self-test", credentialAccount, error))
+		return Fail("Could not save a namespaced cloud credential test value.");
+	auto namespacedToken = OAuthTokenSet::LoadAs("product-cloud-self-test", credentialAccount, error);
+	if (!namespacedToken || namespacedToken->accessToken != tokenSet.accessToken) {
+		OAuthTokenSet::RemoveAs("product-cloud-self-test", credentialAccount, error);
+		return Fail("Namespaced cloud credential did not round-trip securely.");
+	}
+	if (!OAuthTokenSet::RemoveAs("product-cloud-self-test", credentialAccount, error))
+		return Fail("Could not remove the namespaced cloud credential test value.");
+
+	QByteArray plain("OBS cloud backup crypto self-test");
+	plain.append('\0');
+	plain.append("with binary data");
+	QByteArray encrypted;
+	QByteArray decrypted;
+	QString cryptoError;
+	if (!CloudBackupCrypto::Supported() ||
+	    !CloudBackupCrypto::Encrypt(plain, QStringLiteral("correct horse battery staple"), encrypted,
+				       cryptoError) ||
+	    encrypted == plain ||
+	    !CloudBackupCrypto::Decrypt(encrypted, QStringLiteral("correct horse battery staple"), decrypted,
+				       cryptoError) ||
+	    decrypted != plain)
+		return Fail("Encrypted cloud backup data did not round-trip.");
+	QByteArray rejected;
+	if (CloudBackupCrypto::Decrypt(encrypted, QStringLiteral("wrong password"), rejected, cryptoError))
+		return Fail("Cloud backup decryption accepted an incorrect password.");
 
 	cout << "OAuth primitive tests passed.\n";
 	return 0;

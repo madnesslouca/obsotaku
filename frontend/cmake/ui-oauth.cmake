@@ -7,6 +7,8 @@ target_sources(
     oauth/AuthListener.hpp
     oauth/ConnectedAccountManager.cpp
     oauth/ConnectedAccountManager.hpp
+    oauth/GoogleDriveBackupClient.cpp
+    oauth/GoogleDriveBackupClient.hpp
     oauth/OAuth.cpp
     oauth/OAuth.hpp
     oauth/OAuthHttpClient.cpp

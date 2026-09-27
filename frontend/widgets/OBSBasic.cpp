@@ -1507,6 +1507,7 @@ void OBSBasic::OnFirstLoad()
 #endif
 
 	Auth::Load();
+	InitializeGoogleDriveBackupScheduler();
 
 	bool showLogViewerOnStartup = config_get_bool(App()->GetUserConfig(), "LogViewer", "ShowLogStartup");
 

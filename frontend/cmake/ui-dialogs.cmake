@@ -15,6 +15,8 @@ target_sources(
   PRIVATE
     dialogs/AddChannelDialog.cpp
     dialogs/AddChannelDialog.hpp
+    dialogs/GoogleDriveBackupDialog.cpp
+    dialogs/GoogleDriveBackupDialog.hpp
     dialogs/LogUploadDialog.cpp
     dialogs/LogUploadDialog.hpp
     dialogs/ManualChannelDialog.cpp

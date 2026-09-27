@@ -33,7 +33,11 @@ struct OAuthTokenSet {
 	bool AccessTokenExpired(int64_t skewSeconds = 60) const;
 	void Clear();
 	bool Save(StreamPlatform platform, const std::string &accountId, std::string &error) const;
+	bool SaveAs(const std::string &credentialNamespace, const std::string &accountId, std::string &error) const;
 	static std::optional<OAuthTokenSet> Load(StreamPlatform platform, const std::string &accountId,
 						 std::string &error);
+	static std::optional<OAuthTokenSet> LoadAs(const std::string &credentialNamespace,
+						   const std::string &accountId, std::string &error);
 	static bool Remove(StreamPlatform platform, const std::string &accountId, std::string &error);
+	static bool RemoveAs(const std::string &credentialNamespace, const std::string &accountId, std::string &error);
 };
