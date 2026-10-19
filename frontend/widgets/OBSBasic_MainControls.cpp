@@ -41,13 +41,13 @@
 #endif
 #include <dialogs/OBSRemux.hpp>
 #include <settings/OBSBasicSettings.hpp>
-#ifdef _WIN32
 #include <docks/VerticalPreviewDock.hpp>
 #include <oauth/ConnectedAccountManager.hpp>
-#include <utility/AutoUpdateThread.hpp>
 #include <utility/MultistreamChannelStore.hpp>
 #include <utility/MultistreamPreflight.hpp>
 #include <widgets/MultistreamChannelBar.hpp>
+#ifdef _WIN32
+#include <utility/AutoUpdateThread.hpp>
 #endif
 #include <utility/RemoteTextThread.hpp>
 #if defined(_WIN32) || defined(WHATSNEW_ENABLED)
