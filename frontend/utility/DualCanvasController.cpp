@@ -9,6 +9,8 @@
 
 #include "DualCanvasController.hpp"
 
+#include <OBSApp.hpp>
+
 #include <util/util.hpp>
 
 #include <QMetaObject>
@@ -60,6 +62,11 @@ const char *DualCanvasController::CanvasName()
 
 DualCanvasController::DualCanvasController(QObject *parent) : QObject(parent)
 {
+	const char *mode = config_get_string(App()->GetUserConfig(), "DualCanvas", "Transition");
+	if (mode && strcmp(mode, "fade") == 0)
+		transitionMode = TransitionMode::Fade;
+	else if (mode && strcmp(mode, "cut") == 0)
+		transitionMode = TransitionMode::Cut;
 	obs_frontend_add_event_callback(OnFrontendEvent, this);
 }
 
@@ -79,6 +86,11 @@ void DualCanvasController::OnFrontendEvent(enum obs_frontend_event event, void *
 		break;
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
 		self->SyncToProgramScene();
+		break;
+	case OBS_FRONTEND_EVENT_TRANSITION_CHANGED:
+		self->WatchMainTransition();
+		if (self->attached && self->transitionMode == TransitionMode::MatchMain)
+			self->RebuildTransition();
 		break;
 	case OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED:
 		self->PruneAndRename();
@@ -188,6 +200,11 @@ void DualCanvasController::Attach()
 
 void DualCanvasController::Detach()
 {
+	if (OBSSource watched = OBSGetStrongRef(watchedTransition))
+		signal_handler_disconnect(obs_source_get_signal_handler(watched), "transition_start",
+					  OnMainTransitionStart, this);
+	watchedTransition = nullptr;
+	ReleaseTransition();
 	DisconnectSceneSignals();
 	currentScene = nullptr;
 	currentMainScene = nullptr;
@@ -266,6 +283,19 @@ void DualCanvasController::SyncToProgramScene()
 	if (!mainScene) {
 		return;
 	}
+	SyncToScene(mainScene);
+}
+
+void DualCanvasController::SyncToScene(obs_source_t *mainSceneSource)
+{
+	if (!attached || !mainSceneSource || !obs_source_is_scene(mainSceneSource)) {
+		return;
+	}
+	OBSCanvas canvas = PortraitCanvas();
+	if (!canvas) {
+		return;
+	}
+	OBSSource mainScene = mainSceneSource;
 
 	OBSScene scene = FindLinkedScene(mainScene);
 	if (!scene) {
@@ -276,8 +306,130 @@ void DualCanvasController::SyncToProgramScene()
 	}
 
 	currentMainScene = OBSGetWeakRef(mainScene.Get());
-	obs_canvas_set_channel(canvas, 0, obs_scene_get_source(scene));
+	WatchMainTransition();
+	if (!transition)
+		RebuildTransition();
+	obs_source_t *sceneSource = obs_scene_get_source(scene);
+	if (transition) {
+		OBSSourceAutoRelease shown = obs_transition_get_active_source(transition);
+		const bool firstScene = !shown;
+		const int duration = obs_frontend_get_transition_duration();
+		if (firstScene || shown.Get() == sceneSource || transitionMode == TransitionMode::Cut || duration <= 0 ||
+		    !obs_transition_start(transition, OBS_TRANSITION_MODE_AUTO, static_cast<uint32_t>(duration),
+					  sceneSource)) {
+			obs_transition_set(transition, sceneSource);
+		}
+	} else {
+		obs_canvas_set_channel(canvas, 0, sceneSource);
+	}
 	SetCurrentPortraitScene(scene);
+}
+
+void DualCanvasController::SetTransitionMode(TransitionMode mode)
+{
+	transitionMode = mode;
+	const char *value = mode == TransitionMode::Fade ? "fade" : mode == TransitionMode::Cut ? "cut" : "match";
+	config_set_string(App()->GetUserConfig(), "DualCanvas", "Transition", value);
+	if (attached)
+		RebuildTransition();
+}
+
+void DualCanvasController::RebuildTransition()
+{
+	OBSCanvas canvas = PortraitCanvas();
+	if (!canvas)
+		return;
+
+	OBSSourceAutoRelease shown = transition ? obs_transition_get_active_source(transition) : nullptr;
+	if (!shown && currentScene)
+		shown = obs_source_get_ref(obs_scene_get_source(currentScene));
+
+	string id = "fade_transition";
+	OBSDataAutoRelease settings;
+	if (transitionMode == TransitionMode::Cut) {
+		id = "cut_transition";
+	} else if (transitionMode == TransitionMode::MatchMain) {
+		/* Copy the main transition (type and settings) so both canvases
+		 * animate the same way. A private copy keeps the two independent. */
+		OBSSourceAutoRelease mainTransition = obs_frontend_get_current_transition();
+		if (mainTransition) {
+			id = obs_source_get_id(mainTransition);
+			settings = obs_source_get_settings(mainTransition);
+		}
+	}
+
+	OBSSourceAutoRelease created = obs_source_create_private(id.c_str(), "otaku_vertical_transition", settings);
+	if (!created && id != "fade_transition")
+		created = obs_source_create_private("fade_transition", "otaku_vertical_transition", nullptr);
+	if (!created) {
+		blog(LOG_WARNING, "DualCanvas: no transition available, vertical canvas switches instantly");
+		ReleaseTransition();
+		return;
+	}
+	obs_transition_set_size(created, PORTRAIT_WIDTH, PORTRAIT_HEIGHT);
+	obs_transition_set_scale_type(created, OBS_TRANSITION_SCALE_ASPECT);
+	obs_transition_set_alignment(created, OBS_ALIGN_CENTER);
+	if (shown)
+		obs_transition_set(created, shown);
+
+	ReleaseTransition();
+	transition = created.Get() ? obs_source_get_ref(created) : nullptr;
+	obs_canvas_set_channel(canvas, 0, transition);
+}
+
+void DualCanvasController::WatchMainTransition()
+{
+	OBSSourceAutoRelease current = obs_frontend_get_current_transition();
+	OBSSource watched = OBSGetStrongRef(watchedTransition);
+	if (watched && watched.Get() == current.Get())
+		return;
+	if (watched)
+		signal_handler_disconnect(obs_source_get_signal_handler(watched), "transition_start",
+					  OnMainTransitionStart, this);
+	watchedTransition = nullptr;
+	if (!current || !attached)
+		return;
+	/* Start the vertical transition together with the main one instead of
+	 * waiting for the scene-changed event, which arrives when it ends. */
+	signal_handler_connect(obs_source_get_signal_handler(current), "transition_start", OnMainTransitionStart,
+			       this);
+	watchedTransition = OBSGetWeakRef(current.Get());
+}
+
+void DualCanvasController::OnMainTransitionStart(void *data, calldata_t *params)
+{
+	obs_source_t *mainTransition = static_cast<obs_source_t *>(calldata_ptr(params, "source"));
+	if (!mainTransition)
+		return;
+	OBSSourceAutoRelease destination = obs_transition_get_source(mainTransition, OBS_TRANSITION_SOURCE_B);
+	/* Studio mode may transition to a private duplicate of the scene; the
+	 * scene-changed event that follows handles that case. */
+	if (!destination || obs_obj_is_private(destination))
+		return;
+	OBSWeakSource weak = OBSGetWeakRef(destination.Get());
+	QPointer<DualCanvasController> self(static_cast<DualCanvasController *>(data));
+	QMetaObject::invokeMethod(
+		self.data(),
+		[self, weak]() {
+			OBSSource scene = OBSGetStrongRef(weak);
+			if (self && scene)
+				self->SyncToScene(scene);
+		},
+		Qt::QueuedConnection);
+}
+
+void DualCanvasController::ReleaseTransition()
+{
+	if (!transition)
+		return;
+	OBSCanvas canvas = PortraitCanvas();
+	if (canvas) {
+		OBSSourceAutoRelease channel = obs_canvas_get_channel(canvas, 0);
+		if (channel.Get() == transition.Get())
+			obs_canvas_set_channel(canvas, 0, nullptr);
+	}
+	obs_transition_clear(transition);
+	transition = nullptr;
 }
 
 void DualCanvasController::PruneAndRename()

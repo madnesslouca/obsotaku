@@ -5,6 +5,7 @@
 #include <components/VolumeName.hpp>
 #include <components/VolumeSlider.hpp>
 #include <dialogs/NameDialog.hpp>
+#include <utility/SceneAudio.hpp>
 #include <widgets/OBSBasic.hpp>
 
 #include <QMessageBox>
@@ -479,6 +480,39 @@ void VolumeControl::showVolumeControlMenu(QPoint pos)
 	popup->addAction(pasteFiltersAction);
 	popup->addSeparator();
 	popup->addAction(mixerRenameAction);
+	popup->addSeparator();
+
+	/* VOD-safe audio and per-scene volume (OBS Otaku). */
+	const size_t vodTrack = SceneAudio::VodTrackIndex();
+	QAction *offVodAction = new QAction(QTStr("SceneAudio.OffVod").arg(vodTrack + 1), popup);
+	offVodAction->setCheckable(true);
+	offVodAction->setChecked(SceneAudio::IsOffVod(source));
+	offVodAction->setToolTip(QTStr("SceneAudio.OffVod.Tooltip"));
+	connect(offVodAction, &QAction::toggled, this, [source](bool checked) {
+		SceneAudio::SetOffVod(source, checked);
+	});
+	popup->addAction(offVodAction);
+
+	OBSSourceAutoRelease programScene = obs_frontend_get_current_scene();
+	OBSSource scene = programScene.Get();
+	const QString sceneName = QString::fromUtf8(obs_source_get_name(scene));
+	QAction *saveSceneAudio = new QAction(QTStr("SceneAudio.Save").arg(sceneName), popup);
+	QAction *forgetSceneAudio = new QAction(QTStr("SceneAudio.Forget").arg(sceneName), popup);
+	saveSceneAudio->setEnabled(scene != nullptr);
+	forgetSceneAudio->setEnabled(SceneAudio::HasSceneAudio(scene, source));
+	connect(saveSceneAudio, &QAction::triggered, this,
+		[scene, source]() {
+			SceneAudio::SaveSceneAudio(scene, source);
+			OBSBasic::Get()->SaveProject();
+		});
+	connect(forgetSceneAudio, &QAction::triggered, this,
+		[scene, source]() {
+			SceneAudio::ForgetSceneAudio(scene, source);
+			OBSBasic::Get()->SaveProject();
+		});
+	popup->addAction(saveSceneAudio);
+	popup->addAction(forgetSceneAudio);
+
 	popup->addSeparator();
 	popup->addAction(filtersAction);
 	popup->addAction(propertiesAction);

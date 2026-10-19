@@ -5,6 +5,8 @@ target_sources(
     docks/OBSDock.hpp
     docks/OutputsDock.cpp
     docks/OutputsDock.hpp
+    docks/ReplayDock.cpp
+    docks/ReplayDock.hpp
     docks/StreamInfoDock.cpp
     docks/StreamInfoDock.hpp
     docks/UnifiedChatDock.cpp

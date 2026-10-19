@@ -51,6 +51,8 @@ public:
 
 	/* Follows the program scene. Called on scene change events. */
 	void SyncToProgramScene();
+	/* Links the vertical canvas to this main scene (with transition). */
+	void SyncToScene(obs_source_t *mainScene);
 	/* Removes linked scenes whose horizontal scene was deleted and renames
 	 * linked scenes whose horizontal scene was renamed. */
 	void PruneAndRename();
@@ -67,6 +69,11 @@ public:
 	static void FitItemToCanvas(obs_sceneitem_t *item, MultiStreamPortraitFit fit);
 	static bool IsMirrorItem(obs_sceneitem_t *item);
 
+	/* How the vertical canvas animates a scene change. */
+	enum class TransitionMode { MatchMain, Fade, Cut };
+	void SetTransitionMode(TransitionMode mode);
+	TransitionMode GetTransitionMode() const { return transitionMode; }
+
 signals:
 	/* The vertical canvas switched to another scene, or was (re)created. */
 	void portraitSceneChanged();
@@ -76,18 +83,27 @@ signals:
 private:
 	static void OnFrontendEvent(enum obs_frontend_event event, void *data);
 	static void OnSceneItemSignal(void *data, calldata_t *params);
+	static void OnMainTransitionStart(void *data, calldata_t *params);
+	void WatchMainTransition();
+	OBSWeakSource watchedTransition;
 
 	OBSScene FindLinkedScene(obs_source_t *mainScene) const;
 	OBSScene CreateLinkedScene(obs_source_t *mainScene);
 	void SetCurrentPortraitScene(obs_scene_t *scene);
 	void ConnectSceneSignals(obs_scene_t *scene);
 	void DisconnectSceneSignals();
+	/* (Re)creates the private transition that feeds channel 0 of the vertical
+	 * canvas, keeping whatever scene it currently shows. */
+	void RebuildTransition();
+	void ReleaseTransition();
 
 	mutable std::mutex canvasMutex;
 	OBSWeakCanvas weakCanvas;
 	OBSScene currentScene;
 	OBSWeakSource currentMainScene;
 	MultiStreamPortraitFit defaultFit = MultiStreamPortraitFit::Fill;
+	OBSSourceAutoRelease transition;
+	TransitionMode transitionMode = TransitionMode::MatchMain;
 	bool attached = false;
 	bool signalsConnected = false;
 };

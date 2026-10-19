@@ -33,6 +33,8 @@
 #include <docks/StreamInfoDock.hpp>
 #include <docks/UnifiedChatDock.hpp>
 #include <docks/OutputsDock.hpp>
+#include <docks/ReplayDock.hpp>
+#include <utility/SceneAudio.hpp>
 #include <docks/VerticalPreviewDock.hpp>
 #include <utility/DualCanvasController.hpp>
 #include <dialogs/NameDialog.hpp>
@@ -450,6 +452,19 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	connect(outputsDock, &OutputsDock::canvasChangeRequested, this, &OBSBasic::ChangeMultistreamCanvas);
 	connect(outputsDock, &OutputsDock::addChannelRequested, this, &OBSBasic::AddMultistreamChannel);
 	connect(outputsDock, &OutputsDock::editChannelRequested, this, &OBSBasic::EditMultistreamChannel);
+	connect(outputsDock, &OutputsDock::vodTrackChangeRequested, this, &OBSBasic::ChangeMultistreamVodTrack);
+
+	replayDock = new ReplayDock(this);
+	AddDockWidget(replayDock, Qt::RightDockWidgetArea);
+	sceneAudio = new SceneAudio(this);
+
+	/* Versioned local backups of the scene collection. */
+	{
+		auto *backups = new QAction(QTStr("LocalBackup.Open"), this);
+		backups->setObjectName(QStringLiteral("actionOtakuLocalBackups"));
+		connect(backups, &QAction::triggered, this, &OBSBasic::OpenSceneCollectionBackups);
+		ui->sceneCollectionMenu->insertAction(ui->actionShowMissingFiles, backups);
+	}
 	connect(verticalPreviewDock, &VerticalPreviewDock::addChannelRequested, this,
 		&OBSBasic::AddMultistreamChannel);
 	connect(verticalPreviewDock, &VerticalPreviewDock::editChannelRequested, this,
@@ -2113,6 +2128,8 @@ void OBSBasic::closeWindow()
 	/* The portrait canvas provider points at the controller; outputs may be
 	 * torn down after it, so detach it first. */
 	MultiStreamManager::SetPortraitCanvasProvider(nullptr);
+	if (replayDock)
+		replayDock->Shutdown();
 
 	/* While closing, a resize event to OBSQTDisplay could be triggered.
 	 * The graphics thread on macOS dispatches a lambda function to be

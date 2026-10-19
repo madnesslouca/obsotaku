@@ -40,6 +40,8 @@ public:
 
 signals:
 	void canvasChangeRequested(const QString &channelId, MultiStreamVideoLayout layout);
+	/* trackIndex is zero-based (track 2 in the UI = 1). */
+	void vodTrackChangeRequested(const QString &channelId, bool enabled, int trackIndex);
 	void addChannelRequested();
 	void editChannelRequested(const QString &channelId);
 
@@ -48,6 +50,8 @@ private:
 		QWidget *widget = nullptr;
 		QLabel *status = nullptr;
 		QComboBox *canvas = nullptr;
+		class QCheckBox *vodCheck = nullptr;
+		QComboBox *vodTrack = nullptr;
 		QLabel *badge = nullptr;
 		QLabel *encoder = nullptr;
 		MultiStreamVideoLayout layout = MultiStreamVideoLayout::Main;

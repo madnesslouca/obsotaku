@@ -13,6 +13,7 @@
 
 #include <qt-wrappers.hpp>
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -193,6 +194,39 @@ void OutputsDock::SetChannels(const std::vector<MultiStreamChannel> &newChannels
 		bottom->addWidget(row.canvas, 1);
 		bottom->addWidget(edit);
 		cardLayout->addLayout(bottom);
+
+		const QString vodChannelId = QString::fromStdString(channel.id);
+		if (GetStreamPlatformInfo(channel.platform).supportsVodTrack) {
+			/* Twitch: a separate audio track for the saved VOD, so music
+			 * marked "off the VOD" in the mixer is not archived. */
+			auto *vodRow = new QHBoxLayout();
+			vodRow->setSpacing(6);
+			row.vodCheck = new QCheckBox(QTStr("Outputs.VodTrack"), card);
+			row.vodCheck->setObjectName(QStringLiteral("outputsVodCheck"));
+			row.vodCheck->setToolTip(QTStr("Outputs.VodTrack.Tooltip"));
+			row.vodCheck->setChecked(channel.vodTrackEnabled);
+			row.vodTrack = new QComboBox(card);
+			row.vodTrack->setObjectName(QStringLiteral("outputsVodTrack"));
+			for (int track = 1; track <= 6; track++)
+				row.vodTrack->addItem(QTStr("Outputs.Track").arg(track), track - 1);
+			row.vodTrack->setCurrentIndex(std::clamp(static_cast<int>(channel.vodTrackIndex), 0, 5));
+			row.vodTrack->setEnabled(channel.vodTrackEnabled && !locked);
+			row.vodCheck->setEnabled(!locked);
+			vodRow->addWidget(row.vodCheck, 1);
+			vodRow->addWidget(row.vodTrack);
+			cardLayout->addLayout(vodRow);
+			auto emitVod = [this, vodChannelId]() {
+				if (refreshing)
+					return;
+				auto it = rows.find(vodChannelId.toStdString());
+				if (it == rows.end() || !it->second.vodCheck)
+					return;
+				emit vodTrackChangeRequested(vodChannelId, it->second.vodCheck->isChecked(),
+							     it->second.vodTrack->currentData().toInt());
+			};
+			connect(row.vodCheck, &QCheckBox::toggled, this, emitVod);
+			connect(row.vodTrack, qOverload<int>(&QComboBox::currentIndexChanged), this, emitVod);
+		}
 		cardLayout->addWidget(row.encoder);
 
 		const QString channelId = QString::fromStdString(channel.id);
@@ -260,6 +294,10 @@ void OutputsDock::SetLocked(bool newLocked)
 	for (auto &[id, row] : rows) {
 		row.canvas->setEnabled(!locked);
 		row.canvas->setToolTip(locked ? QTStr("Multistream.ChannelBar.BusyWhileLive") : QString());
+		if (row.vodCheck) {
+			row.vodCheck->setEnabled(!locked);
+			row.vodTrack->setEnabled(!locked && row.vodCheck->isChecked());
+		}
 	}
 }
 

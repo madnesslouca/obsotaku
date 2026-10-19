@@ -3754,3 +3754,43 @@ OutputsDock QLabel#outputsStatus[state="failed"] {
     color: #FFFFFF;
     background-color: var(--red4);
 }
+
+/* Instant replay dock */
+ReplayDock QWidget#replayContent {
+    background-color: var(--bg_window);
+}
+
+ReplayDock QFrame#replayCard {
+    background-color: var(--bg_secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+ReplayDock QLabel#replayTitle {
+    color: var(--text);
+    font-weight: 700;
+}
+
+ReplayDock QLabel#replayHint {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+ReplayDock QLabel#replayHint[severity="warning"] {
+    color: var(--yellow2);
+}
+
+ReplayDock QLabel#replayHint[severity="live"] {
+    color: var(--canvas_portrait);
+    font-weight: 700;
+}
+
+ReplayDock QPushButton#replayClipButton {
+    font-weight: 700;
+    padding: 6px 8px;
+}
+
+OutputsDock QCheckBox#outputsVodCheck {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}

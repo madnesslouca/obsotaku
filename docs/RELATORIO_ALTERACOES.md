@@ -146,3 +146,82 @@ cmake --build build_product_x64 --config RelWithDebInfo   # reconfigura sozinho
   todas as telas.
 - O tema muda estilos globais de listas e botões; se algum plugin ficar estranho,
   volte para o tema Yami padrão.
+
+---
+
+# Rodada 2 — ideias 3 a 8 (branch `feat/meld-ideias-3-8`)
+
+Tudo foi reimplementado do zero com Qt/libobs (sem código ou QML do Meld) e
+funciona igual no Windows e no Linux.
+
+## O que foi feito
+1. **Transição animada na tela vertical.** A tela 9:16 agora troca de cena com
+   transição própria, começando junto com a principal. Na prévia vertical há o
+   seletor **Transição**: *Igual à principal* (copia tipo e ajustes), *Fade* ou
+   *Corte*. Fica salvo na config (`DualCanvas/Transition`).
+2. **Replay instantâneo na tela (ideia 4).** Novo dock **Replay na tela** com
+   botões 10/30/60/90 s e **Fechar replay**. Ele salva o replay buffer e mostra
+   os últimos N segundos por cima do programa (canal de saída 10, sem mexer em
+   nenhuma cena), e fecha sozinho no fim do vídeo. Atalhos em Configurações →
+   Atalhos: "Replay: últimos 10/30/60/90 s" e "Replay: fechar".
+   O botão **Iniciar replay buffer** aparece quando o buffer está desligado.
+3. **Áudio por fonte e por cena (ideia 5).** No menu do mixer (botão direito
+   ou ⋮):
+   - **Fora do VOD (trilha N)**: tira a fonte da trilha de VOD (ex.: música com
+     direito autoral fica só na live).
+   - **Lembrar volume e mudo na cena "X"**: ao voltar para essa cena, o volume e
+     o mudo da fonte são reaplicados. **Esquecer volume da cena** desfaz.
+4. **Trilha de VOD da Twitch no painel Saídas (ideia 3, parte).** Destinos Twitch
+   mostram **Trilha de VOD separada** + escolha da trilha (1–6). Bloqueado
+   durante a live e não deixa usar a mesma trilha da live.
+5. **Backups versionados da coleção (ideia 7).** A cada salvamento, se a coleção
+   mudou e passaram 10 min, é guardada uma cópia em
+   `<pasta de cenas>/otaku_backups/<coleção>/AAAAMMDD-HHMMSS.json` (mantém 30).
+   Menu **Coleção de cenas → Backups da coleção (versões)…** força um backup e
+   abre a pasta. Para restaurar: Coleção de cenas → Importar o arquivo. Para
+   arquivos sumidos use **Arquivo → Mostrar arquivos ausentes** (assistente de
+   relink que já existe no OBS).
+6. **Tema Otaku Dark.** Menus arredondados, barras de rolagem finas, barra de
+   status, botões do replay e destaque roxo nas caixas de seleção.
+
+## Arquivos
+- Novos: `frontend/docks/ReplayDock.*`, `frontend/utility/SceneAudio.*`,
+  `frontend/widgets/OBSBasic_LocalBackups.cpp`.
+- Alterados: `DualCanvasController.*`, `VerticalPreviewDock.*`, `OutputsDock.*`,
+  `VolumeControl.cpp`, `OBSBasic.*`, `OBSBasic_Docks.cpp`,
+  `OBSBasic_OutputHandler.cpp`, `OBSBasic_SceneCollections.cpp`, CMake (docks,
+  utility, widgets), locales en-US/pt-BR, temas `Yami.obt` e `Yami_Otaku.ovt`.
+
+## Testes feitos (Linux, Xvfb)
+- Build com `-Werror` sem erros/avisos.
+- Troca Cena → Cena 2 com transição de 3 s: no meio dela a prévia principal e a
+  vertical mostram a mesma mistura de cores (sincronizadas).
+- Replay buffer ligado pelo dock, botão 10 s: arquivo salvo e log
+  "Replay: playing last 10 s"; overlay mostrado e status "Mostrando…".
+- Backup criado no salvamento (log "Backup: saved scene collection version").
+
+## Como testar
+1. Docks → **Replay na tela**. Clique **Iniciar replay buffer**, espere alguns
+   segundos e clique **10 s**: o replay aparece por cima; **Fechar replay** some.
+2. Crie 2 cenas e troque: a prévia vertical faz a transição junto. Teste o
+   seletor *Fade/Corte*.
+3. No mixer, botão direito numa fonte → **Fora do VOD**; e **Lembrar volume…**
+   numa cena, mude o volume em outra cena e volte.
+4. Saídas → destino Twitch → **Trilha de VOD separada**.
+5. Coleção de cenas → **Backups da coleção (versões)…**.
+
+## Pendências
+- Formato duplo da Twitch (horizontal+vertical na mesma live) — exige o
+  Enhanced Broadcasting/multitrack; arriscado, ficou de fora.
+- Replay aparece só na tela horizontal (a vertical ainda não tem overlay).
+- Ideias 6 e 8 não foram feitas.
+- Restaurar backup com um clique (hoje é via Importar).
+- Teste no Windows e live real.
+
+## Riscos
+- O replay usa o canal de saída 10; um plugin que use esse mesmo canal pode
+  conflitar.
+- "Igual à principal" copia os ajustes da transição; transições de plugin muito
+  específicas (stinger com arquivo de outro tamanho) podem ficar diferentes na
+  vertical — use Fade nesse caso.
+- Os backups ocupam espaço (30 cópias por coleção).
