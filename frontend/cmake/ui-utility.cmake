@@ -38,6 +38,8 @@ target_sources(
     utility/DualCanvasController.cpp
     utility/DualCanvasController.hpp
     utility/MultiStreamManager.cpp
+    utility/SceneAudio.cpp
+    utility/SceneAudio.hpp
     utility/MultiStreamManager.hpp
     utility/MultistreamChannelPlan.cpp
     utility/MultistreamChannelPlan.hpp

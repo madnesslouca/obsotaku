@@ -28,6 +28,7 @@ target_sources(
     widgets/OBSBasic_Icons.cpp
     widgets/OBSBasic_MainControls.cpp
     widgets/OBSBasic_CloudBackup.cpp
+    widgets/OBSBasic_LocalBackups.cpp
     widgets/OBSBasic_OutputHandler.cpp
     widgets/OBSBasic_Preview.cpp
     widgets/OBSBasic_Profiles.cpp

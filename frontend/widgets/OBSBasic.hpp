@@ -459,6 +459,12 @@ private:
 	QPointer<class DualCanvasController> dualCanvasController;
 	void RefreshOutputsDock();
 	void ChangeMultistreamCanvas(const QString &channelId, MultiStreamVideoLayout layout);
+	void ChangeMultistreamVodTrack(const QString &channelId, bool enabled, int trackIndex);
+	QPointer<class ReplayDock> replayDock;
+	QPointer<class SceneAudio> sceneAudio;
+	void BackupSceneCollectionFile();
+	void OpenSceneCollectionBackups();
+	int64_t lastCollectionBackup = 0;
 
 public:
 	void AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser = false);

@@ -1555,6 +1555,7 @@ void OBSBasic::SaveProjectDeferred()
 		OBS::SceneCollection &currentCollection = GetCurrentSceneCollection();
 
 		Save(currentCollection);
+		BackupSceneCollectionFile();
 	} catch (const std::invalid_argument &error) {
 		blog(LOG_ERROR, "%s", error.what());
 	}

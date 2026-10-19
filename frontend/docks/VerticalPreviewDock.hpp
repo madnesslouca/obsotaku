@@ -69,6 +69,8 @@ private:
 	QStackedWidget *previewStack = nullptr;
 	QComboBox *channelCombo = nullptr;
 	QComboBox *framingCombo = nullptr;
+	QComboBox *transitionCombo = nullptr;
+	QLabel *transitionLabel = nullptr;
 	QLabel *statusLabel = nullptr;
 	QPushButton *editButton = nullptr;
 	QLabel *sceneBadge = nullptr;

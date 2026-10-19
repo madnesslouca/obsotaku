@@ -209,6 +209,39 @@ void OBSBasic::ChangeMultistreamCanvas(const QString &channelId, MultiStreamVide
 	ApplyMultistreamChannels(std::move(channels));
 }
 
+void OBSBasic::ChangeMultistreamVodTrack(const QString &channelId, bool enabled, int trackIndex)
+{
+	if (!outputHandler)
+		return;
+	if (StreamingActive() || outputHandler->multiStreamManager->IsActive()) {
+		QMessageBox::information(this, QTStr("Outputs.Title"), QTStr("Multistream.ChannelBar.BusyWhileLive"));
+		RefreshOutputsDock();
+		return;
+	}
+	auto channels = MultistreamChannelStore::Load();
+	auto channel = std::find_if(channels.begin(), channels.end(),
+				    [&](const MultiStreamChannel &item) { return item.id == channelId.toStdString(); });
+	if (channel == channels.end())
+		return;
+	const size_t index = static_cast<size_t>(std::clamp(trackIndex, 0, 5));
+	if (channel->vodTrackEnabled == enabled && channel->vodTrackIndex == index)
+		return;
+	if (enabled && index == channel->audioMixIndex) {
+		QMessageBox::information(this, QTStr("Outputs.Title"), QTStr("Outputs.VodTrack.SameAsLive"));
+		RefreshOutputsDock();
+		return;
+	}
+	channel->vodTrackEnabled = enabled;
+	channel->vodTrackIndex = index;
+	std::string error;
+	if (!MultistreamChannelStore::Save(channels, error)) {
+		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"), QString::fromStdString(error));
+		RefreshOutputsDock();
+		return;
+	}
+	ApplyMultistreamChannels(std::move(channels));
+}
+
 void OBSBasic::PrepareMultistreamPrimaryService()
 {
 	if (!outputHandler)

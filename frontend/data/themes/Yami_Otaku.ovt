@@ -162,3 +162,65 @@ QToolTip {
     border-radius: 6px;
     padding: 4px 6px;
 }
+
+/* Menus: rounded popups with accent hover. */
+QMenu {
+    background-color: var(--grey6);
+    border: 1px solid var(--grey4);
+    border-radius: 8px;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 5px 18px 5px 12px;
+    border-radius: 6px;
+}
+
+QMenu::item:selected {
+    background-color: rgba(115, 87, 246, 0.35);
+}
+
+QMenu::separator {
+    height: 1px;
+    background: var(--grey4);
+    margin: 4px 8px;
+}
+
+/* Thinner, rounded scrollbars. */
+QScrollBar:vertical {
+    width: 10px;
+}
+
+QScrollBar:horizontal {
+    height: 10px;
+}
+
+QScrollBar::handle {
+    border-radius: 4px;
+}
+
+/* Status bar a little calmer. */
+QStatusBar {
+    background-color: var(--grey8);
+    color: var(--text_muted);
+}
+
+/* Instant replay buttons use the portrait accent so they read as "on air". */
+ReplayDock QPushButton#replayClipButton {
+    border-radius: 8px;
+    border: 1px solid var(--accent4);
+}
+
+ReplayDock QPushButton#replayClipButton:hover {
+    background-color: var(--accent4);
+    color: #FFFFFF;
+}
+
+ReplayDock QPushButton#replayDismissButton {
+    border-radius: 8px;
+}
+
+/* Checked toggles in the mixer and lists use the accent. */
+QCheckBox::indicator:checked {
+    border-color: var(--accent2);
+}

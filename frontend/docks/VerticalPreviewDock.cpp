@@ -196,6 +196,25 @@ VerticalPreviewDock::VerticalPreviewDock(QWidget *parent) : OBSDock(parent)
 	controlsLayout->addWidget(framingLabel);
 	controlsLayout->addWidget(framingCombo);
 
+	transitionLabel = new QLabel(QTStr("DualCanvas.Transition"), controls);
+	transitionLabel->setObjectName(QStringLiteral("verticalPreviewLabel"));
+	transitionCombo = new QComboBox(controls);
+	transitionCombo->setObjectName(QStringLiteral("verticalPreviewTransition"));
+	transitionCombo->addItem(QTStr("DualCanvas.Transition.Match"),
+				 static_cast<int>(DualCanvasController::TransitionMode::MatchMain));
+	transitionCombo->addItem(QTStr("DualCanvas.Transition.Fade"),
+				 static_cast<int>(DualCanvasController::TransitionMode::Fade));
+	transitionCombo->addItem(QTStr("DualCanvas.Transition.Cut"),
+				 static_cast<int>(DualCanvasController::TransitionMode::Cut));
+	controlsLayout->addWidget(transitionLabel);
+	controlsLayout->addWidget(transitionCombo);
+	connect(transitionCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
+		if (refreshing || !dualCanvas)
+			return;
+		dualCanvas->SetTransitionMode(
+			static_cast<DualCanvasController::TransitionMode>(transitionCombo->currentData().toInt()));
+	});
+
 	auto *footer = new QHBoxLayout();
 	footer->setContentsMargins(0, 2, 0, 0);
 	statusLabel = new QLabel(QTStr("Multistream.Vertical.Ready"), controls);
@@ -309,6 +328,14 @@ void VerticalPreviewDock::UpdateControls()
 	channelCombo->setEnabled(hasChannel);
 	editButton->setEnabled(hasChannel);
 	layersPanel->setVisible(dual);
+	transitionLabel->setVisible(dual);
+	transitionCombo->setVisible(dual);
+	if (dual) {
+		refreshing = true;
+		transitionCombo->setCurrentIndex(
+			std::max(transitionCombo->findData(static_cast<int>(dualCanvas->GetTransitionMode())), 0));
+		refreshing = false;
+	}
 	sceneBadge->setVisible(dual);
 	sceneName->setVisible(dual);
 
