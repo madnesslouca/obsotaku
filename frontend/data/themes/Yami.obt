@@ -268,6 +268,16 @@
     * Note 2: Cannot be !editable
     * Note 3: Operands and operator MUST be separated by whitespace
     */
+
+    /* Surface and outline used by the multistream docks. */
+    --bg_secondary: var(--bg_base);
+    --border: var(--border_color);
+
+    /* Canvas colour coding: horizontal (main) vs vertical (portrait). */
+    --canvas_main: #3DA9FC;
+    --canvas_main_bg: rgba(61, 169, 252, 0.16);
+    --canvas_portrait: #FF4D8D;
+    --canvas_portrait_bg: rgba(255, 77, 141, 0.16);
 }
 
 /* --------------------- */
@@ -3653,4 +3663,94 @@ QDialog#ndiNetworkDialog QLabel#ndiRouteNodeSelected {
 QDialog#ndiNetworkDialog QLabel#ndiRouteNodeSelected {
     border: 2px solid var(--primary_light);
     padding: 7px 11px;
+}
+
+/* Canvas badges (Main 16:9 / Vertical 9:16) */
+QLabel#canvasBadge {
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: var(--font_small);
+    font-weight: 700;
+}
+
+QLabel#canvasBadge[canvas="main"] {
+    color: var(--canvas_main);
+    background-color: var(--canvas_main_bg);
+    border: 1px solid var(--canvas_main);
+}
+
+QLabel#canvasBadge[canvas="portrait"] {
+    color: var(--canvas_portrait);
+    background-color: var(--canvas_portrait_bg);
+    border: 1px solid var(--canvas_portrait);
+}
+
+VerticalPreviewDock QLabel#verticalPreviewSceneName {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+VerticalPreviewDock QFrame#verticalPreviewLayers {
+    background-color: var(--bg_secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+VerticalPreviewDock QToolButton#verticalPreviewLayerButton {
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 6px;
+}
+
+/* Outputs panel */
+OutputsDock QWidget#outputsContent,
+OutputsDock QWidget#outputsRows {
+    background-color: var(--bg_window);
+}
+
+OutputsDock QFrame#outputsHeader,
+OutputsDock QFrame#outputsRow {
+    background-color: var(--bg_secondary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+OutputsDock QFrame#outputsRow[enabledChannel="false"] QLabel#outputsRowName {
+    color: var(--text_muted);
+}
+
+OutputsDock QLabel#outputsHeaderTitle,
+OutputsDock QLabel#outputsRowName {
+    color: var(--text);
+    font-weight: 700;
+}
+
+OutputsDock QLabel#outputsHint,
+OutputsDock QLabel#outputsEncoder {
+    color: var(--text_muted);
+    font-size: var(--font_small);
+}
+
+OutputsDock QLabel#outputsStatus {
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: var(--font_small);
+    font-weight: 700;
+    color: var(--text_muted);
+    background-color: var(--bg_window);
+}
+
+OutputsDock QLabel#outputsStatus[state="live"] {
+    color: #FFFFFF;
+    background-color: #E5484D;
+}
+
+OutputsDock QLabel#outputsStatus[state="busy"] {
+    color: #1D1F26;
+    background-color: var(--yellow2);
+}
+
+OutputsDock QLabel#outputsStatus[state="failed"] {
+    color: #FFFFFF;
+    background-color: var(--red4);
 }
