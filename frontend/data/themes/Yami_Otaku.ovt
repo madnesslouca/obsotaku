@@ -1,0 +1,164 @@
+@OBSThemeMeta {
+    name: 'Otaku Dark';
+    id: 'com.obsotaku.Yami.OtakuDark';
+    extends: 'com.obsproject.Yami';
+    author: 'OBS Otaku';
+    dark: 'true';
+}
+
+/* A calmer, more spacious dark look: deep blue-black surfaces, a violet
+ * accent, rounded cards, and colour-coded canvases (blue = horizontal 16:9,
+ * pink = vertical 9:16). Only standard Qt stylesheet features are used, so it
+ * looks the same on Windows and Linux. */
+@OBSThemeVars {
+    --grey1: #5A5F78;
+    --grey2: #464B61;
+    --grey3: #363A4D;
+    --grey4: #2B2E3E;
+    --grey5: #222533;
+    --grey6: #1A1C27;
+    --grey7: #14161F;
+    --grey8: #0C0D13;
+
+    --accent1: #A08BFF;
+    --accent2: #8A70FF;
+    --accent3: #7357F6;
+    --accent4: #5B41D6;
+    --accent5: #4630AE;
+
+    --bg_window: var(--grey7);
+    --bg_base: var(--grey6);
+    --bg_preview: var(--grey8);
+    --bg_secondary: var(--grey6);
+    --border: var(--grey4);
+
+    --primary: var(--accent3);
+    --primary_light: var(--accent2);
+    --primary_lighter: var(--accent1);
+    --primary_dark: var(--accent4);
+    --primary_darker: var(--accent5);
+
+    --text_muted: #9AA0B8;
+
+    --border_color: var(--grey4);
+    --border_radius: 6px;
+    --border_radius_small: 4px;
+    --border_radius_large: 10px;
+
+    --input_bg: var(--grey5);
+    --input_bg_hover: var(--grey4);
+    --input_bg_focus: var(--grey7);
+    --input_border: var(--grey4);
+    --input_border_hover: var(--grey2);
+    --input_border_focus: var(--accent3);
+
+    --list_item_bg_selected: rgba(115, 87, 246, 0.35);
+    --list_item_bg_hover: rgba(115, 87, 246, 0.18);
+
+    --button_bg: var(--grey5);
+    --button_bg_hover: var(--grey4);
+    --button_bg_down: var(--grey7);
+    --button_bg_disabled: var(--grey6);
+    --button_border: var(--grey4);
+    --button_border_hover: var(--accent2);
+    --button_border_focus: var(--accent2);
+
+    --tab_bg_down: var(--accent3);
+    --tab_border_selected: var(--accent3);
+
+    --scrollbar_handle: var(--grey3);
+    --scrollbar_bg: var(--grey7);
+    --scrollbar_hover: var(--accent4);
+    --scrollbar_down: var(--accent3);
+    --scrollbar_border: var(--grey7);
+
+    --highlight_color: var(--accent1);
+}
+
+/* Docks read as cards floating on the window background. */
+QDockWidget::title {
+    padding: 6px 10px;
+    font-weight: 700;
+}
+
+QDockWidget > QWidget {
+    background-color: var(--bg_window);
+}
+
+/* Scene and source lists: taller rows, rounded selection, accent marker. */
+SceneTree::item,
+SourceTree::item {
+    padding: 4px 8px;
+    border-radius: 6px;
+}
+
+SceneTree::item:selected,
+SourceTree::item:selected {
+    background-color: rgba(115, 87, 246, 0.35);
+    border-left: 3px solid var(--accent2);
+}
+
+SceneTree::item:hover,
+SourceTree::item:hover {
+    background-color: rgba(115, 87, 246, 0.18);
+}
+
+/* Primary actions stand out with the accent colour. */
+#streamButton,
+#recordButton {
+    border-radius: 8px;
+    font-weight: 700;
+    padding: 6px 10px;
+}
+
+#streamButton:checked {
+    background-color: #E5484D;
+    border-color: #E5484D;
+    color: #FFFFFF;
+}
+
+#recordButton:checked {
+    background-color: var(--accent3);
+    border-color: var(--accent3);
+    color: #FFFFFF;
+}
+
+QPushButton {
+    border-radius: 6px;
+}
+
+QPushButton#verticalPreviewPrimaryButton,
+QPushButton#outputsAddButton {
+    background-color: var(--accent3);
+    border-color: var(--accent3);
+    color: #FFFFFF;
+    font-weight: 700;
+    padding: 6px 12px;
+}
+
+QPushButton#verticalPreviewPrimaryButton:hover,
+QPushButton#outputsAddButton:hover {
+    background-color: var(--accent2);
+    border-color: var(--accent2);
+}
+
+QComboBox,
+QLineEdit,
+QSpinBox,
+QDoubleSpinBox {
+    border-radius: 6px;
+}
+
+/* The vertical preview gets the portrait (pink) frame. */
+VerticalPreviewDock QStackedWidget#verticalPreviewStack {
+    border: 1px solid var(--canvas_portrait);
+    border-radius: 14px;
+}
+
+QToolTip {
+    background-color: var(--grey5);
+    color: var(--text);
+    border: 1px solid var(--accent4);
+    border-radius: 6px;
+    padding: 4px 6px;
+}

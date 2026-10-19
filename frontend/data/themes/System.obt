@@ -739,3 +739,34 @@ QDialog#ndiNetworkDialog QLabel#ndiRouteNodeSelected {
     border: 2px solid palette(highlight);
     padding: 7px 11px;
 }
+
+/* Canvas badges (Main 16:9 / Vertical 9:16) */
+QLabel#canvasBadge {
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-weight: 700;
+}
+
+QLabel#canvasBadge[canvas="main"] {
+    color: #3DA9FC;
+    border: 1px solid #3DA9FC;
+}
+
+QLabel#canvasBadge[canvas="portrait"] {
+    color: #FF4D8D;
+    border: 1px solid #FF4D8D;
+}
+
+OutputsDock QFrame#outputsHeader,
+OutputsDock QFrame#outputsRow,
+VerticalPreviewDock QFrame#verticalPreviewLayers {
+    border: 1px solid palette(mid);
+    border-radius: 8px;
+}
+
+OutputsDock QLabel#outputsStatus[state="live"] {
+    color: #FFFFFF;
+    background-color: #E5484D;
+    border-radius: 6px;
+    padding: 1px 6px;
+}
