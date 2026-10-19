@@ -35,6 +35,8 @@ target_sources(
     utility/CloudBackupCrypto.hpp
     utility/ChatBadgeIcons.cpp
     utility/ChatBadgeIcons.hpp
+    utility/DualCanvasController.cpp
+    utility/DualCanvasController.hpp
     utility/MultiStreamManager.cpp
     utility/MultiStreamManager.hpp
     utility/MultistreamChannelPlan.cpp

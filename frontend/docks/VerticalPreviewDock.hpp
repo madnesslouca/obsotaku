@@ -13,7 +13,13 @@
 #include <utility/MultiStreamManager.hpp>
 
 #include <atomic>
+#include <mutex>
 #include <vector>
+
+class DualCanvasController;
+class QListWidget;
+class QListWidgetItem;
+class QToolButton;
 
 class QComboBox;
 class QLabel;
@@ -21,9 +27,12 @@ class QPushButton;
 class QStackedWidget;
 class OBSQTDisplay;
 
-/* A phone-shaped monitor for the independent portrait output. It renders the
- * current program even before streaming starts, so framing can be checked
- * without sending video to a platform. */
+/* A phone-shaped monitor and editor for the vertical (9:16) canvas.
+ *
+ * With dual-canvas scenes (DualCanvasController attached) it renders the
+ * persistent vertical canvas and edits the layers of the vertical scene that
+ * is linked to the current program scene. Without it, it falls back to the
+ * old behaviour: a reframed preview of the horizontal program. */
 class VerticalPreviewDock : public OBSDock {
 	Q_OBJECT
 
@@ -32,6 +41,7 @@ public:
 	~VerticalPreviewDock() override;
 
 	void SetChannels(const std::vector<MultiStreamChannel> &channels);
+	void SetDualCanvas(DualCanvasController *controller);
 	void Shutdown();
 
 signals:
@@ -45,6 +55,15 @@ private:
 	void OnChannelChanged(int index);
 	void OnFramingChanged(int index);
 	void UpdateControls();
+	void RefreshCanvas();
+	void RefreshLayers();
+	void OnLayerChanged(QListWidgetItem *item);
+	void ShowAddMenu();
+	void RemoveSelectedLayer();
+	void MoveSelectedLayer(bool up);
+	void FitSelectedLayer();
+	OBSSceneItem SelectedItem() const;
+	bool DualCanvasActive() const;
 
 	OBSQTDisplay *preview = nullptr;
 	QStackedWidget *previewStack = nullptr;
@@ -52,6 +71,20 @@ private:
 	QComboBox *framingCombo = nullptr;
 	QLabel *statusLabel = nullptr;
 	QPushButton *editButton = nullptr;
+	QLabel *sceneBadge = nullptr;
+	QLabel *sceneName = nullptr;
+	QWidget *layersPanel = nullptr;
+	QListWidget *layersList = nullptr;
+	QToolButton *addLayerButton = nullptr;
+	QToolButton *removeLayerButton = nullptr;
+	QToolButton *upLayerButton = nullptr;
+	QToolButton *downLayerButton = nullptr;
+	QToolButton *fitLayerButton = nullptr;
+	QToolButton *mirrorButton = nullptr;
+	DualCanvasController *dualCanvas = nullptr;
+	/* Read by the render callback on the graphics thread. */
+	mutable std::mutex canvasMutex;
+	OBSWeakCanvas renderCanvas;
 	std::vector<MultiStreamChannel> portraitChannels;
 	std::atomic<int> activeFit{static_cast<int>(MultiStreamPortraitFit::Fill)};
 	std::atomic_bool shuttingDown{false};

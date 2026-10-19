@@ -455,6 +455,10 @@ private:
 	QPointer<class UnifiedChatDock> unifiedChatDock;
 	QPointer<class StreamInfoDock> streamInfoDock;
 	QPointer<class VerticalPreviewDock> verticalPreviewDock;
+	QPointer<class OutputsDock> outputsDock;
+	QPointer<class DualCanvasController> dualCanvasController;
+	void RefreshOutputsDock();
+	void ChangeMultistreamCanvas(const QString &channelId, MultiStreamVideoLayout layout);
 
 public:
 	void AddDockWidget(QDockWidget *dock, Qt::DockWidgetArea area, bool extraBrowser = false);

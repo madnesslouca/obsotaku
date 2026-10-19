@@ -19,6 +19,8 @@
 
 #include "OBSBasic.hpp"
 
+#include <docks/OutputsDock.hpp>
+
 #include <dialogs/MultistreamAccountsDialog.hpp>
 #include <docks/UnifiedChatDock.hpp>
 #include <oauth/ConnectedAccountManager.hpp>
@@ -118,6 +120,9 @@ void OBSBasic::RefreshMultistreamPrimaryState()
 	if (!live) {
 		snapshot.state = streamingStopping ? MultiStreamChannelState::Stopping : MultiStreamChannelState::Idle;
 		multistreamChannelBar->UpdateState(snapshot);
+		if (outputsDock) {
+			outputsDock->UpdateState(snapshot);
+		}
 		return;
 	}
 
@@ -133,6 +138,9 @@ void OBSBasic::RefreshMultistreamPrimaryState()
 		snapshot.health.liveSeconds = std::max<int64_t>(0, now - multistreamPrimaryLiveSince);
 	}
 	multistreamChannelBar->UpdateState(snapshot);
+	if (outputsDock) {
+		outputsDock->UpdateState(snapshot);
+	}
 }
 
 void OBSBasic::BindMultistreamManager()
@@ -145,17 +153,60 @@ void OBSBasic::BindMultistreamManager()
 	multistreamChannelBar->ApplySnapshots(outputHandler->multiStreamManager->Snapshot());
 	RefreshMultistreamPrimaryState();
 	RefreshMultistreamPreflight();
+	RefreshOutputsDock();
 	QPointer<MultistreamChannelBar> bar(multistreamChannelBar);
-	outputHandler->multiStreamManager->SetStateCallback([bar](const MultiStreamChannelSnapshot &snapshot) {
+	QPointer<OutputsDock> outputs(outputsDock);
+	outputHandler->multiStreamManager->SetStateCallback([bar, outputs](const MultiStreamChannelSnapshot &snapshot) {
 		if (!bar)
 			return;
 		QMetaObject::invokeMethod(
-			bar.data(), [bar, snapshot]() {
+			bar.data(), [bar, outputs, snapshot]() {
 				if (bar)
 					bar->UpdateState(snapshot);
+				if (outputs)
+					outputs->UpdateState(snapshot);
 			},
 			Qt::QueuedConnection);
 	});
+}
+
+void OBSBasic::RefreshOutputsDock()
+{
+	if (!outputsDock || !outputHandler) {
+		return;
+	}
+	auto &manager = outputHandler->multiStreamManager;
+	outputsDock->SetChannels(manager->ConfiguredChannels(), manager->PrimaryChannelId());
+	outputsDock->ApplySnapshots(manager->Snapshot());
+	outputsDock->SetEncoderGroups(manager->EncoderGroups());
+	outputsDock->SetLocked(StreamingActive() || manager->IsActive());
+}
+
+void OBSBasic::ChangeMultistreamCanvas(const QString &channelId, MultiStreamVideoLayout layout)
+{
+	if (!outputHandler) {
+		return;
+	}
+	if (StreamingActive() || outputHandler->multiStreamManager->IsActive()) {
+		QMessageBox::information(this, QTStr("Outputs.Title"), QTStr("Multistream.ChannelBar.BusyWhileLive"));
+		RefreshOutputsDock();
+		return;
+	}
+	auto channels = MultistreamChannelStore::Load();
+	auto channel = std::find_if(channels.begin(), channels.end(),
+				    [&](const MultiStreamChannel &item) { return item.id == channelId.toStdString(); });
+	if (channel == channels.end() || channel->videoLayout == layout) {
+		RefreshOutputsDock();
+		return;
+	}
+	channel->videoLayout = layout;
+	std::string error;
+	if (!MultistreamChannelStore::Save(channels, error)) {
+		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"), QString::fromStdString(error));
+		RefreshOutputsDock();
+		return;
+	}
+	ApplyMultistreamChannels(std::move(channels));
 }
 
 void OBSBasic::PrepareMultistreamPrimaryService()

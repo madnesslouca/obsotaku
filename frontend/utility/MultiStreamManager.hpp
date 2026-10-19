@@ -160,6 +160,22 @@ public:
 	std::vector<ChannelOutput> ChannelOutputs() const;
 	void SetStateCallback(StateCallback callback);
 
+	/* Dual-canvas scenes: when a provider is installed and returns a canvas,
+	 * portrait destinations encode that persistent 9:16 canvas (which has its
+	 * own per-scene layout) instead of a private mirror of the main program.
+	 * The provider must be callable from any thread. */
+	using PortraitCanvasProvider = std::function<OBSCanvas()>;
+	static void SetPortraitCanvasProvider(PortraitCanvasProvider provider);
+
+	/* Which video encoder each canvas uses, for the outputs panel. Every
+	 * destination on the same canvas shares one encoder. */
+	struct EncoderGroup {
+		MultiStreamVideoLayout layout = MultiStreamVideoLayout::Main;
+		std::string encoderId;
+		std::vector<std::string> channelIds;
+	};
+	std::vector<EncoderGroup> EncoderGroups() const;
+
 private:
 	struct Destination {
 		MultiStreamManager *owner = nullptr;
@@ -190,6 +206,8 @@ private:
 	bool PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder, MultiStreamPortraitFit fit, std::string &error);
 	void SetPortraitSource(obs_source_t *source, MultiStreamPortraitFit fit);
 	void DestroyPortraitPipeline();
+	static std::mutex &PortraitProviderMutex();
+	static PortraitCanvasProvider &PortraitProvider();
 
 	/* Retires the current destinations instead of freeing them immediately:
 	 * a libobs signal callback may still be running on an output thread. */
@@ -208,6 +226,8 @@ private:
 	OBSEncoderAutoRelease portraitVideoEncoder;
 	OBSEncoderAutoRelease sessionMainVideoEncoder;
 	obs_sceneitem_t *portraitSceneItem = nullptr;
+	/* The portrait canvas belongs to the scene collection, not to us. */
+	bool portraitCanvasShared = false;
 	MultiStreamPortraitFit portraitFit = MultiStreamPortraitFit::Fill;
 	bool mainChannelSignalConnected = false;
 	bool active = false;

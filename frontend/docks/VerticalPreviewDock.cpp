@@ -9,6 +9,7 @@
 
 #include "VerticalPreviewDock.hpp"
 
+#include <utility/DualCanvasController.hpp>
 #include <utility/StreamPlatformDisplay.hpp>
 #include <widgets/OBSQTDisplay.hpp>
 
@@ -20,8 +21,11 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QListWidget>
+#include <QMenu>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -60,7 +64,17 @@ VerticalPreviewDock::VerticalPreviewDock(QWidget *parent) : OBSDock(parent)
 	auto *description = new QLabel(QTStr("Multistream.Vertical.HeaderBody"), header);
 	description->setObjectName(QStringLiteral("verticalPreviewHint"));
 	description->setWordWrap(true);
+	auto *sceneRow = new QHBoxLayout();
+	sceneRow->setSpacing(6);
+	sceneBadge = new QLabel(QStringLiteral("9:16"), header);
+	sceneBadge->setObjectName(QStringLiteral("canvasBadge"));
+	sceneBadge->setProperty("canvas", QStringLiteral("portrait"));
+	sceneName = new QLabel(header);
+	sceneName->setObjectName(QStringLiteral("verticalPreviewSceneName"));
+	sceneRow->addWidget(sceneBadge);
+	sceneRow->addWidget(sceneName, 1);
 	headerLayout->addWidget(title);
+	headerLayout->addLayout(sceneRow);
 	headerLayout->addWidget(description);
 	layout->addWidget(header);
 
@@ -98,6 +112,65 @@ VerticalPreviewDock::VerticalPreviewDock(QWidget *parent) : OBSDock(parent)
 	emptyLayout->addStretch();
 	previewStack->addWidget(empty);
 	layout->addWidget(previewStack, 1);
+
+	/* Layers of the vertical scene linked to the current program scene. */
+	layersPanel = new QFrame(content);
+	layersPanel->setObjectName(QStringLiteral("verticalPreviewLayers"));
+	auto *layersLayout = new QVBoxLayout(layersPanel);
+	layersLayout->setContentsMargins(12, 10, 12, 10);
+	layersLayout->setSpacing(6);
+	auto *layersLabel = new QLabel(QTStr("DualCanvas.Layers"), layersPanel);
+	layersLabel->setObjectName(QStringLiteral("verticalPreviewLabel"));
+	layersLayout->addWidget(layersLabel);
+	layersList = new QListWidget(layersPanel);
+	layersList->setObjectName(QStringLiteral("verticalPreviewLayerList"));
+	layersList->setMinimumHeight(72);
+	layersList->setMaximumHeight(150);
+	layersLayout->addWidget(layersList);
+	auto *layerButtons = new QHBoxLayout();
+	layerButtons->setSpacing(4);
+	auto makeButton = [&](const QString &text, const char *tip) {
+		auto *button = new QToolButton(layersPanel);
+		button->setObjectName(QStringLiteral("verticalPreviewLayerButton"));
+		button->setText(text);
+		button->setToolTip(QTStr(tip));
+		button->setAccessibleName(QTStr(tip));
+		layerButtons->addWidget(button);
+		return button;
+	};
+	addLayerButton = makeButton(QStringLiteral("+"), "DualCanvas.AddLayer");
+	removeLayerButton = makeButton(QStringLiteral("−"), "DualCanvas.RemoveLayer");
+	upLayerButton = makeButton(QStringLiteral("▲"), "DualCanvas.MoveUp");
+	downLayerButton = makeButton(QStringLiteral("▼"), "DualCanvas.MoveDown");
+	fitLayerButton = makeButton(QStringLiteral("⤢"), "DualCanvas.FitLayer");
+	layerButtons->addStretch();
+	mirrorButton = new QToolButton(layersPanel);
+	mirrorButton->setObjectName(QStringLiteral("verticalPreviewLayerButton"));
+	mirrorButton->setText(QTStr("DualCanvas.ResetMirror"));
+	mirrorButton->setToolTip(QTStr("DualCanvas.ResetMirror.Tooltip"));
+	layerButtons->addWidget(mirrorButton);
+	layersLayout->addLayout(layerButtons);
+	layout->addWidget(layersPanel);
+	layersPanel->setVisible(false);
+
+	connect(layersList, &QListWidget::itemChanged, this, &VerticalPreviewDock::OnLayerChanged);
+	connect(layersList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem *) {
+		OBSSceneItem item = SelectedItem();
+		if (item) {
+			obs_frontend_open_source_properties(obs_sceneitem_get_source(item));
+		}
+	});
+	connect(layersList, &QListWidget::currentRowChanged, this, [this](int) { UpdateControls(); });
+	connect(addLayerButton, &QToolButton::clicked, this, &VerticalPreviewDock::ShowAddMenu);
+	connect(removeLayerButton, &QToolButton::clicked, this, &VerticalPreviewDock::RemoveSelectedLayer);
+	connect(upLayerButton, &QToolButton::clicked, this, [this]() { MoveSelectedLayer(true); });
+	connect(downLayerButton, &QToolButton::clicked, this, [this]() { MoveSelectedLayer(false); });
+	connect(fitLayerButton, &QToolButton::clicked, this, &VerticalPreviewDock::FitSelectedLayer);
+	connect(mirrorButton, &QToolButton::clicked, this, [this]() {
+		if (dualCanvas) {
+			dualCanvas->ResetToMirror();
+		}
+	});
 
 	auto *controls = new QFrame(content);
 	controls->setObjectName(QStringLiteral("verticalPreviewControls"));
@@ -180,6 +253,14 @@ void VerticalPreviewDock::Shutdown()
 {
 	if (shuttingDown.exchange(true))
 		return;
+	if (dualCanvas) {
+		disconnect(dualCanvas, nullptr, this, nullptr);
+		dualCanvas = nullptr;
+	}
+	{
+		std::lock_guard lock(canvasMutex);
+		renderCanvas = nullptr;
+	}
 	if (preview && drawCallbackRegistered && preview->GetDisplay()) {
 		obs_display_remove_draw_callback(preview->GetDisplay(), RenderPreview, this);
 		drawCallbackRegistered = false;
@@ -204,10 +285,18 @@ void VerticalPreviewDock::OnChannelChanged(int)
 
 void VerticalPreviewDock::OnFramingChanged(int)
 {
-	if (refreshing || channelCombo->currentIndex() < 0)
+	if (refreshing)
 		return;
 	const auto fit = static_cast<MultiStreamPortraitFit>(framingCombo->currentData().toInt());
 	activeFit.store(static_cast<int>(fit));
+	if (DualCanvasActive()) {
+		/* Framing is a property of the mirrored layer of this scene. */
+		dualCanvas->SetMirrorFit(fit);
+		return;
+	}
+	if (channelCombo->currentIndex() < 0) {
+		return;
+	}
 	emit portraitFitChanged(channelCombo->currentData().toString(), fit);
 }
 
@@ -215,10 +304,37 @@ void VerticalPreviewDock::UpdateControls()
 {
 	const int selected = channelCombo->currentIndex();
 	const bool hasChannel = selected >= 0 && selected < static_cast<int>(portraitChannels.size());
-	previewStack->setCurrentIndex(hasChannel ? 0 : 1);
+	const bool dual = DualCanvasActive();
+	previewStack->setCurrentIndex(hasChannel || dual ? 0 : 1);
 	channelCombo->setEnabled(hasChannel);
-	framingCombo->setEnabled(hasChannel);
 	editButton->setEnabled(hasChannel);
+	layersPanel->setVisible(dual);
+	sceneBadge->setVisible(dual);
+	sceneName->setVisible(dual);
+
+	const bool hasLayer = dual && layersList->currentRow() >= 0;
+	removeLayerButton->setEnabled(hasLayer);
+	upLayerButton->setEnabled(hasLayer && layersList->currentRow() > 0);
+	downLayerButton->setEnabled(hasLayer && layersList->currentRow() < layersList->count() - 1);
+	fitLayerButton->setEnabled(hasLayer);
+
+	if (dual) {
+		sceneName->setText(QTStr("DualCanvas.LinkedTo").arg(dualCanvas->CurrentMainSceneName()));
+		MultiStreamPortraitFit fit = MultiStreamPortraitFit::Fill;
+		const bool hasMirror = dualCanvas->MirrorFit(fit);
+		framingCombo->setEnabled(hasMirror);
+		refreshing = true;
+		framingCombo->setCurrentIndex(std::max(framingCombo->findData(static_cast<int>(fit)), 0));
+		refreshing = false;
+		activeFit.store(static_cast<int>(fit));
+		statusLabel->setText(
+			hasChannel ? QTStr("Multistream.Vertical.Previewing")
+					     .arg(ChannelLabel(portraitChannels[static_cast<size_t>(selected)]))
+				   : QTStr("DualCanvas.NoChannelYet"));
+		return;
+	}
+
+	framingCombo->setEnabled(hasChannel);
 	if (!hasChannel) {
 		statusLabel->setText(QTStr("Multistream.Vertical.NoChannel"));
 		return;
@@ -238,6 +354,30 @@ void VerticalPreviewDock::RenderPreview(void *data, uint32_t width, uint32_t hei
 	auto *dock = static_cast<VerticalPreviewDock *>(data);
 	if (!dock || dock->shuttingDown.load() || width == 0 || height == 0)
 		return;
+
+	OBSCanvas canvas;
+	{
+		std::lock_guard lock(dock->canvasMutex);
+		if (dock->renderCanvas) {
+			canvas = OBSGetStrongRef(dock->renderCanvas);
+		}
+	}
+	if (canvas && !obs_canvas_removed(canvas)) {
+		const float scale = std::min(static_cast<float>(width) / PORTRAIT_WIDTH,
+					     static_cast<float>(height) / PORTRAIT_HEIGHT);
+		const int frameWidth = std::max(1, static_cast<int>(PORTRAIT_WIDTH * scale));
+		const int frameHeight = std::max(1, static_cast<int>(PORTRAIT_HEIGHT * scale));
+		gs_viewport_push();
+		gs_projection_push();
+		gs_set_viewport((static_cast<int>(width) - frameWidth) / 2,
+				(static_cast<int>(height) - frameHeight) / 2, frameWidth, frameHeight);
+		gs_ortho(0.0f, PORTRAIT_WIDTH, 0.0f, PORTRAIT_HEIGHT, -100.0f, 100.0f);
+		obs_render_canvas_texture(canvas);
+		gs_load_vertexbuffer(nullptr);
+		gs_projection_pop();
+		gs_viewport_pop();
+		return;
+	}
 
 	OBSSourceAutoRelease source = obs_get_output_source(0);
 	obs_video_info info{};
@@ -291,4 +431,184 @@ void VerticalPreviewDock::RenderPreview(void *data, uint32_t width, uint32_t hei
 	gs_load_vertexbuffer(nullptr);
 	gs_projection_pop();
 	gs_viewport_pop();
+}
+
+bool VerticalPreviewDock::DualCanvasActive() const
+{
+	return dualCanvas && dualCanvas->CurrentPortraitScene();
+}
+
+void VerticalPreviewDock::SetDualCanvas(DualCanvasController *controller)
+{
+	if (dualCanvas) {
+		disconnect(dualCanvas, nullptr, this, nullptr);
+	}
+	dualCanvas = controller;
+	if (dualCanvas) {
+		connect(dualCanvas, &DualCanvasController::portraitSceneChanged, this, [this]() {
+			RefreshCanvas();
+			RefreshLayers();
+		});
+		connect(dualCanvas, &DualCanvasController::layersChanged, this, &VerticalPreviewDock::RefreshLayers);
+		connect(dualCanvas, &QObject::destroyed, this, [this]() {
+			dualCanvas = nullptr;
+			RefreshCanvas();
+			UpdateControls();
+		});
+	}
+	RefreshCanvas();
+	RefreshLayers();
+}
+
+void VerticalPreviewDock::RefreshCanvas()
+{
+	OBSCanvas canvas = dualCanvas ? dualCanvas->PortraitCanvas() : OBSCanvas();
+	std::lock_guard lock(canvasMutex);
+	renderCanvas = canvas ? OBSGetWeakRef(canvas) : OBSWeakCanvas();
+}
+
+void VerticalPreviewDock::RefreshLayers()
+{
+	if (shuttingDown.load()) {
+		return;
+	}
+	const int previousRow = layersList->currentRow();
+	refreshing = true;
+	layersList->clear();
+	OBSScene scene = dualCanvas ? dualCanvas->CurrentPortraitScene() : OBSScene();
+	if (scene) {
+		std::vector<OBSSceneItem> items;
+		obs_scene_enum_items(
+			scene,
+			[](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+				static_cast<std::vector<OBSSceneItem> *>(param)->emplace_back(item);
+				return true;
+			},
+			&items);
+		/* libobs lists bottom-to-top; show the top layer first like OBS. */
+		std::reverse(items.begin(), items.end());
+		for (auto &item : items) {
+			obs_source_t *source = obs_sceneitem_get_source(item);
+			QString name = QString::fromUtf8(obs_source_get_name(source));
+			if (DualCanvasController::IsMirrorItem(item)) {
+				name = QTStr("DualCanvas.MirrorLayer").arg(name);
+			}
+			auto *row = new QListWidgetItem(name, layersList);
+			row->setFlags(row->flags() | Qt::ItemIsUserCheckable);
+			row->setCheckState(obs_sceneitem_visible(item) ? Qt::Checked : Qt::Unchecked);
+			row->setData(Qt::UserRole, QVariant::fromValue<qlonglong>(obs_sceneitem_get_id(item)));
+		}
+	}
+	if (layersList->count() > 0) {
+		layersList->setCurrentRow(std::clamp(previousRow, 0, layersList->count() - 1));
+	}
+	refreshing = false;
+	UpdateControls();
+}
+
+OBSSceneItem VerticalPreviewDock::SelectedItem() const
+{
+	OBSScene scene = dualCanvas ? dualCanvas->CurrentPortraitScene() : OBSScene();
+	QListWidgetItem *row = layersList->currentItem();
+	if (!scene || !row) {
+		return nullptr;
+	}
+	return obs_scene_find_sceneitem_by_id(scene, row->data(Qt::UserRole).toLongLong());
+}
+
+void VerticalPreviewDock::OnLayerChanged(QListWidgetItem *row)
+{
+	if (refreshing || !row || !dualCanvas) {
+		return;
+	}
+	OBSScene scene = dualCanvas->CurrentPortraitScene();
+	if (!scene) {
+		return;
+	}
+	obs_sceneitem_t *item = obs_scene_find_sceneitem_by_id(scene, row->data(Qt::UserRole).toLongLong());
+	if (item) {
+		obs_sceneitem_set_visible(item, row->checkState() == Qt::Checked);
+	}
+}
+
+void VerticalPreviewDock::ShowAddMenu()
+{
+	if (!DualCanvasActive()) {
+		return;
+	}
+	QMenu menu(this);
+	/* Offer the sources of the horizontal program scene first: those are the
+	 * ones the user wants to rearrange for vertical. */
+	OBSSourceAutoRelease mainScene = obs_frontend_get_current_scene();
+	struct Collect {
+		std::vector<OBSSource> sources;
+	} collect;
+	if (obs_scene_t *scene = obs_scene_from_source(mainScene)) {
+		obs_scene_enum_items(
+			scene,
+			[](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+				auto *out = static_cast<Collect *>(param);
+				obs_source_t *source = obs_sceneitem_get_source(item);
+				if (std::find(out->sources.begin(), out->sources.end(), source) == out->sources.end()) {
+					out->sources.emplace_back(source);
+				}
+				return true;
+			},
+			&collect);
+	}
+	std::reverse(collect.sources.begin(), collect.sources.end());
+	if (mainScene) {
+		QAction *whole = menu.addAction(
+			QTStr("DualCanvas.AddWholeScene").arg(QString::fromUtf8(obs_source_get_name(mainScene))));
+		OBSSource sceneSource = mainScene.Get();
+		connect(whole, &QAction::triggered, this, [this, sceneSource]() {
+			if (dualCanvas) {
+				dualCanvas->AddSource(sceneSource);
+			}
+		});
+		menu.addSeparator();
+	}
+	for (auto &source : collect.sources) {
+		QAction *action = menu.addAction(QString::fromUtf8(obs_source_get_name(source)));
+		connect(action, &QAction::triggered, this, [this, source]() {
+			if (dualCanvas) {
+				dualCanvas->AddSource(source);
+			}
+		});
+	}
+	if (collect.sources.empty() && !mainScene) {
+		menu.addAction(QTStr("DualCanvas.NothingToAdd"))->setEnabled(false);
+	}
+	menu.exec(addLayerButton->mapToGlobal(QPoint(0, addLayerButton->height())));
+}
+
+void VerticalPreviewDock::RemoveSelectedLayer()
+{
+	OBSSceneItem item = SelectedItem();
+	if (item) {
+		obs_sceneitem_remove(item);
+	}
+}
+
+void VerticalPreviewDock::MoveSelectedLayer(bool up)
+{
+	OBSSceneItem item = SelectedItem();
+	if (!item) {
+		return;
+	}
+	/* The list shows the top layer first, so "up" raises the layer. */
+	obs_sceneitem_set_order(item, up ? OBS_ORDER_MOVE_UP : OBS_ORDER_MOVE_DOWN);
+	const int row = layersList->currentRow() + (up ? -1 : 1);
+	RefreshLayers();
+	if (row >= 0 && row < layersList->count()) {
+		layersList->setCurrentRow(row);
+	}
+}
+
+void VerticalPreviewDock::FitSelectedLayer()
+{
+	OBSSceneItem item = SelectedItem();
+	if (item) {
+		DualCanvasController::FitItemToCanvas(item, MultiStreamPortraitFit::Fit);
+	}
 }

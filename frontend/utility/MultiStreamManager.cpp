@@ -482,22 +482,37 @@ bool MultiStreamManager::PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder
 	}
 	videoInfo.scale_type = OBS_SCALE_BICUBIC;
 
-	portraitCanvas = obs_canvas_create_private("multistream_portrait_canvas", &videoInfo,
-						    ACTIVATE | SCENE_REF | EPHEMERAL);
-	if (!portraitCanvas) {
-		error = "Could not create the 9:16 video canvas.";
-		return false;
+	OBSCanvas sharedCanvas;
+	{
+		lock_guard providerLock(PortraitProviderMutex());
+		if (PortraitProvider())
+			sharedCanvas = PortraitProvider()();
 	}
-	portraitScene = obs_canvas_scene_create(portraitCanvas, "multistream_portrait_program");
-	if (!portraitScene) {
-		error = "Could not create the vertical program scene.";
-		DestroyPortraitPipeline();
-		return false;
+	if (sharedCanvas) {
+		/* Dual-canvas mode: the vertical canvas already has its own scenes. */
+		portraitCanvas = obs_canvas_get_ref(sharedCanvas);
+		portraitCanvasShared = true;
+		blog(LOG_INFO, "Multistream: portrait output uses the scene collection's vertical canvas '%s'",
+		     obs_canvas_get_name(sharedCanvas));
+	} else {
+		portraitCanvasShared = false;
+		portraitCanvas = obs_canvas_create_private("multistream_portrait_canvas", &videoInfo,
+							   ACTIVATE | SCENE_REF | EPHEMERAL);
+		if (!portraitCanvas) {
+			error = "Could not create the 9:16 video canvas.";
+			return false;
+		}
+		portraitScene = obs_canvas_scene_create(portraitCanvas, "multistream_portrait_program");
+		if (!portraitScene) {
+			error = "Could not create the vertical program scene.";
+			DestroyPortraitPipeline();
+			return false;
+		}
+		portraitFit = fit;
+		OBSSourceAutoRelease program = obs_get_output_source(0);
+		SetPortraitSource(program, fit);
+		obs_canvas_set_channel(portraitCanvas, 0, obs_scene_get_source(portraitScene));
 	}
-	portraitFit = fit;
-	OBSSourceAutoRelease program = obs_get_output_source(0);
-	SetPortraitSource(program, fit);
-	obs_canvas_set_channel(portraitCanvas, 0, obs_scene_get_source(portraitScene));
 
 	const char *mainEncoderId = obs_encoder_get_id(mainVideoEncoder);
 	const char *mainCodec = obs_encoder_get_codec(mainVideoEncoder);
@@ -547,8 +562,10 @@ bool MultiStreamManager::PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder
 	}
 	obs_encoder_set_video(portraitVideoEncoder, obs_canvas_get_video(portraitCanvas));
 
-	signal_handler_connect(obs_get_signal_handler(), "channel_change", OnMainChannelChanged, this);
-	mainChannelSignalConnected = true;
+	if (!portraitCanvasShared) {
+		signal_handler_connect(obs_get_signal_handler(), "channel_change", OnMainChannelChanged, this);
+		mainChannelSignalConnected = true;
+	}
 	error.clear();
 	return true;
 }
@@ -585,11 +602,60 @@ void MultiStreamManager::DestroyPortraitPipeline()
 		mainChannelSignalConnected = false;
 	}
 	portraitVideoEncoder = nullptr;
-	if (portraitCanvas)
+	if (portraitCanvas && !portraitCanvasShared)
 		obs_canvas_set_channel(portraitCanvas, 0, nullptr);
+	portraitCanvasShared = false;
 	portraitSceneItem = nullptr;
 	portraitScene = nullptr;
 	portraitCanvas = nullptr;
+}
+
+std::mutex &MultiStreamManager::PortraitProviderMutex()
+{
+	static std::mutex providerMutex;
+	return providerMutex;
+}
+
+MultiStreamManager::PortraitCanvasProvider &MultiStreamManager::PortraitProvider()
+{
+	static PortraitCanvasProvider provider;
+	return provider;
+}
+
+void MultiStreamManager::SetPortraitCanvasProvider(PortraitCanvasProvider provider)
+{
+	lock_guard lock(PortraitProviderMutex());
+	PortraitProvider() = std::move(provider);
+}
+
+std::vector<MultiStreamManager::EncoderGroup> MultiStreamManager::EncoderGroups() const
+{
+	lock_guard lock(mutex);
+	EncoderGroup mainGroup;
+	mainGroup.layout = MultiStreamVideoLayout::Main;
+	EncoderGroup portraitGroup;
+	portraitGroup.layout = MultiStreamVideoLayout::Portrait;
+	if (sessionMainVideoEncoder) {
+		mainGroup.encoderId = obs_encoder_get_id(sessionMainVideoEncoder);
+	}
+	if (portraitVideoEncoder) {
+		portraitGroup.encoderId = obs_encoder_get_id(portraitVideoEncoder);
+	}
+	for (const auto &channel : channels) {
+		if (!channel.enabled) {
+			continue;
+		}
+		auto &group = channel.videoLayout == MultiStreamVideoLayout::Portrait ? portraitGroup : mainGroup;
+		group.channelIds.push_back(channel.id);
+	}
+	std::vector<EncoderGroup> groups;
+	if (!mainGroup.channelIds.empty()) {
+		groups.push_back(std::move(mainGroup));
+	}
+	if (!portraitGroup.channelIds.empty()) {
+		groups.push_back(std::move(portraitGroup));
+	}
+	return groups;
 }
 
 bool MultiStreamManager::IsActive() const
