@@ -32,7 +32,9 @@
 #endif
 #include <docks/StreamInfoDock.hpp>
 #include <docks/UnifiedChatDock.hpp>
+#include <docks/OutputsDock.hpp>
 #include <docks/VerticalPreviewDock.hpp>
+#include <utility/DualCanvasController.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <dialogs/OBSAbout.hpp>
 #include <dialogs/OBSBasicAdvAudio.hpp>
@@ -277,6 +279,11 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 			return;
 		multistreamChannelBar->ApplySnapshots(outputHandler->multiStreamManager->Snapshot());
 		RefreshMultistreamPrimaryState();
+		if (outputsDock) {
+			outputsDock->ApplySnapshots(outputHandler->multiStreamManager->Snapshot());
+			outputsDock->SetEncoderGroups(outputHandler->multiStreamManager->EncoderGroups());
+			outputsDock->SetLocked(StreamingActive() || outputHandler->multiStreamManager->IsActive());
+		}
 	});
 	connect(multistreamChannelBar, &MultistreamChannelBar::channelEnabledChanged, this,
 		[this](const QString &channelId, bool enabled) {
@@ -425,9 +432,24 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	streamInfoDock = new StreamInfoDock(this);
 	AddDockWidget(streamInfoDock, Qt::RightDockWidgetArea);
 
+	/* Dual-canvas scenes: a persistent 9:16 canvas whose scenes follow the
+	 * program scene. Portrait destinations encode it directly. */
+	dualCanvasController = new DualCanvasController(this);
+	{
+		DualCanvasController *raw = dualCanvasController;
+		MultiStreamManager::SetPortraitCanvasProvider([raw]() { return raw->PortraitCanvas(); });
+	}
+
 	verticalPreviewDock = new VerticalPreviewDock(this);
 	AddDockWidget(verticalPreviewDock, Qt::RightDockWidgetArea);
 	verticalPreviewDock->SetChannels(MultistreamChannelStore::Load());
+	verticalPreviewDock->SetDualCanvas(dualCanvasController);
+
+	outputsDock = new OutputsDock(this);
+	AddDockWidget(outputsDock, Qt::RightDockWidgetArea);
+	connect(outputsDock, &OutputsDock::canvasChangeRequested, this, &OBSBasic::ChangeMultistreamCanvas);
+	connect(outputsDock, &OutputsDock::addChannelRequested, this, &OBSBasic::AddMultistreamChannel);
+	connect(outputsDock, &OutputsDock::editChannelRequested, this, &OBSBasic::EditMultistreamChannel);
 	connect(verticalPreviewDock, &VerticalPreviewDock::addChannelRequested, this,
 		&OBSBasic::AddMultistreamChannel);
 	connect(verticalPreviewDock, &VerticalPreviewDock::editChannelRequested, this,
@@ -2088,6 +2110,9 @@ void OBSBasic::closeWindow()
 		streamInfoDock->Shutdown();
 	if (verticalPreviewDock)
 		verticalPreviewDock->Shutdown();
+	/* The portrait canvas provider points at the controller; outputs may be
+	 * torn down after it, so detach it first. */
+	MultiStreamManager::SetPortraitCanvasProvider(nullptr);
 
 	/* While closing, a resize event to OBSQTDisplay could be triggered.
 	 * The graphics thread on macOS dispatches a lambda function to be
