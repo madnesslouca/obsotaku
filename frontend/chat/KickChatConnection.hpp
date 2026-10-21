@@ -17,8 +17,7 @@
 
 /* Kick chat over the Pusher WebSocket the site itself uses.
  *
- * Read-only: the socket carries no way to post, and the official API path for
- * sending is not wired up here. The chatroom id has to be resolved first from
+ * Sending uses the official authenticated API. The chatroom id is resolved from
  * an endpoint that sits behind Cloudflare. */
 class KickChatConnection : public ChatConnection {
 	Q_OBJECT
@@ -28,6 +27,8 @@ public:
 
 	void Start() override;
 	void Stop() override;
+	bool CanSend() const override;
+	bool SendText(const QString &text, const QString &requestId, QString &error) override;
 
 private:
 	void ResolveChatroom();

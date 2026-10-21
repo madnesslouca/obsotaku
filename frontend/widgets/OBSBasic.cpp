@@ -33,6 +33,9 @@
 #include <docks/StreamInfoDock.hpp>
 #include <docks/UnifiedChatDock.hpp>
 #include <docks/OutputsDock.hpp>
+#include <docks/StudioInspectorDock.hpp>
+#include <docks/StudioClipsDock.hpp>
+#include <docks/StudioAudioDock.hpp>
 #include <docks/VerticalPreviewDock.hpp>
 #include <utility/DualCanvasController.hpp>
 #include <dialogs/NameDialog.hpp>
@@ -646,6 +649,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	SETUP_DOCK(controlsDock);
 	SETUP_DOCK(statsDock);
 #undef SETUP_DOCK
+	SetupStudioWorkspace();
 
 	// Register shortcuts for Undo/Redo
 	ui->actionMainUndo->setShortcut(Qt::CTRL | Qt::Key_Z);
@@ -1369,11 +1373,13 @@ void OBSBasic::OBSInit()
 
 	bool pre23Defaults = config_get_bool(App()->GetUserConfig(), "General", "Pre23Defaults");
 
-	if (unifiedChatDock && !config_has_user_value(App()->GetUserConfig(), "BasicWindow", "UnifiedChatDockVisible")) {
+	if (unifiedChatDock && !config_get_bool(App()->GetUserConfig(), "BasicWindow", "StudioWorkspace") &&
+	    !config_has_user_value(App()->GetUserConfig(), "BasicWindow", "UnifiedChatDockVisible")) {
 		unifiedChatDock->setVisible(true);
 		config_set_bool(App()->GetUserConfig(), "BasicWindow", "UnifiedChatDockVisible", true);
 	}
 	if (verticalPreviewDock &&
+	    !config_get_bool(App()->GetUserConfig(), "BasicWindow", "StudioWorkspace") &&
 	    !config_has_user_value(App()->GetUserConfig(), "BasicWindow", "VerticalPreviewDockVisible")) {
 		verticalPreviewDock->setVisible(true);
 		config_set_bool(App()->GetUserConfig(), "BasicWindow", "VerticalPreviewDockVisible", true);
@@ -1396,6 +1402,7 @@ void OBSBasic::OBSInit()
 	bool sideDocks = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SideDocks");
 	ui->sideDocks->setChecked(sideDocks);
 	setDockCornersVertical(sideDocks);
+	RestoreStudioWorkspace();
 
 	SystemTray(true);
 
@@ -2172,6 +2179,12 @@ void OBSBasic::closeWindow()
 
 	/* Clear all scene data (dialogs, widgets, widget sub-items, scenes,
 	 * sources, etc) so that all references are released before shutdown */
+	if (studioInspectorDock)
+		studioInspectorDock->Refresh(nullptr, 0);
+	if (studioClipsDock)
+		studioClipsDock->Shutdown();
+	if (studioAudioDock)
+		studioAudioDock->Shutdown();
 	ClearSceneData();
 
 	OnEvent(OBS_FRONTEND_EVENT_EXIT);

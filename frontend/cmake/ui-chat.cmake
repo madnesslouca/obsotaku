@@ -1,6 +1,13 @@
 target_sources(
   obs-studio
   PRIVATE
+    chat/ChatEmotes.cpp
+    chat/ChatEmotes.hpp
+    chat/ChatEventSocket.cpp
+    chat/ChatEventSocket.hpp
+    chat/TwitchEventSub.cpp
+    chat/TwitchEventSub.hpp
+    chat/ChatCredentials.cpp
     chat/ChatConnection.cpp
     chat/ChatConnection.hpp
     chat/KickChatConnection.cpp

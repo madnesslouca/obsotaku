@@ -682,12 +682,11 @@ void OBSBasic::ReconnectMultistreamChannel(const QString &channelId)
 		return;
 	}
 
-	/* Stop and start the single destination: the other outputs and the main
-	 * stream keep running. */
+	/* The manager waits for the asynchronous stop before restarting this
+	 * destination. Other outputs keep their encoders and connections. */
 	const std::string id = channelId.toStdString();
 	std::string error;
-	if (!outputHandler->multiStreamManager->SetChannelEnabled(id, false, error) ||
-	    !outputHandler->multiStreamManager->SetChannelEnabled(id, true, error)) {
+	if (!outputHandler->multiStreamManager->RestartChannel(id, error)) {
 		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.ToggleFailed"), QString::fromStdString(error));
 	}
 	BindMultistreamManager();

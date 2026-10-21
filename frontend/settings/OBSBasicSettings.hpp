@@ -188,6 +188,10 @@ private:
 	void LoadOutputSettings();
 	void LoadAudioSettings();
 	void LoadVideoSettings();
+	void InitStudioCanvasSettings();
+	void LoadStudioCanvasSettings();
+	void UpdateStudioCanvasSettings();
+	void SaveStudioCanvasSettings();
 	void LoadHotkeySettings(obs_hotkey_id ignoreKey = OBS_INVALID_HOTKEY_ID);
 	void LoadA11ySettings(bool presetChange = false);
 	void LoadAppearanceSettings(bool reload = false);

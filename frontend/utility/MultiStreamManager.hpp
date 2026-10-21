@@ -12,6 +12,7 @@
 #include "StreamPlatform.hpp"
 
 #include <obs.hpp>
+#include <QObject>
 
 #include <functional>
 #include <memory>
@@ -96,6 +97,7 @@ struct MultiStreamReconnectSettings {
  * values together prevents secondary destinations from silently ignoring the
  * selected adapter, stream delay, or dynamic-bitrate policy. */
 struct MultiStreamOutputSettings {
+	int portraitBitrateKbps = 6000;
 	MultiStreamReconnectSettings reconnect;
 	std::string bindIp;
 	std::string ipFamily;
@@ -106,12 +108,14 @@ struct MultiStreamOutputSettings {
 	bool lowLatency = false;
 };
 
-class MultiStreamManager {
+/* Control operations run on the owning frontend thread. Output signals may
+ * arrive from libobs threads; deferred restarts return to the owner's thread. */
+class MultiStreamManager : public QObject {
 public:
 	using StateCallback = std::function<void(const MultiStreamChannelSnapshot &)>;
 
 	MultiStreamManager() = default;
-	~MultiStreamManager();
+	~MultiStreamManager() override;
 
 	MultiStreamManager(const MultiStreamManager &) = delete;
 	MultiStreamManager &operator=(const MultiStreamManager &) = delete;
@@ -129,7 +133,7 @@ public:
 
 	/* Returns the encoder the primary output must use. For a portrait primary
 	 * this prepares the 9:16 canvas before OBS starts its main output. */
-	obs_encoder_t *PreparePrimaryVideoEncoder(obs_encoder_t *mainVideoEncoder, std::string &error);
+	obs_encoder_t *PreparePrimaryVideoEncoder(obs_encoder_t *mainVideoEncoder, std::string &error, int portraitBitrateKbps = 6000);
 
 	/* audioEncodersByTrack is indexed by OBS audio track, so entries may be
 	 * null. Compacting it would silently remap the track a channel selected. */
@@ -140,6 +144,9 @@ public:
 		   const MultiStreamOutputSettings &outputSettings, std::string &error);
 	void Stop(bool force = false);
 	bool SetChannelEnabled(const std::string &channelId, bool enabled, std::string &error);
+	/* Restart only this destination after its asynchronous stop completes.
+	 * Does not change the stored enabled flag or restart shared encoders. */
+	bool RestartChannel(const std::string &channelId, std::string &error);
 
 	bool IsActive() const;
 	/* True when an additional destination can be prepared. It deliberately
@@ -187,6 +194,9 @@ private:
 		int64_t liveSinceUnixTime = 0;
 		int reconnects = 0;
 		bool signalsConnected = false;
+		bool restartPending = false;
+		bool restartQueued = false;
+		bool stopPending = false;
 	};
 
 	static MultiStreamChannelHealth ReadHealth(const Destination &destination);
@@ -213,6 +223,8 @@ private:
 	 * a libobs signal callback may still be running on an output thread. */
 	void RetireDestinations();
 	void CollectRetiredDestinations();
+	void QueueRestart(Destination &destination);
+	void ResumeRestart(const std::weak_ptr<Destination> &destination);
 	bool RecomputeActiveLocked();
 
 	mutable std::mutex mutex;
@@ -227,8 +239,10 @@ private:
 	OBSEncoderAutoRelease sessionMainVideoEncoder;
 	obs_sceneitem_t *portraitSceneItem = nullptr;
 	/* The portrait canvas belongs to the scene collection, not to us. */
+	int portraitBitrateKbps = 6000;
 	bool portraitCanvasShared = false;
 	MultiStreamPortraitFit portraitFit = MultiStreamPortraitFit::Fill;
 	bool mainChannelSignalConnected = false;
 	bool active = false;
+	bool sessionRunning = false;
 };

@@ -12,6 +12,7 @@
 #include <docks/OBSDock.hpp>
 
 #include <chat/MultiStreamChatAggregator.hpp>
+#include <chat/ChatEmotes.hpp>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -26,12 +27,16 @@
 #include <QTextBrowser>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QAction>
+#include <QMenu>
+#include <QSplitter>
 
 class UnifiedChatDock : public OBSDock {
 	Q_OBJECT
 
 public:
-	explicit UnifiedChatDock(QWidget *parent = nullptr);
+	explicit UnifiedChatDock(QWidget *parent = nullptr, MultiStreamChatAggregator::ConnectionFactory factory = {},
+				 QNetworkAccessManager *emoteNetwork = nullptr);
 	~UnifiedChatDock() override;
 
 	MultiStreamChatAggregator *Aggregator() const { return aggregator; }
@@ -49,12 +54,55 @@ private slots:
 	void OnStatusChanged(const QString &channelId, StreamPlatform platform, ChatConnectionState state,
 			     const QString &detail);
 	void OnSendClicked();
+	void OnSendFinished(const ChatSendResult &result);
 	void OnSendChannelChanged(int index);
 	void OnFilterToggled();
 	void ClearMessages();
 	void UpdateSendButton();
 
 private:
+	void SavePreferences();
+	void BuildPreferences(QToolButton *button);
+	void UpdateBroadcastMenu();
+	void ResumeLive();
+	void UpdateUnread();
+	bool MessageVisible(const ChatMessage &message) const;
+	QString RowHtml(const ChatMessage &message, int index, QTextBrowser *view) const;
+	QStringList SelectedSendTargets() const;
+	void UpdateDeliveryStatus();
+	QHash<QString, QList<ChatBroadcast>> availableBroadcasts;
+	QHash<QString, QString> selectedBroadcasts;
+	QMenu *broadcastMenu = nullptr;
+	QTextBrowser *activityView = nullptr;
+	QWidget *activityPanel = nullptr;
+	QSplitter *feedSplitter = nullptr;
+	QLineEdit *searchInput = nullptr;
+	QLineEdit *mentionInput = nullptr;
+	QPushButton *resumeButton = nullptr;
+	QPushButton *newMessageButton = nullptr;
+	QLabel *deliveryStatus = nullptr;
+	QAction *compactAction = nullptr;
+	QAction *alternatingAction = nullptr;
+	QAction *timestampsAction = nullptr;
+	QAction *splitAction = nullptr;
+	QAction *paidAction = nullptr;
+	QAction *membershipAction = nullptr;
+	QAction *systemAction = nullptr;
+	QAction *followAction = nullptr;
+	QAction *raidAction = nullptr;
+	QAction *pointsAction = nullptr;
+	QAction *emotesAction = nullptr;
+	ChatEmoteCache *emoteCache = nullptr;
+	QLabel *activityStatus = nullptr;
+	QHash<QString, QString> activityDetails;
+	void UpdateActivityStatus();
+	int fontSize = 12;
+	int unread = 0;
+	bool rendering = false;
+	QTimer *renderTimer = nullptr;
+	QString batchText;
+	QHash<QString, QString> pendingRequests;
+	QHash<QString, ChatSendResult> deliveries;
 	void RebuildFilters(const std::vector<ChatChannelRef> &channels);
 	void RefreshSendTargets(const std::vector<ChatChannelRef> &channels);
 	void UpdateStatusSummary();
@@ -62,7 +110,6 @@ private:
 	void RenderMessages();
 	void UpdateEmptyState();
 	bool ChannelFilterEnabled(const QString &channelId) const;
-	void AppendHtml(const QString &html);
 	void RegisterPlatformIcons();
 	/* Role labels that ended up with artwork; the rest fall back to a pill. */
 	QSet<QString> drawnRoleBadges;

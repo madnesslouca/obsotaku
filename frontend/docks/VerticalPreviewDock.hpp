@@ -15,8 +15,10 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <functional>
 
 class DualCanvasController;
+class PortraitPreviewEditor;
 class QListWidget;
 class QListWidgetItem;
 class QToolButton;
@@ -25,6 +27,7 @@ class QComboBox;
 class QLabel;
 class QPushButton;
 class QStackedWidget;
+class QSpinBox;
 class OBSQTDisplay;
 
 /* A phone-shaped monitor and editor for the vertical (9:16) canvas.
@@ -43,13 +46,18 @@ public:
 	void SetChannels(const std::vector<MultiStreamChannel> &channels);
 	void SetDualCanvas(DualCanvasController *controller);
 	void Shutdown();
+	void CancelPreviewGesture();
 
 signals:
+	void editPortraitRequested();
+	void portraitItemActivated(qlonglong id, bool toggle = false, bool preserve = false,
+				   const QString &ownerUuid = {});
 	void addChannelRequested();
 	void editChannelRequested(const QString &channelId);
 	void portraitFitChanged(const QString &channelId, MultiStreamPortraitFit fit);
 
 private:
+	bool eventFilter(QObject *object, QEvent *event) override;
 	static void RenderPreview(void *data, uint32_t width, uint32_t height);
 	void OnDisplayCreated();
 	void OnChannelChanged(int index);
@@ -57,8 +65,14 @@ private:
 	void UpdateControls();
 	void RefreshCanvas();
 	void RefreshLayers();
+	void SyncLayerSelection();
+	void RefreshGroupScope();
+	void RefreshTransitionControls();
+	void OnTransitionChanged();
 	void OnLayerChanged(QListWidgetItem *item);
 	void ShowAddMenu();
+	void RunSceneCommand(const char *label, const std::function<void(obs_scene_t *)> &change,
+			     const std::string &expectedScene = {});
 	void RemoveSelectedLayer();
 	void MoveSelectedLayer(bool up);
 	void FitSelectedLayer();
@@ -66,6 +80,7 @@ private:
 	bool DualCanvasActive() const;
 
 	OBSQTDisplay *preview = nullptr;
+	PortraitPreviewEditor *previewEditor = nullptr;
 	QStackedWidget *previewStack = nullptr;
 	QComboBox *channelCombo = nullptr;
 	QComboBox *framingCombo = nullptr;
@@ -80,7 +95,15 @@ private:
 	QToolButton *upLayerButton = nullptr;
 	QToolButton *downLayerButton = nullptr;
 	QToolButton *fitLayerButton = nullptr;
+	QToolButton *cropButton = nullptr;
 	QToolButton *mirrorButton = nullptr;
+	QWidget *groupScopeRow = nullptr;
+	QToolButton *exitGroupButton = nullptr;
+	QLabel *groupScopeLabel = nullptr;
+	QWidget *transitionPanel = nullptr;
+	QComboBox *transitionMode = nullptr;
+	QSpinBox *transitionDuration = nullptr;
+	QLabel *transitionHint = nullptr;
 	DualCanvasController *dualCanvas = nullptr;
 	/* Read by the render callback on the graphics thread. */
 	mutable std::mutex canvasMutex;

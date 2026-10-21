@@ -315,7 +315,7 @@ void OBSBasic::PauseRecording()
 
 		OnEvent(OBS_FRONTEND_EVENT_RECORDING_PAUSED);
 
-		if (os_atomic_load_bool(&replaybuf_active)) {
+		if (os_atomic_load_bool(&replaybuf_active) && !outputHandler->StudioReplayOutputsActive()) {
 			ShowReplayBufferPauseWarning();
 		}
 	}

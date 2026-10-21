@@ -457,6 +457,22 @@ private:
 	QPointer<class VerticalPreviewDock> verticalPreviewDock;
 	QPointer<class OutputsDock> outputsDock;
 	QPointer<class DualCanvasController> dualCanvasController;
+	QPointer<class StudioInspectorDock> studioInspectorDock;
+	QPointer<class StudioClipsDock> studioClipsDock;
+	QPointer<class StudioAudioDock> studioAudioDock;
+	QPointer<class QToolBar> studioToolbar;
+	QPointer<class QToolBar> studioSidebar;
+	QPointer<QAction> studioWorkspaceAction;
+	bool studioLayoutSeeded = false;
+	bool studioPortraitEditing = false;
+	QPointer<class QComboBox> studioActiveCanvas;
+	void SetupStudioWorkspace();
+	void AddStudioReplaySource(const QString &path, bool followLatest);
+	void ShowStudioWidgetEditor(bool editSelected);
+	void SetStudioWorkspaceEnabled(bool enabled);
+	void RestoreStudioWorkspace();
+	void ApplyStudioChrome(bool enabled);
+	void ToggleStudioClipBuffer();
 	void RefreshOutputsDock();
 	void ChangeMultistreamCanvas(const QString &channelId, MultiStreamVideoLayout layout);
 
@@ -669,6 +685,8 @@ private slots:
 
 public slots:
 	void on_actionAdvAudioProperties_triggered();
+	void OpenStudioAudioRouting(const QString &uuid = {});
+	void SetStudioAudioLinked(const QString &uuid, bool linked);
 
 public:
 	void ResetUI();
@@ -1103,6 +1121,8 @@ public slots:
 	void ReplayBufferStart();
 	void ReplayBufferSave();
 	void ReplayBufferSaved();
+	void StudioReplaySaved(QString canvas, QString path, QString pairId);
+	void StudioReplayResumed();
 	void ReplayBufferStopping();
 	void ReplayBufferStop(int code);
 
@@ -1370,6 +1390,14 @@ public:
 	}
 
 	OBSScene GetCurrentScene();
+	/* Editing context only: never redirects the main program/stream canvas. */
+	OBSScene GetStudioEditingScene();
+	void SetStudioEditingScene(obs_source_t *scene);
+	bool GetStudioVideoInfo(obs_video_info *info);
+public slots:
+	bool SetStudioCanvasMode(bool multi);
+	void SetStudioPortraitEditing(bool portrait);
+public:
 
 	inline OBSSource GetCurrentSceneSource()
 	{

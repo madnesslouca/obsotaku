@@ -10,7 +10,7 @@
 static inline OBSScene GetCurrentScene()
 {
 	OBSBasic *main = OBSBasic::Get();
-	return main->GetCurrentScene();
+	return main->GetStudioEditingScene();
 }
 
 /* moves a scene item index (blame linux distros for using older Qt builds) */

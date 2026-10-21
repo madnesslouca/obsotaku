@@ -21,6 +21,7 @@ struct OutputVideoSettings {
 	/* Zero when the active output mode does not expose a simple bitrate,
 	 * which is the case for advanced mode with a custom encoder. */
 	uint32_t videoBitrateKbps = 0;
+	uint32_t portraitBitrateKbps = 6000;
 	uint32_t audioBitrateKbps = 0;
 	std::string videoCodec;
 };

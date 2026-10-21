@@ -179,7 +179,7 @@ bool OBSBasic::QueryRemoveSource(obs_source_t *source)
 
 void OBSBasic::ReorderSources(OBSScene scene)
 {
-	if (scene != GetCurrentScene() || ui->sources->IgnoreReorder()) {
+	if (scene != GetStudioEditingScene() || ui->sources->IgnoreReorder()) {
 		return;
 	}
 
@@ -189,7 +189,7 @@ void OBSBasic::ReorderSources(OBSScene scene)
 
 void OBSBasic::RefreshSources(OBSScene scene)
 {
-	if (scene != GetCurrentScene() || ui->sources->IgnoreReorder()) {
+	if (scene != GetStudioEditingScene() || ui->sources->IgnoreReorder()) {
 		return;
 	}
 
@@ -585,8 +585,8 @@ void OBSBasic::CreateSourcePopupMenu(int idx, bool preview)
 	delete deinterlaceMenu;
 
 	OBSSceneItem sceneItem;
-	obs_source_t *source;
-	uint32_t flags;
+	obs_source_t *source = nullptr;
+	uint32_t flags = 0;
 	bool isAsyncVideo = false;
 	bool hasAudio = false;
 	bool hasVideo = false;
@@ -856,7 +856,7 @@ static bool remove_items(obs_scene_t *, obs_sceneitem_t *item, void *param)
 void OBSBasic::on_actionRemoveSource_triggered()
 {
 	vector<OBSSceneItem> items;
-	OBSScene scene = GetCurrentScene();
+	OBSScene scene = GetStudioEditingScene();
 	obs_source_t *scene_source = obs_scene_get_source(scene);
 
 	obs_scene_enum_items(scene, remove_items, &items);
@@ -1042,7 +1042,7 @@ void undo_redo(const std::string &data)
 {
 	OBSDataAutoRelease dat = obs_data_create_from_json(data.c_str());
 	OBSSourceAutoRelease source = obs_get_source_by_uuid(obs_data_get_string(dat, "scene_uuid"));
-	OBSBasic::Get()->SetCurrentScene(source.Get(), true);
+	OBSBasic::Get()->SetStudioEditingScene(source.Get());
 
 	obs_scene_load_transform_states(data.c_str());
 }
@@ -1122,42 +1122,42 @@ static bool RotateSelectedSources(obs_scene_t * /* scene */, obs_sceneitem_t *it
 void OBSBasic::on_actionRotate90CW_triggered()
 {
 	float f90CW = 90.0f;
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
-	obs_scene_enum_items(GetCurrentScene(), RotateSelectedSources, &f90CW);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
+	obs_scene_enum_items(GetStudioEditingScene(), RotateSelectedSources, &f90CW);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(
-		QTStr("Undo.Transform.Rotate").arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+		QTStr("Undo.Transform.Rotate").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 		undo_redo, undo_redo, undo_data, redo_data);
 }
 
 void OBSBasic::on_actionRotate90CCW_triggered()
 {
 	float f90CCW = -90.0f;
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
-	obs_scene_enum_items(GetCurrentScene(), RotateSelectedSources, &f90CCW);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
+	obs_scene_enum_items(GetStudioEditingScene(), RotateSelectedSources, &f90CCW);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(
-		QTStr("Undo.Transform.Rotate").arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+		QTStr("Undo.Transform.Rotate").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 		undo_redo, undo_redo, undo_data, redo_data);
 }
 
 void OBSBasic::on_actionRotate180_triggered()
 {
 	float f180 = 180.0f;
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
-	obs_scene_enum_items(GetCurrentScene(), RotateSelectedSources, &f180);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
+	obs_scene_enum_items(GetStudioEditingScene(), RotateSelectedSources, &f180);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(
-		QTStr("Undo.Transform.Rotate").arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+		QTStr("Undo.Transform.Rotate").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 		undo_redo, undo_redo, undo_data, redo_data);
 }
 
@@ -1193,14 +1193,14 @@ void OBSBasic::on_actionFlipHorizontal_triggered()
 {
 	vec2 scale;
 	vec2_set(&scale, -1.0f, 1.0f);
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
-	obs_scene_enum_items(GetCurrentScene(), MultiplySelectedItemScale, &scale);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
+	obs_scene_enum_items(GetStudioEditingScene(), MultiplySelectedItemScale, &scale);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(
-		QTStr("Undo.Transform.HFlip").arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+		QTStr("Undo.Transform.HFlip").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 		undo_redo, undo_redo, undo_data, redo_data);
 }
 
@@ -1208,14 +1208,14 @@ void OBSBasic::on_actionFlipVertical_triggered()
 {
 	vec2 scale;
 	vec2_set(&scale, 1.0f, -1.0f);
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
-	obs_scene_enum_items(GetCurrentScene(), MultiplySelectedItemScale, &scale);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
+	obs_scene_enum_items(GetStudioEditingScene(), MultiplySelectedItemScale, &scale);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(
-		QTStr("Undo.Transform.VFlip").arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+		QTStr("Undo.Transform.VFlip").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 		undo_redo, undo_redo, undo_data, redo_data);
 }
 
@@ -1234,7 +1234,7 @@ static bool CenterAlignSelectedItems(obs_scene_t * /* scene */, obs_sceneitem_t 
 	}
 
 	obs_video_info ovi;
-	obs_get_video_info(&ovi);
+	OBSBasic::Get()->GetStudioVideoInfo(&ovi);
 
 	obs_transform_info itemInfo;
 	vec2_set(&itemInfo.pos, 0.0f, 0.0f);
@@ -1255,28 +1255,28 @@ static bool CenterAlignSelectedItems(obs_scene_t * /* scene */, obs_sceneitem_t 
 void OBSBasic::on_actionFitToScreen_triggered()
 {
 	obs_bounds_type boundsType = OBS_BOUNDS_SCALE_INNER;
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
-	obs_scene_enum_items(GetCurrentScene(), CenterAlignSelectedItems, &boundsType);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
+	obs_scene_enum_items(GetStudioEditingScene(), CenterAlignSelectedItems, &boundsType);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(
-		QTStr("Undo.Transform.FitToScreen").arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+		QTStr("Undo.Transform.FitToScreen").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 		undo_redo, undo_redo, undo_data, redo_data);
 }
 
 void OBSBasic::on_actionStretchToScreen_triggered()
 {
 	obs_bounds_type boundsType = OBS_BOUNDS_STRETCH;
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
-	obs_scene_enum_items(GetCurrentScene(), CenterAlignSelectedItems, &boundsType);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
+	obs_scene_enum_items(GetStudioEditingScene(), CenterAlignSelectedItems, &boundsType);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(QTStr("Undo.Transform.StretchToScreen")
-				  .arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+				  .arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 			  undo_redo, undo_redo, undo_data, redo_data);
 }
 
@@ -1336,7 +1336,7 @@ void OBSBasic::CenterSelectedSceneItems(const CenterType &centerType)
 
 	// Get coordinates of screen center
 	obs_video_info ovi;
-	obs_get_video_info(&ovi);
+	OBSBasic::Get()->GetStudioVideoInfo(&ovi);
 
 	vec3 screenCenter;
 	vec3_set(&screenCenter, float(ovi.base_width), float(ovi.base_height), 0.0f);
@@ -1370,42 +1370,42 @@ void OBSBasic::CenterSelectedSceneItems(const CenterType &centerType)
 void OBSBasic::on_actionCenterToScreen_triggered()
 {
 	CenterType centerType = CenterType::Scene;
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 	CenterSelectedSceneItems(centerType);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(
-		QTStr("Undo.Transform.Center").arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+		QTStr("Undo.Transform.Center").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 		undo_redo, undo_redo, undo_data, redo_data);
 }
 
 void OBSBasic::on_actionVerticalCenter_triggered()
 {
 	CenterType centerType = CenterType::Vertical;
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 	CenterSelectedSceneItems(centerType);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(
-		QTStr("Undo.Transform.VCenter").arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+		QTStr("Undo.Transform.VCenter").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 		undo_redo, undo_redo, undo_data, redo_data);
 }
 
 void OBSBasic::on_actionHorizontalCenter_triggered()
 {
 	CenterType centerType = CenterType::Horizontal;
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 	CenterSelectedSceneItems(centerType);
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
 	undo_s.add_action(
-		QTStr("Undo.Transform.HCenter").arg(obs_source_get_name(obs_scene_get_source(GetCurrentScene()))),
+		QTStr("Undo.Transform.HCenter").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))),
 		undo_redo, undo_redo, undo_data, redo_data);
 }
 

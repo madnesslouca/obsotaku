@@ -74,10 +74,13 @@ static void ffmpeg_mux_destroy(void *data)
 	deque_free(&stream->packets);
 
 	os_process_pipe_destroy(stream->pipe);
+	dstr_free(&stream->replay_last_path);
 	dstr_free(&stream->path);
 	dstr_free(&stream->printable_path);
 	dstr_free(&stream->stream_key);
 	dstr_free(&stream->muxer_settings);
+	if (stream->replay_mutex_initialized)
+		pthread_mutex_destroy(&stream->replay_mutex);
 	bfree(stream);
 }
 
@@ -626,14 +629,18 @@ bool write_packet(struct ffmpeg_muxer *stream, struct encoder_packet *packet)
 	ret = os_process_pipe_write(stream->pipe, (const uint8_t *)&info, sizeof(info));
 	if (ret != sizeof(info)) {
 		warn("os_process_pipe_write for info structure failed");
-		signal_failure(stream);
+		/* Replay snapshots fail independently; the worker reports save_result. */
+		if (!stream->replay_mutex_initialized)
+			signal_failure(stream);
 		return false;
 	}
 
 	ret = os_process_pipe_write(stream->pipe, packet->data, packet->size);
 	if (ret != packet->size) {
 		warn("os_process_pipe_write for packet data failed");
-		signal_failure(stream);
+		/* Replay snapshots fail independently; the worker reports save_result. */
+		if (!stream->replay_mutex_initialized)
+			signal_failure(stream);
 		return false;
 	}
 
@@ -719,14 +726,18 @@ static bool send_new_filename(struct ffmpeg_muxer *stream, const char *filename)
 	ret = os_process_pipe_write(stream->pipe, (const uint8_t *)&info, sizeof(info));
 	if (ret != sizeof(info)) {
 		warn("os_process_pipe_write for info structure failed");
-		signal_failure(stream);
+		/* Replay snapshots fail independently; the worker reports save_result. */
+		if (!stream->replay_mutex_initialized)
+			signal_failure(stream);
 		return false;
 	}
 
 	ret = os_process_pipe_write(stream->pipe, (const uint8_t *)filename, size);
 	if (ret != size) {
 		warn("os_process_pipe_write for packet data failed");
-		signal_failure(stream);
+		/* Replay snapshots fail independently; the worker reports save_result. */
+		if (!stream->replay_mutex_initialized)
+			signal_failure(stream);
 		return false;
 	}
 
@@ -914,38 +925,101 @@ static const char *replay_buffer_getname(void *type)
 	return obs_module_text("ReplayBuffer");
 }
 
+/* save_result is additive; legacy saved() remains a success-only signal. */
+static void replay_save_result(struct ffmpeg_muxer *stream, int64_t request_id, bool success, const char *path,
+			       const char *error)
+{
+	calldata_t cd = {0};
+	calldata_set_int(&cd, "request_id", request_id);
+	calldata_set_bool(&cd, "success", success);
+	calldata_set_string(&cd, "path", path ? path : "");
+	calldata_set_string(&cd, "error", error ? error : "");
+	signal_handler_signal(obs_output_get_signal_handler(stream->output), "save_result", &cd);
+	calldata_free(&cd);
+}
+
+static void save_replay_request(void *data, calldata_t *cd)
+{
+	struct ffmpeg_muxer *stream = data;
+	const char *error = "";
+	pthread_mutex_lock(&stream->replay_mutex);
+	if (!active(stream) || stopping(stream))
+		error = "Replay buffer is not capturing";
+	else if (obs_encoder_paused(obs_output_get_video_encoder(stream->output)))
+		error = "Replay encoder is paused";
+	else if (stream->replay_request_pending || os_atomic_load_bool(&stream->muxing))
+		error = "A replay save is already pending";
+	else {
+		stream->replay_request_id++;
+		stream->replay_request_pending = true;
+		stream->save_ts = os_gettime_ns() / 1000LL;
+	}
+	calldata_set_bool(cd, "accepted", !*error);
+	calldata_set_int(cd, "request_id", stream->replay_request_id);
+	calldata_set_string(cd, "error", error);
+	pthread_mutex_unlock(&stream->replay_mutex);
+}
+
 static void replay_buffer_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
 {
 	UNUSED_PARAMETER(id);
 	UNUSED_PARAMETER(hotkey);
-
-	if (!pressed)
-		return;
-
-	struct ffmpeg_muxer *stream = data;
-
-	if (os_atomic_load_bool(&stream->active)) {
-		obs_encoder_t *vencoder = obs_output_get_video_encoder(stream->output);
-		if (obs_encoder_paused(vencoder)) {
-			info("Could not save buffer because encoders paused");
-			return;
-		}
-
-		stream->save_ts = os_gettime_ns() / 1000LL;
+	if (pressed) {
+		calldata_t cd = {0};
+		save_replay_request(data, &cd);
+		calldata_free(&cd);
 	}
 }
 
 static void save_replay_proc(void *data, calldata_t *cd)
 {
-	replay_buffer_hotkey(data, 0, NULL, true);
-	UNUSED_PARAMETER(cd);
+	save_replay_request(data, cd);
+}
+
+static void cancel_replay_save(void *data, calldata_t *cd)
+{
+	struct ffmpeg_muxer *stream = data;
+	pthread_mutex_lock(&stream->replay_mutex);
+	long long expected_id = 0;
+	const bool matches = calldata_get_int(cd, "request_id", &expected_id) &&
+			     expected_id == stream->replay_request_id;
+	const bool canceled = matches && stream->replay_request_pending && !os_atomic_load_bool(&stream->muxing);
+	const int64_t request_id = stream->replay_request_id;
+	if (canceled) {
+		stream->save_ts = 0;
+		stream->replay_request_pending = false;
+	}
+	calldata_set_bool(cd, "canceled", canceled);
+	pthread_mutex_unlock(&stream->replay_mutex);
+	if (canceled)
+		replay_save_result(stream, request_id, false, "", "Replay save canceled before snapshot");
+}
+
+static void replay_buffer_status(void *data, calldata_t *cd)
+{
+	struct ffmpeg_muxer *stream = data;
+	pthread_mutex_lock(&stream->replay_mutex);
+	calldata_set_bool(cd, "saving", stream->replay_request_pending || os_atomic_load_bool(&stream->muxing));
+	calldata_set_bool(cd, "capturing", active(stream) && capturing(stream) && !stopping(stream));
+	calldata_set_bool(cd, "stopping", stopping(stream));
+	/* Payload accounting is conservative: shared ring/snapshot references count twice.
+	 * Allocator, encoder and metadata overhead are not part of max_size_mb. */
+	calldata_set_int(cd, "retained_bytes", stream->cur_size + stream->replay_snapshot_bytes);
+	calldata_set_int(cd, "snapshot_bytes", stream->replay_snapshot_bytes);
+	calldata_set_int(cd, "dropped_packets", stream->replay_dropped_packets);
+	calldata_set_int(cd, "budget_resets", stream->replay_budget_resets);
+	calldata_set_int(cd, "limit_bytes", stream->max_size);
+	calldata_set_int(cd, "request_id", stream->replay_request_id);
+	pthread_mutex_unlock(&stream->replay_mutex);
 }
 
 static void get_last_replay(void *data, calldata_t *cd)
 {
 	struct ffmpeg_muxer *stream = data;
+	pthread_mutex_lock(&stream->replay_mutex);
 	if (!os_atomic_load_bool(&stream->muxing))
-		calldata_set_string(cd, "path", stream->path.array);
+		calldata_set_string(cd, "path", stream->replay_last_path.array);
+	pthread_mutex_unlock(&stream->replay_mutex);
 }
 
 static void *replay_buffer_create(obs_data_t *settings, obs_output_t *output)
@@ -953,16 +1027,29 @@ static void *replay_buffer_create(obs_data_t *settings, obs_output_t *output)
 	UNUSED_PARAMETER(settings);
 	struct ffmpeg_muxer *stream = bzalloc(sizeof(*stream));
 	stream->output = output;
+	pthread_mutex_init(&stream->replay_mutex, NULL);
+	stream->replay_mutex_initialized = true;
 
-	stream->hotkey = obs_hotkey_register_output(output, "ReplayBuffer.Save", obs_module_text("ReplayBuffer.Save"),
-						    replay_buffer_hotkey, stream);
+	stream->hotkey = OBS_INVALID_HOTKEY_ID;
+	if (!obs_data_get_bool(settings, "studio_disable_save_hotkey"))
+		stream->hotkey = obs_hotkey_register_output(output, "ReplayBuffer.Save",
+							    obs_module_text("ReplayBuffer.Save"), replay_buffer_hotkey,
+							    stream);
 
 	proc_handler_t *ph = obs_output_get_proc_handler(output);
 	proc_handler_add(ph, "void save()", save_replay_proc, stream);
+	proc_handler_add(ph, "void cancel_save(int request_id, out bool canceled)", cancel_replay_save, stream);
+	proc_handler_add(ph, "void save_request(out bool accepted, out int request_id, out string error)",
+			 save_replay_request, stream);
+	proc_handler_add(
+		ph,
+		"void get_replay_status(out bool saving, out int retained_bytes, out int snapshot_bytes, out int limit_bytes, out int request_id, out int dropped_packets, out int budget_resets, out bool capturing, out bool stopping)",
+		replay_buffer_status, stream);
 	proc_handler_add(ph, "void get_last_replay(out string path)", get_last_replay, stream);
 
 	signal_handler_t *sh = obs_output_get_signal_handler(output);
 	signal_handler_add(sh, "void saved()");
+	signal_handler_add(sh, "void save_result(int request_id, bool success, string path, string error)");
 
 	return stream;
 }
@@ -970,7 +1057,7 @@ static void *replay_buffer_create(obs_data_t *settings, obs_output_t *output)
 static void replay_buffer_destroy(void *data)
 {
 	struct ffmpeg_muxer *stream = data;
-	if (stream->hotkey)
+	if (stream->hotkey != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(stream->hotkey);
 	ffmpeg_mux_destroy(data);
 }
@@ -985,13 +1072,23 @@ static bool replay_buffer_start(void *data)
 		return false;
 
 	obs_data_t *s = obs_output_get_settings(stream->output);
-	stream->max_time = obs_data_get_int(s, "max_time_sec") * 1000000LL;
-	stream->max_size = obs_data_get_int(s, "max_size_mb") * (1024 * 1024);
+	/* A zero/negative legacy limit must not create an unbounded buffer. */
+	int64_t seconds = obs_data_get_int(s, "max_time_sec");
+	int64_t megabytes = obs_data_get_int(s, "max_size_mb");
 	obs_data_release(s);
 
+	if (stream->mux_thread_joinable) {
+		pthread_join(stream->mux_thread, NULL);
+		stream->mux_thread_joinable = false;
+	}
+	pthread_mutex_lock(&stream->replay_mutex);
+	stream->max_time = (seconds > 0 && seconds <= 86400 ? seconds : 15) * 1000000LL;
+	stream->max_size = (megabytes > 0 && megabytes <= 1048576 ? megabytes : 500) * (1024 * 1024);
+	os_atomic_set_bool(&stream->stopping, false);
 	os_atomic_set_bool(&stream->active, true);
 	os_atomic_set_bool(&stream->capturing, true);
 	stream->total_bytes = 0;
+	pthread_mutex_unlock(&stream->replay_mutex);
 	obs_output_begin_data_capture(stream->output, 0);
 
 	return true;
@@ -1043,20 +1140,31 @@ static inline void purge(struct ffmpeg_muxer *stream)
 	}
 }
 
+static bool next_keyframe_before_cutoff(struct ffmpeg_muxer *stream, int64_t cutoff)
+{
+	/* The ring starts at a keyframe. Keep its GOP when it straddles the
+	 * requested start time: dropping it would make a long-GOP clip shorter
+	 * than max_time even though the entire window fits the payload budget. */
+	for (size_t i = sizeof(struct encoder_packet); i < stream->packets.size; i += sizeof(struct encoder_packet)) {
+		const struct encoder_packet *pkt = deque_data(&stream->packets, i);
+		if (pkt->type == OBS_ENCODER_VIDEO && pkt->keyframe)
+			return pkt->dts_usec <= cutoff;
+	}
+	return false;
+}
+
 static inline void replay_buffer_purge(struct ffmpeg_muxer *stream, struct encoder_packet *pkt)
 {
-	if (stream->max_size) {
-		if (!stream->packets.size || stream->keyframes <= 2)
-			return;
-
-		while ((stream->cur_size + (int64_t)pkt->size) > stream->max_size)
-			purge(stream);
+	/* The payload ceiling is absolute, including retained mux snapshots.
+	 * It may truncate the requested time window when the budget is too small. */
+	while (stream->packets.size &&
+	       stream->cur_size + stream->replay_snapshot_bytes + (int64_t)pkt->size > stream->max_size) {
+		purge(stream);
+		if (!stream->packets.size)
+			stream->replay_budget_resets++;
 	}
-
-	if (!stream->packets.size || stream->keyframes <= 2)
-		return;
-
-	while ((pkt->dts_usec - stream->cur_time) > stream->max_time)
+	const int64_t cutoff = pkt->dts_usec - stream->max_time;
+	while (stream->keyframes > 1 && next_keyframe_before_cutoff(stream, cutoff))
 		purge(stream);
 }
 
@@ -1090,50 +1198,56 @@ static void insert_packet(mux_packets_t *packets, struct encoder_packet *packet,
 static void *replay_buffer_mux_thread(void *data)
 {
 	struct ffmpeg_muxer *stream = data;
-	bool error = false;
-
-	start_pipe(stream, stream->path.array);
-
+	const int64_t request_id = stream->replay_mux_request_id;
+	const char *error = "";
+	size_t released = 0;
+	struct dstr result_path = {0};
+	dstr_copy_dstr(&result_path, &stream->path);
+	start_pipe(stream, result_path.array);
 	if (!stream->pipe) {
-		warn("Failed to create process pipe");
-		error = true;
-		goto error;
+		error = "Failed to create replay muxer process pipe";
+		goto complete;
 	}
-
 	if (!send_headers(stream)) {
-		warn("Could not write headers for file '%s'", stream->path.array);
-		error = true;
-		goto error;
+		error = "Could not write replay headers";
+		goto complete;
 	}
-
 	for (size_t i = 0; i < stream->mux_packets.num; i++) {
 		struct encoder_packet *pkt = &stream->mux_packets.array[i];
 		if (!write_packet(stream, pkt)) {
-			warn("Could not write packet for file '%s'", stream->path.array);
-			error = true;
-			goto error;
+			error = "Could not write replay packet";
+			goto complete;
 		}
+		const int64_t bytes = (int64_t)pkt->size;
 		obs_encoder_packet_release(pkt);
+		released++;
+		pthread_mutex_lock(&stream->replay_mutex);
+		stream->replay_snapshot_bytes -= bytes;
+		pthread_mutex_unlock(&stream->replay_mutex);
 	}
-
-	info("Wrote replay buffer to '%s'", stream->path.array);
-
-error:
-	os_process_pipe_destroy(stream->pipe);
+complete:
+	if (stream->pipe && os_process_pipe_destroy(stream->pipe) != 0 && !*error)
+		error = "Replay muxer exited with an error";
 	stream->pipe = NULL;
-	if (error) {
-		for (size_t i = 0; i < stream->mux_packets.num; i++)
-			obs_encoder_packet_release(&stream->mux_packets.array[i]);
-	}
+	for (size_t i = released; i < stream->mux_packets.num; i++)
+		obs_encoder_packet_release(&stream->mux_packets.array[i]);
 	da_free(stream->mux_packets);
+	pthread_mutex_lock(&stream->replay_mutex);
+	stream->replay_snapshot_bytes = 0;
+	stream->replay_request_pending = false;
+	if (!*error)
+		dstr_copy_dstr(&stream->replay_last_path, &result_path);
 	os_atomic_set_bool(&stream->muxing, false);
-
-	if (!error) {
+	pthread_mutex_unlock(&stream->replay_mutex);
+	if (*error)
+		warn("%s: '%s'", error, result_path.array);
+	else {
+		info("Wrote replay buffer to '%s'", result_path.array);
 		calldata_t cd = {0};
-		signal_handler_t *sh = obs_output_get_signal_handler(stream->output);
-		signal_handler_signal(sh, "saved", &cd);
+		signal_handler_signal(obs_output_get_signal_handler(stream->output), "saved", &cd);
 	}
-
+	replay_save_result(stream, request_id, !*error, result_path.array, error);
+	dstr_free(&result_path);
 	return NULL;
 }
 
@@ -1176,75 +1290,125 @@ static void replay_buffer_save(struct ffmpeg_muxer *stream)
 			      audio_dts_offsets);
 	}
 
-	generate_filename(stream, &stream->path, true);
-
+	/* Consecutive saves can share a timestamp; never replace a successful clip. */
+	generate_filename(stream, &stream->path, false);
+	stream->replay_mux_request_id = stream->replay_request_id;
+	stream->replay_snapshot_bytes = stream->cur_size;
+	/* Saving owns a second packet-reference set. Evict whole GOPs until the
+	 * conservative payload budget also covers that snapshot. */
+	while (stream->packets.size && stream->cur_size + stream->replay_snapshot_bytes > stream->max_size)
+		purge(stream);
 	os_atomic_set_bool(&stream->muxing, true);
 	stream->mux_thread_joinable = pthread_create(&stream->mux_thread, NULL, replay_buffer_mux_thread, stream) == 0;
 	if (!stream->mux_thread_joinable) {
 		warn("Failed to create muxer thread");
+		for (size_t i = 0; i < stream->mux_packets.num; i++)
+			obs_encoder_packet_release(&stream->mux_packets.array[i]);
+		da_free(stream->mux_packets);
+		stream->replay_snapshot_bytes = 0;
+		stream->replay_request_pending = false;
 		os_atomic_set_bool(&stream->muxing, false);
+		/* Caller publishes the failed result after releasing replay_mutex. */
 	}
 }
 
 static void deactivate_replay_buffer(struct ffmpeg_muxer *stream, int code)
 {
-	if (code) {
-		obs_output_signal_stop(stream->output, code);
-	} else if (stopping(stream)) {
-		obs_output_end_data_capture(stream->output);
+	/* Never mutate worker-owned pipe/header/path fields before it has exited. */
+	if (stream->mux_thread_joinable) {
+		pthread_join(stream->mux_thread, NULL);
+		stream->mux_thread_joinable = false;
 	}
-
+	pthread_mutex_lock(&stream->replay_mutex);
+	bool pending = stream->replay_request_pending;
+	int64_t request_id = stream->replay_request_id;
+	stream->replay_request_pending = false;
 	os_atomic_set_bool(&stream->active, false);
+	os_atomic_set_bool(&stream->capturing, false);
 	os_atomic_set_bool(&stream->sent_headers, false);
-	os_atomic_set_bool(&stream->stopping, false);
 	replay_buffer_clear(stream);
+	pthread_mutex_unlock(&stream->replay_mutex);
+	if (pending)
+		replay_save_result(stream, request_id, false, "",
+				   "Replay buffer stopped before a decodable snapshot was ready");
+	if (code)
+		obs_output_signal_stop(stream->output, code);
+	else if (stopping(stream))
+		obs_output_end_data_capture(stream->output);
+	os_atomic_set_bool(&stream->stopping, false);
+}
+
+/* Caller holds replay_mutex. Revalidate after any unlocked worker join: a
+ * cancellation/new request must never save the old packet under a new ID. */
+static bool replay_save_ready(struct ffmpeg_muxer *stream, const struct encoder_packet *packet, int64_t request_id)
+{
+	return active(stream) && !stopping(stream) && stream->replay_request_pending &&
+	       stream->replay_request_id == request_id && stream->save_ts && stream->keyframes &&
+	       packet->sys_dts_usec >= stream->save_ts && !os_atomic_load_bool(&stream->muxing);
 }
 
 static void replay_buffer_data(void *data, struct encoder_packet *packet)
 {
 	struct ffmpeg_muxer *stream = data;
-	struct encoder_packet pkt;
-
 	if (!active(stream))
 		return;
-
-	/* encoder failure */
 	if (!packet) {
 		deactivate_replay_buffer(stream, OBS_OUTPUT_ENCODE_ERROR);
 		return;
 	}
-
-	if (stopping(stream)) {
-		if (packet->sys_dts_usec >= stream->stop_ts) {
-			deactivate_replay_buffer(stream, 0);
-			return;
-		}
+	if (stopping(stream) && packet->sys_dts_usec >= stream->stop_ts) {
+		deactivate_replay_buffer(stream, 0);
+		return;
 	}
-
+	pthread_mutex_lock(&stream->replay_mutex);
+	/* A malformed encoder packet cannot exceed this instance's payload ceiling. */
+	if ((uint64_t)packet->size > (uint64_t)stream->max_size) {
+		pthread_mutex_unlock(&stream->replay_mutex);
+		obs_output_set_last_error(stream->output, "Replay packet exceeds the configured payload memory limit");
+		deactivate_replay_buffer(stream, OBS_OUTPUT_ENCODE_ERROR);
+		return;
+	}
+	replay_buffer_purge(stream, packet);
+	/* An evicted GOP must restart at a video keyframe. Do not accumulate
+	 * undecodable P/B frames or audio indefinitely while a keyframe is absent. */
+	if ((!stream->packets.size && !(packet->type == OBS_ENCODER_VIDEO && packet->keyframe)) ||
+	    stream->cur_size + stream->replay_snapshot_bytes + (int64_t)packet->size > stream->max_size) {
+		stream->replay_dropped_packets++;
+		pthread_mutex_unlock(&stream->replay_mutex);
+		return;
+	}
+	struct encoder_packet pkt;
 	obs_encoder_packet_ref(&pkt, packet);
-	replay_buffer_purge(stream, &pkt);
-
 	if (!stream->packets.size)
 		stream->cur_time = pkt.dts_usec;
-	stream->cur_size += pkt.size;
-
-	deque_push_back(&stream->packets, packet, sizeof(*packet));
-
-	if (packet->type == OBS_ENCODER_VIDEO && packet->keyframe)
+	stream->cur_size += (int64_t)pkt.size;
+	deque_push_back(&stream->packets, &pkt, sizeof(pkt));
+	if (pkt.type == OBS_ENCODER_VIDEO && pkt.keyframe)
 		stream->keyframes++;
-
-	if (stream->save_ts && packet->sys_dts_usec >= stream->save_ts) {
-		if (os_atomic_load_bool(&stream->muxing))
-			return;
-
+	if (replay_save_ready(stream, packet, stream->replay_request_id)) {
+		const int64_t expected_request_id = stream->replay_request_id;
+		/* The old worker can still be emitting its completion signal. Never
+		 * join it under replay_mutex: consumers may call get_replay_status. */
+		pthread_mutex_unlock(&stream->replay_mutex);
 		if (stream->mux_thread_joinable) {
 			pthread_join(stream->mux_thread, NULL);
 			stream->mux_thread_joinable = false;
 		}
-
+		pthread_mutex_lock(&stream->replay_mutex);
+		if (!replay_save_ready(stream, packet, expected_request_id)) {
+			pthread_mutex_unlock(&stream->replay_mutex);
+			return;
+		}
 		stream->save_ts = 0;
 		replay_buffer_save(stream);
+		bool started = stream->mux_thread_joinable;
+		int64_t request_id = stream->replay_mux_request_id;
+		pthread_mutex_unlock(&stream->replay_mutex);
+		if (!started)
+			replay_save_result(stream, request_id, false, "", "Failed to create replay muxer thread");
+		return;
 	}
+	pthread_mutex_unlock(&stream->replay_mutex);
 }
 
 static void replay_buffer_defaults(obs_data_t *s)

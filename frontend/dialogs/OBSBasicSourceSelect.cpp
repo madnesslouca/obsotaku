@@ -157,7 +157,7 @@ std::optional<OBSSceneItem> setupExistingSource(std::string_view uuid, bool visi
 
 	if (!scene) {
 		OBSBasic *main = OBSBasic::Get();
-		scene = main->GetCurrentScene();
+		scene = main->GetStudioEditingScene();
 	}
 	if (!scene) {
 		return std::nullopt;
@@ -202,7 +202,7 @@ std::optional<OBSSceneItem> setupExistingSource(std::string_view uuid, bool visi
 std::optional<OBSSource> setupNewSource(QWidget *parent, const char *id, const char *name)
 {
 	OBSBasic *main = OBSBasic::Get();
-	OBSScene scene = main->GetCurrentScene();
+	OBSScene scene = main->GetStudioEditingScene();
 
 	if (!scene) {
 		return std::nullopt;
@@ -771,7 +771,7 @@ void OBSBasicSourceSelect::createNew()
 	OBSSceneItem item = addResult.value();
 
 	OBSBasic *main = reinterpret_cast<OBSBasic *>(App()->GetMainWindow());
-	std::string sceneUuid = obs_source_get_uuid(main->GetCurrentSceneSource());
+	std::string sceneUuid = obs_source_get_uuid(obs_scene_get_source(main->GetStudioEditingScene()));
 	auto undo = [sceneUuid](const std::string &data) {
 		OBSBasic *main = OBSBasic::Get();
 
@@ -779,7 +779,7 @@ void OBSBasicSourceSelect::createNew()
 		obs_source_remove(source);
 
 		OBSSourceAutoRelease sceneSource = obs_get_source_by_uuid(sceneUuid.c_str());
-		main->SetCurrentScene(sceneSource.Get(), true);
+		main->SetStudioEditingScene(sceneSource.Get());
 	};
 	OBSDataAutoRelease wrapper = obs_data_create();
 	obs_data_set_string(wrapper, "id", id);
@@ -791,7 +791,7 @@ void OBSBasicSourceSelect::createNew()
 		OBSBasic *main = OBSBasic::Get();
 
 		OBSSourceAutoRelease sceneSource = obs_get_source_by_uuid(sceneUuid.c_str());
-		main->SetCurrentScene(sceneSource.Get(), true);
+		main->SetStudioEditingScene(sceneSource.Get());
 
 		OBSDataAutoRelease dat = obs_data_create_from_json(data.c_str());
 
@@ -832,7 +832,7 @@ void OBSBasicSourceSelect::addExisting(const std::string &uuid, bool visible)
 	setupExistingSource(uuid, visible, false);
 
 	OBSBasic *main = OBSBasic::Get();
-	const char *sceneUuidPtr = obs_source_get_uuid(main->GetCurrentSceneSource());
+	const char *sceneUuidPtr = obs_source_get_uuid(obs_scene_get_source(main->GetStudioEditingScene()));
 	if (!sceneUuidPtr) {
 		return;
 	}
@@ -841,7 +841,7 @@ void OBSBasicSourceSelect::addExisting(const std::string &uuid, bool visible)
 
 	auto undo = [sceneUuid, main](const std::string &) {
 		OBSSourceAutoRelease sceneSource = obs_get_source_by_uuid(sceneUuid.c_str());
-		main->SetCurrentScene(sceneSource.Get(), true);
+		main->SetStudioEditingScene(sceneSource.Get());
 
 		OBSScene scene = obs_scene_from_source(sceneSource);
 		OBSSceneItem item;
@@ -857,7 +857,7 @@ void OBSBasicSourceSelect::addExisting(const std::string &uuid, bool visible)
 
 	auto redo = [sceneUuid, main, uuid, visible](const std::string &) {
 		OBSSourceAutoRelease sceneSource = obs_get_source_by_uuid(sceneUuid.c_str());
-		main->SetCurrentScene(sceneSource.Get(), true);
+		main->SetStudioEditingScene(sceneSource.Get());
 
 		setupExistingSource(uuid, visible, false);
 	};

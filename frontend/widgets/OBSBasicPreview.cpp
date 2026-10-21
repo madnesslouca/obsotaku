@@ -562,6 +562,7 @@ void OBSBasicPreview::wheelEvent(QWheelEvent *event)
 
 void OBSBasicPreview::mousePressEvent(QMouseEvent *event)
 {
+	OBSBasic::Get()->SetStudioPortraitEditing(false);
 	QPointF pos = event->position();
 
 	if (scrollMode && IsFixedScaling() && event->button() == Qt::LeftButton) {

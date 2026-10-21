@@ -88,6 +88,17 @@ struct common_frame_rate {
 Q_DECLARE_METATYPE(frame_rate_tag);
 Q_DECLARE_METATYPE(media_frames_per_second);
 
+void OBSPropertiesView::FlushPendingChanges()
+{
+	for (auto &info : children) {
+		if (!info->recently_updated || !info->update_timer)
+			continue;
+		info->update_timer->stop();
+		QMetaObject::invokeMethod(info->update_timer, "timeout", Qt::DirectConnection);
+		info->update_timer = nullptr;
+	}
+}
+
 void OBSPropertiesView::ReloadProperties()
 {
 	if (weakObj || rawObj) {
@@ -254,6 +265,7 @@ QWidget *OBSPropertiesView::NewWidget(obs_property_t *prop, Sender *widget, void
 {
 	const char *long_desc = obs_property_long_description(prop);
 
+	widget->setObjectName(QT_UTF8(obs_property_name(prop)));
 	WidgetInfo *info = new WidgetInfo(this, prop, widget);
 	QObject::connect(widget, signal, info, &WidgetInfo::ControlChanged);
 	children.emplace_back(info);
@@ -483,6 +495,10 @@ void OBSPropertiesView::AddFloat(obs_property_t *prop, QFormLayout *layout, QLab
 	const char *name = obs_property_name(prop);
 	double val = obs_data_get_double(settings, name);
 	QDoubleSpinBox *spin = new QDoubleSpinBox();
+	spin->setObjectName(QT_UTF8(name));
+	// Keep the normalized slider feedback from rewriting a partially typed
+	// decimal before the VST3 parameter edit is confirmed.
+	if (QByteArray(name).startsWith("vst3_param_")) spin->setKeyboardTracking(false);
 
 	if (!obs_property_enabled(prop)) {
 		spin->setEnabled(false);

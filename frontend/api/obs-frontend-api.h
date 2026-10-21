@@ -240,6 +240,8 @@ EXPORT void obs_frontend_open_source_interaction(obs_source_t *source);
 EXPORT void obs_frontend_open_sceneitem_edit_transform(obs_sceneitem_t *item);
 
 EXPORT char *obs_frontend_get_current_record_output_path(void);
+EXPORT bool obs_frontend_is_safe_mode_enabled(void);
+
 EXPORT const char *obs_frontend_get_locale_string(const char *string);
 
 EXPORT bool obs_frontend_is_theme_dark(void);

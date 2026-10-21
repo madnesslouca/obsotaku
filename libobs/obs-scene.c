@@ -1024,10 +1024,18 @@ static void update_transforms_and_prune_sources(obs_scene_t *scene, obs_scene_it
 
 		if (item->is_group) {
 			obs_scene_t *group_scene = item->source->context.data;
+			struct matrix4 previous_box;
+			matrix4_copy(&previous_box, &item->box_transform);
 
 			video_lock(group_scene);
 			update_transforms_and_prune_sources(group_scene, remove_items, item, scene_size_changed);
 			video_unlock(group_scene);
+
+			/* Resizing the subgroup updates last_width/height before the
+			 * parent can observe source_size_changed. Propagate an actual
+			 * box change; fixed bounds or deferred resize need no rebuild. */
+			if (memcmp(&previous_box, &item->box_transform, sizeof(previous_box)) != 0)
+				rebuild_group = true;
 		}
 
 		if (os_atomic_load_bool(&item->update_transform) || source_size_changed(item) || scene_size_changed) {
@@ -2982,6 +2990,17 @@ void obs_sceneitem_get_draw_transform(const obs_sceneitem_t *item, struct matrix
 		matrix4_copy(transform, &item->draw_transform);
 }
 
+void obs_sceneitem_get_content_transform(const obs_sceneitem_t *item, struct matrix4 *transform)
+{
+	if (!item || !transform)
+		return;
+	struct matrix4 crop;
+	matrix4_identity(&crop);
+	matrix4_translate3f(&crop, &crop, -(float)(item->crop.left + item->bounds_crop.left),
+			   -(float)(item->crop.top + item->bounds_crop.top), 0.0f);
+	matrix4_mul(transform, &crop, &item->draw_transform);
+}
+
 void obs_sceneitem_get_box_transform(const obs_sceneitem_t *item, struct matrix4 *transform)
 {
 	if (item)
@@ -3204,6 +3223,16 @@ void obs_sceneitem_get_crop(const obs_sceneitem_t *item, struct obs_sceneitem_cr
 		return;
 
 	memcpy(crop, &item->crop, sizeof(*crop));
+}
+
+void obs_sceneitem_get_effective_crop(const obs_sceneitem_t *item, struct obs_sceneitem_crop *crop)
+{
+	if (!item || !crop)
+		return;
+	crop->left = item->crop.left + item->bounds_crop.left;
+	crop->top = item->crop.top + item->bounds_crop.top;
+	crop->right = item->crop.right + item->bounds_crop.right;
+	crop->bottom = item->crop.bottom + item->bounds_crop.bottom;
 }
 
 void obs_sceneitem_set_scale_filter(obs_sceneitem_t *item, enum obs_scale_type filter)

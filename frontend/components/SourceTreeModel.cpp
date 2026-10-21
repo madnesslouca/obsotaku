@@ -9,7 +9,7 @@
 static inline OBSScene GetCurrentScene()
 {
 	OBSBasic *main = OBSBasic::Get();
-	return main->GetCurrentScene();
+	return main->GetStudioEditingScene();
 }
 
 void SourceTreeModel::OBSFrontendEvent(enum obs_frontend_event event, void *ptr)
@@ -57,7 +57,7 @@ static bool enumItem(obs_scene_t *, obs_sceneitem_t *item, void *ptr)
 		if (!collapse) {
 			obs_scene_t *scene = obs_sceneitem_group_get_scene(item);
 
-			obs_scene_enum_items(scene, enumItem, &items);
+			if (scene) obs_scene_enum_items(scene, enumItem, &items);
 		}
 	}
 
@@ -71,7 +71,7 @@ void SourceTreeModel::SceneChanged()
 
 	beginResetModel();
 	items.clear();
-	obs_scene_enum_items(scene, enumItem, &items);
+	if (scene) obs_scene_enum_items(scene, enumItem, &items);
 	endResetModel();
 
 	UpdateGroupState(false);
@@ -363,7 +363,7 @@ void SourceTreeModel::UngroupSelectedGroups(QModelIndexList &indices)
 		return;
 	}
 
-	OBSScene scene = main->GetCurrentScene();
+	OBSScene scene = main->GetStudioEditingScene();
 	OBSData undoData = main->BackupScene(scene);
 
 	for (int i = indices.count() - 1; i >= 0; i--) {

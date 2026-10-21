@@ -14,11 +14,15 @@
 #include "YouTubeChatConnection.hpp"
 
 #include <algorithm>
+#include <QJsonDocument>
+#include <QJsonArray>
 #include <utility>
 
 #include "moc_MultiStreamChatAggregator.cpp"
 
-MultiStreamChatAggregator::MultiStreamChatAggregator(QObject *parent) : QObject(parent)
+MultiStreamChatAggregator::MultiStreamChatAggregator(QObject *parent, ConnectionFactory connectionFactory)
+	: QObject(parent),
+	  factory(connectionFactory ? std::move(connectionFactory) : MakeConnection)
 {
 	netManager = new QNetworkAccessManager(this);
 }
@@ -29,7 +33,8 @@ MultiStreamChatAggregator::~MultiStreamChatAggregator()
 }
 
 std::unique_ptr<ChatConnection> MultiStreamChatAggregator::MakeConnection(const ChatChannelRef &channel,
-									 QNetworkAccessManager *manager, QObject *parent)
+									  QNetworkAccessManager *manager,
+									  QObject *parent)
 {
 	switch (channel.platform) {
 	case StreamPlatform::Twitch:
@@ -58,8 +63,9 @@ void MultiStreamChatAggregator::SetChannels(const std::vector<ChatChannelRef> &c
 	std::vector<const ChatChannelRef *> toOpen;
 
 	for (const auto &channel : channels) {
-		if (channel.address.trimmed().isEmpty())
+		if (channel.address.trimmed().isEmpty()) {
 			continue;
+		}
 		if (!GetStreamPlatformInfo(channel.platform).supportsChat) {
 			emit statusChanged(channel.channelId, channel.platform, ChatConnectionState::Unsupported, {});
 			continue;
@@ -81,36 +87,52 @@ void MultiStreamChatAggregator::SetChannels(const std::vector<ChatChannelRef> &c
 
 	/* Whatever was not carried over is no longer wanted. */
 	for (auto &connection : connections) {
-		if (connection)
+		if (connection) {
 			connection->Stop();
+		}
 	}
 	connections.clear();
 	connections = std::move(kept);
 
 	for (const ChatChannelRef *channel : toOpen) {
-		auto connection = MakeConnection(*channel, netManager, this);
-		if (!connection)
+		auto connection = factory(*channel, netManager, this);
+		if (!connection) {
 			continue;
+		}
 		connect(connection.get(), &ChatConnection::messageReceived, this,
-			&MultiStreamChatAggregator::messageReceived);
+			&MultiStreamChatAggregator::ForwardMessage);
+		connect(connection.get(), &ChatConnection::sendFinished, this,
+			&MultiStreamChatAggregator::sendFinished);
+		connect(connection.get(), &ChatConnection::broadcastsAvailable, this,
+			&MultiStreamChatAggregator::broadcastsAvailable);
+		connect(connection.get(), &ChatConnection::messageRemoved, this,
+			&MultiStreamChatAggregator::messageRemoved);
 		connect(connection.get(), &ChatConnection::statusChanged, this,
 			&MultiStreamChatAggregator::statusChanged);
-		connection->Start();
 		connections.push_back(std::move(connection));
+		connections.back()->Start();
 	}
+	this->channels = channels;
+	RefreshActivity(channels);
 }
 
 void MultiStreamChatAggregator::DisconnectAll()
 {
 	StopAll();
 	connections.clear();
+	activity.clear();
+	channels.clear();
 }
 
 void MultiStreamChatAggregator::StopAll()
 {
+	for (auto &events : activity) {
+		events->Stop();
+	}
 	for (auto &connection : connections) {
-		if (connection)
+		if (connection) {
 			connection->Stop();
+		}
 	}
 }
 
@@ -126,10 +148,12 @@ bool MultiStreamChatAggregator::CanSend(const QString &channelId) const
 	return connection && connection->CanSend();
 }
 
-bool MultiStreamChatAggregator::SendText(const QString &channelId, const QString &text, QString &error)
+bool MultiStreamChatAggregator::SendText(const QString &channelId, const QString &text, const QString &requestId,
+					 QString &error)
 {
 	const QString trimmed = text.trimmed();
-	if (trimmed.isEmpty()) {
+	if (trimmed.isEmpty() || requestId.isEmpty() || trimmed.contains(QChar(0)) || trimmed.contains('\r') ||
+	    trimmed.contains('\n')) {
 		error = "empty";
 		return false;
 	}
@@ -139,12 +163,88 @@ bool MultiStreamChatAggregator::SendText(const QString &channelId, const QString
 		error = "unsupported";
 		return false;
 	}
-	return connection->SendText(trimmed, error);
+	return connection->SendText(trimmed, requestId, error);
 }
 
 bool MultiStreamChatAggregator::PlatformCanSend(StreamPlatform platform)
 {
-	/* Kick's chat arrives over the Pusher socket, which carries no way to
-	 * post; the official API path for sending is not wired up here. */
-	return platform == StreamPlatform::Twitch || platform == StreamPlatform::YouTube;
+	return platform == StreamPlatform::Twitch || platform == StreamPlatform::YouTube ||
+	       platform == StreamPlatform::Kick;
+}
+
+void MultiStreamChatAggregator::ForwardMessage(const ChatMessage &message)
+{
+	if (!message.id.isEmpty()) {
+		const QString key = QString::fromUtf8(
+			QJsonDocument(QJsonArray{message.channelId, message.id}).toJson(QJsonDocument::Compact));
+		if (seenIds.contains(key)) {
+			if (!message.emotes.isEmpty()) {
+				emit messageUpdated(message);
+			}
+			return;
+		}
+		seenIds.insert(key);
+		seenOrder.enqueue(key);
+		while (seenOrder.size() > 3000) {
+			seenIds.remove(seenOrder.dequeue());
+		}
+	}
+	emit messageReceived(message);
+}
+
+void MultiStreamChatAggregator::RefreshActivity(const std::vector<ChatChannelRef> &targets)
+{
+	QSet<QString> wanted;
+	for (const auto &target : targets) {
+		if (target.platform == StreamPlatform::Twitch && !target.accountId.isEmpty()) {
+			wanted.insert(target.accountId);
+		}
+	}
+	for (auto it = activity.begin(); it != activity.end();) {
+		if (!wanted.contains((*it)->Channel().accountId)) {
+			(*it)->Stop();
+			it = activity.erase(it);
+		} else {
+			++it;
+		}
+	}
+	for (const auto &account : wanted) {
+		const auto existing = std::find_if(activity.begin(), activity.end(), [&](const auto &item) {
+			return item->Channel().accountId == account;
+		});
+		if (existing != activity.end()) {
+			if ((*existing)->NeedsCredentials()) {
+				(*existing)->Start();
+			}
+			continue;
+		}
+		ChatChannelRef ref;
+		ref.accountId = account;
+		ref.address = account;
+		ref.platform = StreamPlatform::Twitch;
+		auto events = std::make_unique<TwitchEventSub>(ref, netManager, this);
+		connect(events.get(), &ChatConnection::messageReceived, this,
+			[this, account](const ChatMessage &event) {
+				for (const auto &target : channels) {
+					if (target.platform != StreamPlatform::Twitch || target.accountId != account) {
+						continue;
+					}
+					auto message = event;
+					message.channelId = target.channelId;
+					message.channelName = target.displayName;
+					ForwardMessage(message);
+				}
+			});
+		connect(events.get(), &ChatConnection::statusChanged, this,
+			[this, account](const QString &, StreamPlatform, ChatConnectionState state,
+					const QString &detail) {
+				for (const auto &target : channels) {
+					if (target.platform == StreamPlatform::Twitch && target.accountId == account) {
+						emit activityStatusChanged(target.channelId, state, detail);
+					}
+				}
+			});
+		activity.push_back(std::move(events));
+		activity.back()->Start();
+	}
 }

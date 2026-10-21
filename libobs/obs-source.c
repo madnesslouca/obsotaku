@@ -1642,8 +1642,8 @@ static void source_output_audio_data(obs_source_t *source, const struct audio_da
 	source->next_audio_sys_ts_min = source->next_audio_ts_min + source->timing_adjust;
 
 	if (source->last_sync_offset != sync_offset) {
-		if (source->last_sync_offset)
-			push_back = false;
+		/* Offset changes must reposition continuous audio, even from zero. */
+		push_back = false;
 		source->last_sync_offset = sync_offset;
 	}
 

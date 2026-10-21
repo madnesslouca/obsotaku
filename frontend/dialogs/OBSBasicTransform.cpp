@@ -103,6 +103,7 @@ OBSBasicTransform::OBSBasicTransform(OBSSceneItem item, OBSBasic *parent)
 
 	installEventFilter(CreateShortcutFilter());
 
+	editingScene = main->GetStudioEditingScene();
 	OBSScene scene = obs_sceneitem_get_scene(item);
 	setScene(scene);
 	setItem(item);
@@ -110,7 +111,7 @@ OBSBasicTransform::OBSBasicTransform(OBSSceneItem item, OBSBasic *parent)
 	std::string name = obs_source_get_name(obs_sceneitem_get_source(item));
 	setWindowTitle(QTStr("Basic.TransformWindow.Title").arg(name.c_str()));
 
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(main->GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(editingScene, false);
 	undo_data = std::string(obs_data_get_json(wrapper));
 
 	adjustSize();
@@ -120,19 +121,19 @@ OBSBasicTransform::OBSBasicTransform(OBSSceneItem item, OBSBasic *parent)
 
 OBSBasicTransform::~OBSBasicTransform()
 {
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(main->GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(editingScene, false);
 
 	auto undo_redo = [](const std::string &data) {
 		OBSDataAutoRelease dat = obs_data_create_from_json(data.c_str());
 		OBSSourceAutoRelease source = obs_get_source_by_uuid(obs_data_get_string(dat, "scene_uuid"));
-		OBSBasic::Get()->SetCurrentScene(source.Get(), true);
+		OBSBasic::Get()->SetStudioEditingScene(source.Get());
 		obs_scene_load_transform_states(data.c_str());
 	};
 
 	std::string redo_data(obs_data_get_json(wrapper));
 	if (undo_data.compare(redo_data) != 0) {
 		main->undo_s.add_action(
-			QTStr("Undo.Transform").arg(obs_source_get_name(obs_scene_get_source(main->GetCurrentScene()))),
+			QTStr("Undo.Transform").arg(obs_source_get_name(obs_scene_get_source(editingScene))),
 			undo_redo, undo_redo, undo_data, redo_data);
 	}
 }
@@ -471,6 +472,6 @@ void OBSBasicTransform::onSceneChanged(QListWidgetItem *current, QListWidgetItem
 		return;
 	}
 
-	OBSScene scene = GetOBSRef<OBSScene>(current);
-	this->setScene(scene);
+	// This editor owns the captured item/undo scene. Reopen it in the new context.
+	close();
 }

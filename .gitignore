@@ -12,6 +12,7 @@
 !/plugins
 !/shared
 !/test
+!/tools
 !.cirrus.xml
 !.clang-format
 !.editorconfig
@@ -49,3 +50,19 @@ build-aux/flatpak-github-action-modified-*
 
 # Exclude CMake build number cache
 /cmake/.CMakeBuildNumber
+
+# Python analysis helper cache
+/tools/__pycache__/
+
+# Private research, machine-specific automation and generated validation results
+/docs/*-brain/
+/docs/*-study/
+/docs/*_analise_*.md
+/docs/product/*_IDEIAS.md
+/tools/study-*.py
+/tools/*-brain.py
+/tools/package-studio-source.py
+/tools/windows-vm/
+/validation/
+**/__pycache__/
+*.pyc

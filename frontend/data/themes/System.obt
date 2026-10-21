@@ -541,7 +541,8 @@ UnifiedChatDock QToolButton#unifiedChatFilter:checked {
     border-color: palette(highlight);
 }
 
-UnifiedChatDock QTextBrowser#unifiedChatView {
+UnifiedChatDock QTextBrowser#unifiedChatView,
+UnifiedChatDock QTextBrowser#unifiedChatActivity {
     background-color: palette(base);
     color: palette(text);
     border: 0;

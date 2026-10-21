@@ -602,6 +602,8 @@ QColor OBSBasic::GetSelectionColor() const
 {
 	if (config_get_bool(App()->GetUserConfig(), "Accessibility", "OverrideColors")) {
 		return color_from_int(config_get_int(App()->GetUserConfig(), "Accessibility", "SelectRed"));
+	} else if (config_get_bool(App()->GetUserConfig(), "BasicWindow", "StudioWorkspace")) {
+		return QColor(QStringLiteral("#8e51ed"));
 	} else {
 		return QColor::fromRgb(255, 0, 0);
 	}
@@ -627,7 +629,8 @@ QColor OBSBasic::GetHoverColor() const
 
 void OBSBasic::UpdatePreviewSpacingHelpers()
 {
-	drawSpacingHelpers = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SpacingHelpersEnabled");
+	drawSpacingHelpers = config_get_bool(App()->GetUserConfig(), "BasicWindow", "SpacingHelpersEnabled") &&
+			     !config_get_bool(App()->GetUserConfig(), "BasicWindow", "StudioWorkspace");
 }
 
 float OBSBasic::GetDevicePixelRatio()

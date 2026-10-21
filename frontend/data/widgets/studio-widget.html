@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'">
+<title>Studio local widget</title>
+<style>
+html,body{margin:0;background:transparent;color:white;overflow:hidden;font-family:Arial,sans-serif}
+#widget{display:inline-flex;flex-direction:column;box-sizing:border-box;max-width:1080px;padding:20px 28px;border-left:6px solid #8e51ed;background:rgba(16,17,20,.88)}
+#main{font-weight:700;font-variant-numeric:tabular-nums;line-height:1.15;white-space:pre-wrap;overflow-wrap:anywhere}
+#sub{font-size:26px;line-height:1.3;margin-top:8px;white-space:pre-wrap;overflow-wrap:anywhere}
+</style><div id="widget"><div id="main"></div><div id="sub"></div></div>
+<script>
+'use strict';
+const p=new URLSearchParams(location.search),main=document.querySelector('#main'),sub=document.querySelector('#sub');
+const type=p.get('type')||'clock';
+main.style.fontSize=Math.min(120,Math.max(12,Number(p.get('font'))||64))+'px';
+sub.textContent=p.get('subtitle')||'';
+const end=Number(p.get('end'))||Date.now();
+function tick(){
+ if(type==='lower-third')main.textContent=p.get('title')||'Studio';
+ else if(type==='countdown'){
+  const s=Math.max(0,Math.ceil((end-Date.now())/1000));
+  main.textContent=[Math.floor(s/3600),Math.floor(s/60)%60,s%60].map(v=>String(v).padStart(2,'0')).join(':');
+  sub.textContent=p.get('title')||p.get('subtitle')||'';
+ }else{main.textContent=new Date().toLocaleTimeString('pt-BR',{hour12:false});sub.textContent=p.get('title')||p.get('subtitle')||'';}
+}
+tick();setInterval(tick,100);
+</script></html>

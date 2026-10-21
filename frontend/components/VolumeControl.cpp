@@ -6,8 +6,11 @@
 #include <components/VolumeSlider.hpp>
 #include <dialogs/NameDialog.hpp>
 #include <widgets/OBSBasic.hpp>
+#include <utility/StudioSceneAudio.hpp>
 
 #include <QMessageBox>
+#include <QToolButton>
+#include <QToolTip>
 #include <QObjectCleanupHandler>
 
 #include "moc_VolumeControl.cpp"
@@ -52,6 +55,8 @@ VolumeControl::VolumeControl(obs_source_t *source, QWidget *parent, bool vertica
 	  contextMenu(nullptr),
 	  QFrame(parent)
 {
+	studioStyle = config_get_bool(App()->GetUserConfig(), "BasicWindow", "StudioWorkspace");
+	setProperty("studioStrip", studioStyle && vertical);
 	utils = std::make_unique<idian::Utils>(this);
 
 	uuid = obs_source_get_uuid(source);
@@ -73,11 +78,32 @@ VolumeControl::VolumeControl(obs_source_t *source, QWidget *parent, bool vertica
 
 	muteButton = new QPushButton(this);
 	muteButton->setCheckable(true);
+	muteButton->setObjectName("studioMixerMute");
 	utils->addClass(muteButton, "btn-mute");
 
 	monitorButton = new QPushButton(this);
 	monitorButton->setCheckable(true);
 	utils->addClass(monitorButton, "btn-monitor");
+
+	studioEditButton = new QPushButton(QTStr("Studio.AudioEditShort"), this);
+	studioEditButton->setObjectName("studioMixerEdit");
+	studioEditButton->setToolTip(QTStr("Studio.AudioRouting"));
+	studioLinkButton = new QPushButton(QTStr("Studio.AudioLinkShort"), this);
+	studioLinkButton->setObjectName("studioMixerLink");
+	studioLinkButton->setCheckable(true);
+	studioLinkButton->setToolTip(QTStr("Studio.AudioSceneLinkHint"));
+	connect(studioEditButton, &QPushButton::clicked, this, [this]() {
+		OBSSource source = OBSGetStrongRef(weakSource());
+		if (source)
+			OBSBasic::Get()->OpenStudioAudioRouting(QString::fromUtf8(obs_source_get_uuid(source)));
+	});
+	connect(studioLinkButton, &QPushButton::clicked, this, [this](bool linked) {
+		OBSSource source = OBSGetStrongRef(weakSource());
+		if (source)
+			OBSBasic::Get()->SetStudioAudioLinked(QString::fromUtf8(obs_source_get_uuid(source)), linked);
+	});
+	if (auto *model = StudioSceneAudio::Get())
+		connect(model, &StudioSceneAudio::Changed, this, &VolumeControl::processMixerState);
 
 	volumeLabel = new QLabel(this);
 	volumeLabel->setIndent(0);
@@ -94,6 +120,10 @@ VolumeControl::VolumeControl(obs_source_t *source, QWidget *parent, bool vertica
 	utils->applyStateStylingEventFilter(monitorButton);
 
 	volumeMeter = new VolumeMeter(this, source);
+	volumeMeter->setObjectName("studioMixerMeter");
+	slider->setObjectName("studioMixerFader");
+	monitorButton->setObjectName("studioMixerCue");
+	nameButton->setObjectName("studioMixerName");
 
 	obsMuted = obs_source_muted(source);
 	bool unassigned = isSourceUnassigned(source);
@@ -101,6 +131,7 @@ VolumeControl::VolumeControl(obs_source_t *source, QWidget *parent, bool vertica
 
 	volumeMeter->setMuted(obsMuted || unassigned);
 
+	CreateStudioWidgets();
 	setLayoutVertical(vertical);
 	setName(sourceName);
 
@@ -242,11 +273,44 @@ void VolumeControl::obsSourceDestroy(void *data, calldata_t *)
 
 void VolumeControl::setLayoutVertical(bool vertical)
 {
+	// Persistent controls move between layouts; detach them before deleting old frames.
+	for (QWidget *widget : QList<QWidget *>{categoryLabel, nameButton, volumeLabel, volumeMeter,
+			       slider, muteButton, monitorButton, studioEditButton, studioLinkButton,
+			       studioEffects, studioDevice, studioPeak}) {
+		// removeWidget must also visit nested layouts. A hidden control unused
+		// by the next layout must not be reparented into the old layout's owner.
+		std::function<void(QLayout *)> detach = [&](QLayout *layout) {
+			if (!layout) return;
+			layout->removeWidget(widget);
+			for (int i = 0; i < layout->count(); ++i)
+				if (auto *nested = layout->itemAt(i)->layout()) detach(nested);
+		};
+		if (auto *parent = widget->parentWidget()) detach(parent->layout());
+		widget->setParent(this);
+		widget->hide();
+	}
+	setMinimumSize(0, 0);
+	setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+	nameButton->setMinimumHeight(0);
+	nameButton->setMaximumHeight(QWIDGETSIZE_MAX);
+	nameButton->setAlignment(Qt::AlignLeft);
+	slider->setMinimumWidth(0);
+	slider->setMaximumWidth(QWIDGETSIZE_MAX);
+	volumeMeter->setMinimumWidth(0);
+	volumeMeter->setMaximumWidth(QWIDGETSIZE_MAX);
+	for (QPushButton *button : {studioEditButton, studioLinkButton, monitorButton, muteButton}) {
+		button->setMinimumWidth(0);
+		button->setMaximumWidth(QWIDGETSIZE_MAX);
+	}
+	const bool studio = studioStyle && vertical;
+	setProperty("studioStrip", studio);
 	QBoxLayout *newLayout = new QBoxLayout(QBoxLayout::TopToBottom);
 	newLayout->setContentsMargins(0, 0, 0, 0);
 	newLayout->setSpacing(0);
 
-	if (vertical) {
+	if (studio) {
+		BuildStudioStrip(newLayout);
+	} else if (vertical) {
 		setMaximumWidth(110);
 		setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
 
@@ -308,6 +372,12 @@ void VolumeControl::setLayoutVertical(bool vertical)
 		newLayout->addItem(volLayout);
 		newLayout->addWidget(meterFrame);
 		newLayout->addItem(controlLayout);
+		auto *studioControls = new QHBoxLayout;
+		studioControls->setContentsMargins(0, 0, 0, 0);
+		studioControls->setSpacing(2);
+		studioControls->addWidget(studioEditButton);
+		studioControls->addWidget(studioLinkButton);
+		newLayout->addItem(studioControls);
 
 		newLayout->setStretch(0, 0);
 		newLayout->setStretch(1, 0);
@@ -363,6 +433,8 @@ void VolumeControl::setLayoutVertical(bool vertical)
 		buttonLayout->setContentsMargins(0, 0, 0, 0);
 		buttonLayout->setSpacing(0);
 
+		buttonLayout->addWidget(studioEditButton);
+		buttonLayout->addWidget(studioLinkButton);
 		buttonLayout->addWidget(muteButton);
 		buttonLayout->addWidget(monitorButton);
 
@@ -381,6 +453,14 @@ void VolumeControl::setLayoutVertical(bool vertical)
 
 	setLayout(newLayout);
 	mainLayout = newLayout;
+	for (QWidget *widget : QList<QWidget *>{nameButton, volumeLabel, volumeMeter, slider,
+			       muteButton, monitorButton, studioEditButton, studioLinkButton})
+		widget->show();
+	categoryLabel->setVisible(!studio);
+	studioEffects->setVisible(studio);
+	studioDevice->setVisible(studio);
+	studioPeak->setVisible(studio);
+	processMixerState();
 	updateTabOrder();
 
 	adjustSize();
@@ -480,6 +560,9 @@ void VolumeControl::showVolumeControlMenu(QPoint pos)
 	popup->addSeparator();
 	popup->addAction(mixerRenameAction);
 	popup->addSeparator();
+	auto *routing = popup->addAction(QTStr("Studio.AudioRouting"));
+	const QString audioUuid = QString::fromUtf8(obs_source_get_uuid(source));
+	connect(routing, &QAction::triggered, main, [main, audioUuid]() { main->OpenStudioAudioRouting(audioUuid); });
 	popup->addAction(filtersAction);
 	popup->addAction(propertiesAction);
 
@@ -707,9 +790,13 @@ void VolumeControl::setMuted(bool mute)
 		}
 	}
 
-	auto undo_redo = [](const std::string &uuid, bool val) {
+	const QString scope = StudioSceneAudio::Get() ? StudioSceneAudio::Get()->Scope(source) : QString();
+	auto undo_redo = [scope](const std::string &uuid, bool val) {
 		OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.c_str());
-		obs_source_set_muted(source, val);
+		if (auto *model = StudioSceneAudio::Get())
+			model->SetValue(source, scope, "muted", val);
+		else
+			obs_source_set_muted(source, val);
 	};
 
 	QString text = QTStr(mute ? "Undo.Volume.Mute" : "Undo.Volume.Unmute");
@@ -727,6 +814,8 @@ void VolumeControl::setMonitoring(obs_monitoring_type type)
 	}
 
 	obs_monitoring_type prevMonitoringType = obs_source_get_monitoring_type(source);
+	if (studioStyle && prevMonitoringType == type)
+		return;
 	obs_source_set_monitoring_type(source, type);
 
 	auto undo_redo = [](const std::string &uuid, obs_monitoring_type val) {
@@ -767,13 +856,19 @@ void VolumeControl::processMixerState()
 	mixerStatus().set(VolumeControl::MixerStatus::Active, isActive);
 	mixerStatus().set(VolumeControl::MixerStatus::Unassigned, unassigned);
 
+	QSignalBlocker blockLink(studioLinkButton);
+	auto *sceneAudio = StudioSceneAudio::Get();
+	studioLinkButton->setEnabled(sceneAudio != nullptr);
+	const bool linked = !sceneAudio || sceneAudio->IsLinked(source);
+	studioLinkButton->setChecked(linked);
+	studioLinkButton->setText(QTStr(linked ? "Studio.AudioLinkShort" : "Studio.AudioSceneShort"));
 	QSignalBlocker blockMute(muteButton);
 	QSignalBlocker blockMonitor(monitorButton);
 
-	bool showAsMuted = obsMuted || obsMonitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY;
+	bool showAsMuted = obsMuted || (!studioStyle && obsMonitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
 	bool showAsMonitored = obsMonitoringType != OBS_MONITORING_TYPE_NONE;
 	bool showAsUnassigned = !obsMuted && unassigned;
-	bool showWarningIcon = showAsUnassigned || obsMonitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY;
+	bool showWarningIcon = showAsUnassigned || (!studioStyle && obsMonitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY);
 
 	volumeMeter->setMuted((showAsMuted || showAsUnassigned) && !showAsMonitored);
 	setUseDisabledColors(showAsMuted || !isActive);
@@ -786,6 +881,8 @@ void VolumeControl::processMixerState()
 
 	QString monitorTooltip = showAsMonitored ? QTStr("Basic.AudioMixer.Monitoring.Disable")
 						 : QTStr("Basic.AudioMixer.Monitoring.Enable");
+	if (studioStyle && obsMonitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY)
+		monitorTooltip = QTStr("Studio.CueMonitorOnlyProtected");
 	monitorButton->setToolTip(monitorTooltip);
 
 	if (showWarningIcon) {
@@ -811,6 +908,7 @@ void VolumeControl::processMixerState()
 
 	style()->polish(muteButton);
 	style()->polish(monitorButton);
+	UpdateStudioButtons();
 
 	updateCategoryLabel();
 }
@@ -819,13 +917,32 @@ void VolumeControl::handleMuteButton(bool mute)
 {
 	setMuted(mute);
 
-	if (!mute && obsMonitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY) {
+	if (!studioStyle && !mute && obsMonitoringType == OBS_MONITORING_TYPE_MONITOR_ONLY) {
 		setMonitoring(OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT);
 	}
 }
 
 void VolumeControl::handleMonitorButton(bool enableMonitoring)
 {
+	if (studioStyle) {
+		OBSSource source = OBSGetStrongRef(weakSource());
+		if (!source)
+			return;
+		const auto current = obs_source_get_monitoring_type(source);
+		if (current == OBS_MONITORING_TYPE_MONITOR_ONLY) {
+			// NONE would also reopen program audio. A monitoring toggle must
+			// not release that output gate or change the independent mute flag.
+			if (!enableMonitoring) {
+				const auto message = QTStr("Studio.CueMonitorOnlyProtected");
+				monitorButton->setToolTip(message);
+				QToolTip::showText(monitorButton->mapToGlobal(QPoint(0, monitorButton->height())),
+						  message, monitorButton);
+			}
+			processMixerState();
+			return;
+		}
+	}
+
 	obs_monitoring_type newType = (enableMonitoring) ? OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT
 							 : OBS_MONITORING_TYPE_NONE;
 
@@ -844,14 +961,21 @@ void VolumeControl::sliderChanged(int vol)
 	obs_fader_set_deflection(obs_fader, float(vol) / FADER_PRECISION);
 	updateText();
 
-	auto undo_redo = [](const std::string &uuid, float val) {
+	const QString scope = StudioSceneAudio::Get() ? StudioSceneAudio::Get()->Scope(source) : QString();
+	auto undo_redo = [scope](const std::string &uuid, float val) {
 		OBSSourceAutoRelease source = obs_get_source_by_uuid(uuid.c_str());
-		obs_source_set_volume(source, val);
+		if (auto *model = StudioSceneAudio::Get())
+			model->SetValue(source, scope, "volume", double(val));
+		else
+			obs_source_set_volume(source, val);
 	};
 
 	float val = obs_source_get_volume(source);
 	const char *name = obs_source_get_name(source);
-	OBSBasic::Get()->undo_s.add_action(QTStr("Undo.Volume.Change").arg(name),
+	QString undoLabel = QTStr("Undo.Volume.Change").arg(name);
+	if (!scope.isEmpty())
+		undoLabel += QStringLiteral(" — ") + StudioSceneAudio::Get()->ProgramName();
+	OBSBasic::Get()->undo_s.add_action(undoLabel,
 					   std::bind(undo_redo, std::placeholders::_1, prev),
 					   std::bind(undo_redo, std::placeholders::_1, val), uuid, uuid, true);
 }

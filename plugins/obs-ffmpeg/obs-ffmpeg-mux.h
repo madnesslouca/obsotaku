@@ -32,6 +32,16 @@ struct ffmpeg_muxer {
 	int64_t max_time;
 
 	/* replay buffer */
+	/* Per-instance replay state: mutex covers ring, request and retained payload. */
+	pthread_mutex_t replay_mutex;
+	bool replay_mutex_initialized;
+	struct dstr replay_last_path;
+	int64_t replay_dropped_packets;
+	int64_t replay_budget_resets;
+	int64_t replay_snapshot_bytes;
+	int64_t replay_request_id;
+	int64_t replay_mux_request_id;
+	bool replay_request_pending;
 	int64_t save_ts;
 	int keyframes;
 	obs_hotkey_id hotkey;

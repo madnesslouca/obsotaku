@@ -22,6 +22,7 @@ private:
 
 	OBSBasic *main;
 	OBSSceneItem item;
+	OBSScene editingScene;
 	std::vector<OBSSignal> sigs;
 
 	std::string undo_data;

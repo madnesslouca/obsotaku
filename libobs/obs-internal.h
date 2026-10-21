@@ -356,6 +356,8 @@ struct obs_core_video_mix {
 	bool gpu_was_active;
 	bool raw_was_active;
 	bool was_active;
+	/* Serialize allocation/teardown; the worker still uses gpu_encoder_mutex. */
+	pthread_mutex_t gpu_encoder_lifecycle_mutex;
 	pthread_mutex_t gpu_encoder_mutex;
 	struct deque gpu_encoder_queue;
 	struct deque gpu_encoder_avail_queue;

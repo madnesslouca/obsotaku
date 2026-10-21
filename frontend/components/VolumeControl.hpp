@@ -14,6 +14,9 @@ class MuteCheckBox;
 class QBoxLayout;
 class QLabel;
 class VolumeMeter;
+class QListWidget;
+class QToolButton;
+class QTimer;
 
 class VolumeControl : public QFrame {
 	Q_OBJECT
@@ -82,6 +85,24 @@ private:
 	VolumeSlider *slider;
 	QPushButton *muteButton;
 	QPushButton *monitorButton;
+	QPushButton *studioEditButton;
+	QPushButton *studioLinkButton;
+	QWidget *studioEffects;
+	QListWidget *studioEffectList;
+	QPushButton *studioAddEffect;
+	QToolButton *studioDevice;
+	QLabel *studioPeak;
+	QLabel *studioVodBadge;
+	QTimer *studioRefresh;
+	QString studioDeviceId;
+	bool studioDeviceKnown = false;
+	bool studioStyle = false;
+	void CreateStudioWidgets();
+	void BuildStudioStrip(QBoxLayout *layout);
+	void RefreshStudioStrip();
+	void RefreshStudioDevice();
+	void ShowStudioDevices();
+	void UpdateStudioButtons();
 
 	OBSFader obs_fader;
 
@@ -115,6 +136,7 @@ private:
 	void setMonitoring(obs_monitoring_type type);
 
 public slots:
+	void setStudioStyle(bool enabled);
 	void setUseDisabledColors(bool greyscale);
 	void setLocked(bool locked);
 	void processMixerState();

@@ -12,6 +12,7 @@ target_sources(
     color-grade-filter.c
     color-key-filter.c
     compressor-filter.c
+    studio-audio-filters.c
     crop-filter.c
     eq-filter.c
     expander-filter.c

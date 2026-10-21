@@ -728,7 +728,7 @@ void AudioMixer::updateVolumeLayouts()
 		prevControl = volControl;
 
 		if (!minimumSize.isValid()) {
-			minimumSize = volControl->minimumSizeHint();
+			minimumSize = volControl->minimumSizeHint().expandedTo(volControl->minimumSize());
 		}
 
 		++index;

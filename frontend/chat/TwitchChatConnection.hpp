@@ -28,9 +28,10 @@ public:
 	void Start() override;
 	void Stop() override;
 	bool CanSend() const override;
-	bool SendText(const QString &text, QString &error) override;
+	bool SendText(const QString &text, const QString &requestId, QString &error) override;
 
 private:
+	friend class ChatIntegrationTest;
 	void LoadTokenAndOpen();
 	void OpenSocket();
 	void OnConnected();

@@ -11,6 +11,11 @@ extern struct obs_source_info mask_filter;
 extern struct obs_source_info mask_filter_v2;
 extern struct obs_source_info crop_filter;
 extern struct obs_source_info gain_filter;
+extern struct obs_source_info studio_gain_filter;
+extern struct obs_source_info studio_pan_filter;
+#ifdef LIBSPEEXDSP_ENABLED
+extern struct obs_source_info studio_voice_filter;
+#endif
 extern struct obs_source_info eq_filter;
 extern struct obs_source_info hdr_tonemap_filter;
 extern struct obs_source_info sdr_on_hdr_filter;
@@ -46,6 +51,11 @@ bool obs_module_load(void)
 	obs_register_source(&mask_filter_v2);
 	obs_register_source(&crop_filter);
 	obs_register_source(&gain_filter);
+	obs_register_source(&studio_gain_filter);
+	obs_register_source(&studio_pan_filter);
+#ifdef LIBSPEEXDSP_ENABLED
+	obs_register_source(&studio_voice_filter);
+#endif
 	obs_register_source(&eq_filter);
 	obs_register_source(&hdr_tonemap_filter);
 	obs_register_source(&sdr_on_hdr_filter);

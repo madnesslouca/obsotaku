@@ -7,6 +7,12 @@ target_sources(
     docks/OutputsDock.hpp
     docks/StreamInfoDock.cpp
     docks/StreamInfoDock.hpp
+    docks/StudioInspectorDock.cpp
+    docks/StudioInspectorDock.hpp
+    docks/StudioClipsDock.cpp
+    docks/StudioClipsDock.hpp
+    docks/StudioAudioDock.cpp
+    docks/StudioAudioDock.hpp
     docks/UnifiedChatDock.cpp
     docks/UnifiedChatDock.hpp
     docks/VerticalPreviewDock.cpp

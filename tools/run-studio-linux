@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+studio_prefix="${OBS_STUDIO_PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/obs-zyon}"
+studio_config="${OBS_STUDIO_CONFIG_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/obs-zyon}"
+if [[ ! -x "$studio_prefix/bin/obs" ]]; then
+    echo "Build and install the Linux Studio runtime first: $studio_prefix/bin/obs" >&2
+    exit 1
+fi
+mkdir -p "$studio_config/obs-studio"
+# Seed only a new, isolated configuration. Existing OBS profiles stay intact.
+if [[ ! -e "$studio_config/obs-studio/user.ini" ]]; then
+    cat > "$studio_config/obs-studio/user.ini" <<'EOF'
+[General]
+FirstRun=true
+Language=pt-BR
+
+[Appearance]
+Theme=org.zyon.Studio
+
+[BasicWindow]
+StudioWorkspace=true
+SideDocks=true
+VerticalVolumeControl=true
+EOF
+fi
+export XDG_CONFIG_HOME="$studio_config"
+exec "$studio_prefix/bin/obs" --multi --disable-shutdown-check --disable-updater "$@"

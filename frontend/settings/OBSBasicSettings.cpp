@@ -17,6 +17,7 @@
  ******************************************************************************/
 
 #include "OBSBasicSettings.hpp"
+#include <utility/DualCanvasController.hpp>
 #include "OBSHotkeyLabel.hpp"
 #include "OBSHotkeyWidget.hpp"
 
@@ -853,6 +854,7 @@ OBSBasicSettings::OBSBasicSettings(QWidget *parent)
 
 	InitStreamPage();
 	InitAppearancePage();
+	InitStudioCanvasSettings();
 	LoadSettings(false);
 
 	ui->advOutTrack1->setAccessibleName(QTStr("Basic.Settings.Output.Adv.Audio.Track1"));
@@ -1279,6 +1281,7 @@ void OBSBasicSettings::LoadBranchesList()
 
 void OBSBasicSettings::LoadGeneralSettings()
 {
+	LoadStudioCanvasSettings();
 	loading = true;
 
 	LoadLanguageList();
@@ -3031,10 +3034,12 @@ void OBSBasicSettings::LoadSettings(bool changedOnly)
 	if (!changedOnly || advancedChanged) {
 		LoadAdvancedSettings();
 	}
+	UpdateStudioCanvasSettings();
 }
 
 void OBSBasicSettings::SaveGeneralSettings()
 {
+	SaveStudioCanvasSettings();
 	int languageIndex = ui->language->currentIndex();
 	QVariant langData = ui->language->itemData(languageIndex);
 	string language = langData.toString().toStdString();
@@ -3800,6 +3805,10 @@ void OBSBasicSettings::SaveSettings()
 		main->ResetVideo();
 	}
 
+	if (generalChanged || videoChanged || advancedChanged) {
+		if (auto *controller = main->findChild<DualCanvasController *>())
+			controller->Attach();
+	}
 	config_save_safe(main->Config(), "tmp", nullptr);
 	config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
 	main->SaveProject();

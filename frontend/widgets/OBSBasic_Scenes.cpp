@@ -221,7 +221,7 @@ void OBSBasic::AddSceneItem(OBSSceneItem item)
 {
 	obs_scene_t *scene = obs_sceneitem_get_scene(item);
 
-	if (GetCurrentScene() == scene) {
+	if (GetStudioEditingScene() == scene) {
 		ui->sources->Add(item);
 	}
 
@@ -824,12 +824,18 @@ void OBSBasic::CreateSceneUndoRedoAction(const QString &action_name, OBSData und
 		/* create missing sources */
 		const size_t count = obs_data_array_count(array);
 		sources.reserve(count);
+		if (count) {
+			OBSDataAutoRelease sceneData = obs_data_array_item(array, count - 1);
+			OBSSourceAutoRelease sceneSource = obs_get_source_by_uuid(obs_data_get_string(sceneData, "uuid"));
+			SetStudioEditingScene(sceneSource);
+		}
 
 		for (size_t i = 0; i < count; i++) {
 			OBSDataAutoRelease data = obs_data_array_item(array, i);
 			const char *name = obs_data_get_string(data, "name");
 
-			OBSSourceAutoRelease source = obs_get_source_by_name(name);
+			const char *uuid = obs_data_get_string(data, "uuid");
+			OBSSourceAutoRelease source = uuid && *uuid ? obs_get_source_by_uuid(uuid) : obs_get_source_by_name(name);
 			if (!source) {
 				source = obs_load_source(data);
 			}
@@ -869,7 +875,7 @@ void OBSBasic::MoveSceneItem(enum obs_order_movement movement, const QString &ac
 		return;
 	}
 
-	OBSScene scene = GetCurrentScene();
+	OBSScene scene = GetStudioEditingScene();
 	std::vector<obs_source_t *> sources;
 	if (scene != obs_sceneitem_get_scene(item)) {
 		sources.push_back(obs_scene_get_source(obs_sceneitem_get_scene(item)));

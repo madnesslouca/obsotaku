@@ -60,7 +60,7 @@ const vector<StreamPlatformInfo> &SupportedStreamPlatforms()
 			/* chat:read / chat:edit let the unified dock join IRC as the
 			 * streamer and reply from OBS. Existing connections must
 			 * reconnect once to pick up the new scopes. */
-			{"channel:read:stream_key", "channel:manage:broadcast", "chat:read", "chat:edit"},
+			{"channel:read:stream_key", "channel:manage:broadcast", "chat:read", "chat:edit", "user:write:chat", "moderator:read:followers", "channel:read:redemptions"},
 			false,
 			true,
 			false,
@@ -86,7 +86,7 @@ const vector<StreamPlatformInfo> &SupportedStreamPlatforms()
 			"#53fc18",
 			/* Kick ingest guide: 1080p60 at 8000 kbps. */
 			{1920, 1080, 60, 8000, 160, StreamOrientation::Landscape},
-			{"channel:read", "streamkey:read", "channel:write", "user:read"},
+			{"channel:read", "streamkey:read", "channel:write", "user:read", "chat:write"},
 			true,
 			true,
 			true,

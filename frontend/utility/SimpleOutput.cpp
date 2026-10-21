@@ -1,3 +1,6 @@
+#include "StudioCanvasOutputs.hpp"
+#include "StudioOutputPreset.hpp"
+#include "MultistreamAudioRouting.hpp"
 #include "SimpleOutput.hpp"
 
 #include <utility/audio-encoders.hpp>
@@ -216,35 +219,46 @@ SimpleOutput::SimpleOutput(OBSBasic *main_) : BasicOutputHandler(main_)
 		throw "Failed to create audio archive encoder (simple output)";
 	}
 
+	for (size_t i = 0; i < MAX_AUDIO_MIXES; ++i) {
+		const std::string name = "simple_stream_audio_mix_" + std::to_string(i);
+		const bool created = strcmp(audio_encoder, "opus") == 0
+			? CreateSimpleOpusEncoder(streamAudioTrack[i], GetAudioBitrate(), name.c_str(), i)
+			: CreateSimpleAACEncoder(streamAudioTrack[i], GetAudioBitrate(), name.c_str(), i);
+		if (!created)
+			throw "Failed to create an independent streaming audio mix (simple output)";
+	}
+
 	LoadRecordingPreset();
 
+	// One inactive native handle preserves ReplayBuffer.Save bindings/API compatibility.
+	{
+	OBSDataAutoRelease hotkey;
+	const char *str = config_get_string(main->Config(), "Hotkeys", "ReplayBuffer");
+	if (str) {
+		hotkey = obs_data_create_from_json(str);
+	} else {
+		hotkey = nullptr;
+	}
+
+	replayBuffer = obs_output_create("replay_buffer", Str("ReplayBuffer"), nullptr, hotkey);
+
+	if (!replayBuffer) {
+		throw "Failed to create replay buffer output "
+		      "(simple output)";
+	}
+
+	signal_handler_t *signal = obs_output_get_signal_handler(replayBuffer);
+
+	startReplayBuffer.Connect(signal, "start", OBSStartReplayBuffer, this);
+	stopReplayBuffer.Connect(signal, "stop", OBSStopReplayBuffer, this);
+	replayBufferStopping.Connect(signal, "stopping", OBSReplayBufferStopping, this);
+	replayBufferSaved.Connect(signal, "saved", OBSReplayBufferSaved, this);
+}
+
 	if (!ffmpegOutput) {
-		bool useReplayBuffer = config_get_bool(main->Config(), "SimpleOutput", "RecRB");
 		const char *recFormat = config_get_string(main->Config(), "SimpleOutput", "RecFormat2");
 
-		if (useReplayBuffer) {
-			OBSDataAutoRelease hotkey;
-			const char *str = config_get_string(main->Config(), "Hotkeys", "ReplayBuffer");
-			if (str) {
-				hotkey = obs_data_create_from_json(str);
-			} else {
-				hotkey = nullptr;
-			}
 
-			replayBuffer = obs_output_create("replay_buffer", Str("ReplayBuffer"), nullptr, hotkey);
-
-			if (!replayBuffer) {
-				throw "Failed to create replay buffer output "
-				      "(simple output)";
-			}
-
-			signal_handler_t *signal = obs_output_get_signal_handler(replayBuffer);
-
-			startReplayBuffer.Connect(signal, "start", OBSStartReplayBuffer, this);
-			stopReplayBuffer.Connect(signal, "stop", OBSStopReplayBuffer, this);
-			replayBufferStopping.Connect(signal, "stopping", OBSReplayBufferStopping, this);
-			replayBufferSaved.Connect(signal, "saved", OBSReplayBufferSaved, this);
-		}
 
 		const char *mux = "ffmpeg_muxer";
 		if (strcmp(recFormat, "hybrid_mp4") == 0) {
@@ -381,8 +395,13 @@ void SimpleOutput::Update()
 	}
 
 	obs_encoder_update(videoStreaming, videoSettings);
-	obs_encoder_update(audioStreaming, audioSettings);
-	obs_encoder_update(audioArchive, audioSettings);
+	if (!obs_encoder_active(audioStreaming))
+		obs_encoder_update(audioStreaming, audioSettings);
+	if (!obs_encoder_active(audioArchive))
+		obs_encoder_update(audioArchive, audioSettings);
+	for (auto &track : streamAudioTrack)
+		if (!obs_encoder_active(track))
+			obs_encoder_update(track, audioSettings);
 
 	if (whipSimulcastEncoders != nullptr) {
 		whipSimulcastEncoders->Update(videoSettings, videoBitrate);
@@ -581,8 +600,13 @@ inline void SimpleOutput::SetupOutputs()
 {
 	SimpleOutput::Update();
 	obs_encoder_set_video(videoStreaming, obs_get_video());
+	QString studioScaleError;
+	if (!ApplyStudioMainStreamScale(main->Config(), videoStreaming, &studioScaleError))
+		blog(LOG_WARNING, "Studio stream scale: %s", studioScaleError.toUtf8().constData());
 	obs_encoder_set_audio(audioStreaming, obs_get_audio());
 	obs_encoder_set_audio(audioArchive, obs_get_audio());
+	for (auto &track : streamAudioTrack)
+		obs_encoder_set_audio(track, obs_get_audio());
 	int tracks = config_get_int(main->Config(), "SimpleOutput", "RecTracks");
 	const char *recFormat = config_get_string(main->Config(), "SimpleOutput", "RecFormat2");
 	bool flv = strcmp(recFormat, "flv") == 0;
@@ -609,7 +633,7 @@ inline void SimpleOutput::SetupOutputs()
 
 std::shared_future<void> SimpleOutput::SetupStreaming(obs_service_t *service, SetupStreamingContinuation_t continuation)
 {
-	if (!Active()) {
+	if (!NativeOutputsActive()) {
 		SetupOutputs();
 	}
 
@@ -704,6 +728,12 @@ void SimpleOutput::SetupVodTrack(obs_service_t *service)
 
 bool SimpleOutput::StartStreaming(obs_service_t *service)
 {
+	QString studioScaleError;
+	if (!ApplyStudioMainStreamScale(main->Config(), videoStreaming, &studioScaleError)) {
+		lastError = studioScaleError.toStdString();
+		return false;
+	}
+
 	bool reconnect = config_get_bool(main->Config(), "Output", "Reconnect");
 	int retryDelay = config_get_uint(main->Config(), "Output", "RetryDelay");
 	int maxRetries = config_get_uint(main->Config(), "Output", "MaxRetries");
@@ -732,7 +762,8 @@ bool SimpleOutput::StartStreaming(obs_service_t *service)
 	if (!multiStreamManager->PrimaryChannelId().empty()) {
 		std::string primaryEncoderError;
 		obs_encoder_t *primaryVideoEncoder =
-			multiStreamManager->PreparePrimaryVideoEncoder(mainVideoEncoder, primaryEncoderError);
+			multiStreamManager->PreparePrimaryVideoEncoder(mainVideoEncoder, primaryEncoderError,
+				int(config_get_int(main->Config(), "StudioCanvas", "PortraitBitrate")));
 		if (!primaryVideoEncoder) {
 			lastError = primaryEncoderError;
 			blog(LOG_WARNING, "Could not prepare the multistream primary encoder: %s", lastError.c_str());
@@ -755,12 +786,22 @@ bool SimpleOutput::StartStreaming(obs_service_t *service)
 		SetupVodTrack(service);
 	}
 
+	if (!multiStreamManager->PrimaryChannelId().empty()) {
+		std::vector<obs_encoder_t *> tracks(MAX_AUDIO_MIXES, nullptr);
+		for (size_t i = 0; i < MAX_AUDIO_MIXES; ++i)
+			tracks[i] = streamAudioTrack[i];
+		if (!PrepareMultistreamPrimaryAudio(*multiStreamManager, streamOutput, tracks, lastError)) {
+			blog(LOG_WARNING, "Could not prepare the multistream primary audio: %s", lastError.c_str());
+			return false;
+		}
+	}
 	if (obs_output_start(streamOutput)) {
 		if (multitrackVideo && multitrackVideoActive) {
 			multitrackVideo->StartedStreaming();
 		}
 		if (multiStreamManager->HasAdditionalChannels()) {
 			MultiStreamOutputSettings multistreamSettings;
+			multistreamSettings.portraitBitrateKbps = int(config_get_int(main->Config(), "StudioCanvas", "PortraitBitrate"));
 			multistreamSettings.reconnect = {maxRetries, retryDelay};
 			multistreamSettings.bindIp = bindIP ? bindIP : "";
 			multistreamSettings.ipFamily = ipFamily ? ipFamily : "";
@@ -776,7 +817,7 @@ bool SimpleOutput::StartStreaming(obs_service_t *service)
 			 * selected; null entries are expected and stay in place. */
 			vector<obs_encoder_t *> audioEncodersByTrack(MAX_AUDIO_MIXES, nullptr);
 			for (int i = 0; i < MAX_AUDIO_MIXES; i++)
-				audioEncodersByTrack[i] = audioTrack[i];
+				audioEncodersByTrack[i] = streamAudioTrack[i];
 			if (!multiStreamManager->Start(mainVideoEncoder,
 						       obs_output_get_audio_encoder(streamOutput, 0),
 						       audioEncodersByTrack, multistreamSettings,
@@ -815,7 +856,7 @@ void SimpleOutput::UpdateRecording()
 	int idx2 = 0;
 	const char *quality = config_get_string(main->Config(), "SimpleOutput", "RecQuality");
 
-	if (replayBufferActive || recordingActive) {
+	if (recordingActive) {
 		return;
 	}
 
@@ -827,7 +868,7 @@ void SimpleOutput::UpdateRecording()
 		Update();
 	}
 
-	if (!Active()) {
+	if (!NativeOutputsActive()) {
 		SetupOutputs();
 	}
 
@@ -929,7 +970,7 @@ bool SimpleOutput::StartRecording()
 	if (!ConfigureRecording(false)) {
 		return false;
 	}
-	if (!obs_output_start(fileOutput)) {
+	if (!StartCanvasOutput(false)) {
 		QString error_reason;
 		const char *error = obs_output_get_last_error(fileOutput);
 		if (error) {
@@ -946,16 +987,7 @@ bool SimpleOutput::StartRecording()
 
 bool SimpleOutput::StartReplayBuffer()
 {
-	UpdateRecording();
-	if (!ConfigureRecording(true)) {
-		return false;
-	}
-	if (!obs_output_start(replayBuffer)) {
-		QMessageBox::critical(main, QTStr("Output.StartReplayFailed"), QTStr("Output.StartFailedGeneric"));
-		return false;
-	}
-
-	return true;
+	return StartStudioReplayOutputs();
 }
 
 void SimpleOutput::StopStreaming(bool force)
@@ -973,6 +1005,7 @@ void SimpleOutput::StopStreaming(bool force)
 
 void SimpleOutput::StopRecording(bool force)
 {
+	canvasOutputs->StopCompanion(force);
 	if (force) {
 		obs_output_force_stop(fileOutput);
 	} else {
@@ -982,11 +1015,7 @@ void SimpleOutput::StopRecording(bool force)
 
 void SimpleOutput::StopReplayBuffer(bool force)
 {
-	if (force) {
-		obs_output_force_stop(replayBuffer);
-	} else {
-		obs_output_stop(replayBuffer);
-	}
+	StopStudioReplayOutputs(force);
 }
 
 bool SimpleOutput::StreamingActive() const
@@ -996,10 +1025,10 @@ bool SimpleOutput::StreamingActive() const
 
 bool SimpleOutput::RecordingActive() const
 {
-	return obs_output_active(fileOutput);
+	return recordingActive || obs_output_active(fileOutput) || canvasOutputs->Active();
 }
 
 bool SimpleOutput::ReplayBufferActive() const
 {
-	return obs_output_active(replayBuffer);
+	return StudioReplayOutputsActive();
 }

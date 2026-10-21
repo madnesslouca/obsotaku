@@ -38,7 +38,7 @@ void OBSBasic::on_actionCopyTransform_triggered()
 
 void OBSBasic::on_actionPasteTransform_triggered()
 {
-	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease wrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 	auto func = [](obs_scene_t *, obs_sceneitem_t *item, void *) {
 		if (!obs_sceneitem_selected(item)) {
 			return true;
@@ -57,13 +57,13 @@ void OBSBasic::on_actionPasteTransform_triggered()
 		return true;
 	};
 
-	obs_scene_enum_items(GetCurrentScene(), func, nullptr);
+	obs_scene_enum_items(GetStudioEditingScene(), func, nullptr);
 
-	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetCurrentScene(), false);
+	OBSDataAutoRelease rwrapper = obs_scene_save_transform_states(GetStudioEditingScene(), false);
 
 	std::string undo_data(obs_data_get_json(wrapper));
 	std::string redo_data(obs_data_get_json(rwrapper));
-	undo_s.add_action(QTStr("Undo.Transform.Paste").arg(obs_source_get_name(GetCurrentSceneSource())), undo_redo,
+	undo_s.add_action(QTStr("Undo.Transform.Paste").arg(obs_source_get_name(obs_scene_get_source(GetStudioEditingScene()))), undo_redo,
 			  undo_redo, undo_data, redo_data);
 }
 
@@ -119,7 +119,7 @@ void OBSBasic::copySceneItem(OBSSceneItem item)
 
 void OBSBasic::on_actionPasteRef_triggered()
 {
-	pasteSceneItem(GetCurrentScene(), false);
+	pasteSceneItem(GetStudioEditingScene(), false);
 }
 
 void OBSBasic::pasteSceneItem(OBSScene scene, bool duplicate)
@@ -164,7 +164,7 @@ void OBSBasic::pasteSceneItem(OBSScene scene, bool duplicate)
 
 void OBSBasic::on_actionPasteDup_triggered()
 {
-	pasteSceneItem(GetCurrentScene(), true);
+	pasteSceneItem(GetStudioEditingScene(), true);
 }
 
 void OBSBasic::SourcePasteFilters(OBSSource source, OBSSource dstSource)

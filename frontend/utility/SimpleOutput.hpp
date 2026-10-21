@@ -9,6 +9,8 @@ struct SimpleOutput : BasicOutputHandler {
 	OBSEncoder audioArchive;
 	OBSEncoder videoRecording;
 	OBSEncoder audioTrack[MAX_AUDIO_MIXES];
+	/* Streaming mixes never borrow recording codec/quality or pause state. */
+	OBSEncoder streamAudioTrack[MAX_AUDIO_MIXES];
 
 	std::string videoEncoder;
 	std::string videoQuality;

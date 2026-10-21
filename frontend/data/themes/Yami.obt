@@ -3039,7 +3039,8 @@ UnifiedChatDock QWidget#unifiedChatEmpty {
     border: 0;
 }
 
-UnifiedChatDock QTextBrowser#unifiedChatView {
+UnifiedChatDock QTextBrowser#unifiedChatView,
+UnifiedChatDock QTextBrowser#unifiedChatActivity {
     background-color: var(--grey7);
     color: var(--text);
     border: 0;

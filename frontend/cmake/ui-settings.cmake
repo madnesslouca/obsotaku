@@ -4,6 +4,7 @@ target_sources(
     settings/OBSBasicSettings_A11y.cpp
     settings/OBSBasicSettings_Appearance.cpp
     settings/OBSBasicSettings_Stream.cpp
+    settings/OBSBasicSettings_Studio.cpp
     settings/OBSBasicSettings.cpp
     settings/OBSBasicSettings.hpp
     settings/OBSHotkeyEdit.cpp

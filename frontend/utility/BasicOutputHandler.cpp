@@ -1,3 +1,5 @@
+#include "StudioCanvasOutputs.hpp"
+#include "StudioReplayOutputs.hpp"
 #include "BasicOutputHandler.hpp"
 #include "AdvancedOutput.hpp"
 #include "SimpleOutput.hpp"
@@ -91,10 +93,12 @@ void OBSStopRecording(void *data, calldata_t *params)
 
 	QString arg_last_error = QString::fromUtf8(last_error);
 
-	output->recordingActive = false;
-	os_atomic_set_bool(&recording_active, false);
-	os_atomic_set_bool(&recording_paused, false);
-	QMetaObject::invokeMethod(output->main, "RecordingStop", Q_ARG(int, code), Q_ARG(QString, arg_last_error));
+	output->canvasOutputs->Finish(false, code, arg_last_error, [output](int result, QString error) {
+		output->recordingActive = false;
+		os_atomic_set_bool(&recording_active, false);
+		os_atomic_set_bool(&recording_paused, false);
+		QMetaObject::invokeMethod(output->main, "RecordingStop", Q_ARG(int, result), Q_ARG(QString, error));
+	});
 }
 
 void OBSRecordStopping(void *data, calldata_t * /* params */)
@@ -129,9 +133,11 @@ void OBSStopReplayBuffer(void *data, calldata_t *params)
 	BasicOutputHandler *output = static_cast<BasicOutputHandler *>(data);
 	int code = (int)calldata_int(params, "code");
 
-	output->replayBufferActive = false;
-	os_atomic_set_bool(&replaybuf_active, false);
-	QMetaObject::invokeMethod(output->main, "ReplayBufferStop", Q_ARG(int, code));
+	output->canvasOutputs->Finish(true, code, {}, [output](int result, QString) {
+		output->replayBufferActive = false;
+		os_atomic_set_bool(&replaybuf_active, false);
+		QMetaObject::invokeMethod(output->main, "ReplayBufferStop", Q_ARG(int, result));
+	});
 }
 
 void OBSReplayBufferStopping(void *data, calldata_t * /* params */)
@@ -224,8 +230,53 @@ const char *GetStreamOutputType(const obs_service_t *service)
 	return nullptr;
 }
 
-BasicOutputHandler::BasicOutputHandler(OBSBasic *main_) : main(main_)
+BasicOutputHandler::~BasicOutputHandler() = default;
+bool BasicOutputHandler::StartStudioReplayOutputs()
 {
+	QString target = QString::fromUtf8(config_get_string(main->Config(), "StudioCanvas", "ReplayCanvas"));
+	if (target.isEmpty()) target = "main";
+	return replayOutputs->StartTargets(target);
+}
+void BasicOutputHandler::StopStudioReplayOutputs(bool force) { replayOutputs->StopTargets("both", force); }
+bool BasicOutputHandler::StudioReplayOutputsActive() const { return replayOutputs && replayOutputs->Active(); }
+OBSOutputAutoRelease BasicOutputHandler::StudioReplayOutput() const
+{
+	auto preferred = replayOutputs ? replayOutputs->PreferredOutput() : OBSOutputAutoRelease{};
+	return preferred ? std::move(preferred) : OBSOutputAutoRelease{obs_output_get_ref(replayBuffer)};
+}
+
+bool BasicOutputHandler::CanvasOutputsActive() const { return canvasOutputs && canvasOutputs->Active(); }
+
+bool BasicOutputHandler::StartCanvasOutput(bool isReplay)
+{
+	QString error;
+	if (canvasOutputs->Start(isReplay ? replayBuffer.Get() : fileOutput.Get(), isReplay, error)) return true;
+	if (!error.isEmpty()) {
+		obs_output_set_last_error(isReplay ? replayBuffer.Get() : fileOutput.Get(), error.toUtf8().constData());
+	}
+	return false;
+}
+
+BasicOutputHandler::BasicOutputHandler(OBSBasic *main_) : canvasOutputs(std::make_unique<StudioCanvasOutputs>(main_)), main(main_)
+{
+	replayOutputs = std::make_unique<StudioReplayOutputs>(this, main_);
+	QObject::connect(replayOutputs.get(), &StudioReplayOutputs::AggregateStopping, main_, &OBSBasic::ReplayBufferStopping);
+	QObject::connect(replayOutputs.get(), &StudioReplayOutputs::AggregateStoppingChanged, main_, [this](bool stopping) {
+		if (!stopping) QMetaObject::invokeMethod(main, "StudioReplayResumed");
+	});
+	QObject::connect(replayOutputs.get(), &StudioReplayOutputs::AggregateChanged, main_, [this](bool active) {
+		replayBufferActive = active;
+		os_atomic_set_bool(&replaybuf_active, active);
+		if (active) main->ReplayBufferStart();
+		else main->ReplayBufferStop(OBS_OUTPUT_SUCCESS);
+	});
+	QObject::connect(replayOutputs.get(), &StudioReplayOutputs::Saved, main_, &OBSBasic::StudioReplaySaved);
+	QObject::connect(replayOutputs.get(), &StudioReplayOutputs::Error, main_, [this](QString canvas, QString message) {
+		main->ShowStatusBarMessage(QString("%1: %2").arg(canvas, message));
+	});
+	/* Keep QObject controls on the frontend owner and discoverable by docks/plugins. */
+	multiStreamManager->setObjectName("studioMultistreamManager");
+	multiStreamManager->setParent(main_);
 	if (main->vcamEnabled) {
 		virtualCam = obs_output_create(VIRTUAL_CAM_ID, "virtualcam_output", nullptr, nullptr);
 

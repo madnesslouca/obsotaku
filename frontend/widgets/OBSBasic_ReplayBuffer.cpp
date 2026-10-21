@@ -18,6 +18,8 @@
 ******************************************************************************/
 
 #include "OBSBasic.hpp"
+#include <docks/StudioClipsDock.hpp>
+#include <utility/StudioReplayOutputs.hpp>
 
 #include <components/UIValidation.hpp>
 
@@ -67,7 +69,7 @@ void OBSBasic::ShowReplayBufferPauseWarning()
 
 void OBSBasic::StartReplayBuffer()
 {
-	if (!outputHandler || !outputHandler->replayBuffer) {
+	if (!outputHandler) {
 		return;
 	}
 	if (outputHandler->ReplayBufferActive()) {
@@ -95,14 +97,12 @@ void OBSBasic::StartReplayBuffer()
 
 	SaveProject();
 
-	if (outputHandler->StartReplayBuffer() && os_atomic_load_bool(&recording_paused)) {
-		ShowReplayBufferPauseWarning();
-	}
+	outputHandler->StartReplayBuffer();
 }
 
 void OBSBasic::ReplayBufferStopping()
 {
-	if (!outputHandler || !outputHandler->replayBuffer) {
+	if (!outputHandler) {
 		return;
 	}
 
@@ -118,7 +118,7 @@ void OBSBasic::ReplayBufferStopping()
 
 void OBSBasic::StopReplayBuffer()
 {
-	if (!outputHandler || !outputHandler->replayBuffer) {
+	if (!outputHandler) {
 		return;
 	}
 
@@ -133,7 +133,7 @@ void OBSBasic::StopReplayBuffer()
 
 void OBSBasic::ReplayBufferStart()
 {
-	if (!outputHandler || !outputHandler->replayBuffer) {
+	if (!outputHandler) {
 		return;
 	}
 
@@ -153,22 +153,37 @@ void OBSBasic::ReplayBufferStart()
 
 void OBSBasic::ReplayBufferSave()
 {
-	if (!outputHandler || !outputHandler->replayBuffer) {
+	if (!outputHandler) {
 		return;
 	}
 	if (!outputHandler->ReplayBufferActive()) {
 		return;
 	}
 
-	calldata_t cd = {0};
-	proc_handler_t *ph = obs_output_get_proc_handler(outputHandler->replayBuffer);
-	proc_handler_call(ph, "save", &cd);
-	calldata_free(&cd);
+	outputHandler->replayOutputs->SaveTargets("both");
+}
+
+void OBSBasic::StudioReplaySaved(QString canvas, QString path, QString pairId)
+{
+	lastReplay = path.toUtf8().constData();
+	ShowStatusBarMessage(QTStr("Basic.StatusBar.ReplayBufferSavedTo").arg(path));
+	if (studioClipsDock) studioClipsDock->RegisterCanvasClip(path, canvas, pairId);
+	OnEvent(OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED);
+	// These clips are Matroska with all selected audio tracks. AutoRemux remains
+	// the user's explicit preference and does not determine save success.
+	AutoRemux(path);
+}
+
+void OBSBasic::StudioReplayResumed()
+{
+	if (!outputHandler || !outputHandler->StudioReplayOutputsActive()) return;
+	replayBufferStopping = false;
+	if (sysTrayReplayBuffer) sysTrayReplayBuffer->setText(QTStr("Basic.Main.StopReplayBuffer"));
 }
 
 void OBSBasic::ReplayBufferSaved()
 {
-	if (!outputHandler || !outputHandler->replayBuffer) {
+	if (!outputHandler) {
 		return;
 	}
 	if (!outputHandler->ReplayBufferActive()) {
@@ -182,6 +197,8 @@ void OBSBasic::ReplayBufferSaved()
 	QString msg = QTStr("Basic.StatusBar.ReplayBufferSavedTo").arg(QT_UTF8(path.c_str()));
 	ShowStatusBarMessage(msg);
 	lastReplay = path;
+	if (studioClipsDock)
+		studioClipsDock->RegisterClip(QT_UTF8(path.c_str()));
 	calldata_free(&cd);
 
 	OnEvent(OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED);
@@ -191,7 +208,7 @@ void OBSBasic::ReplayBufferSaved()
 
 void OBSBasic::ReplayBufferStop(int code)
 {
-	if (!outputHandler || !outputHandler->replayBuffer) {
+	if (!outputHandler) {
 		return;
 	}
 

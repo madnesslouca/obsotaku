@@ -15,10 +15,20 @@
 #define RIST_PROTOCOL "rist"
 
 class OBSBasic;
+class StudioCanvasOutputs;
+class StudioReplayOutputs;
 
 using SetupStreamingContinuation_t = std::function<void(bool)>;
 
 struct BasicOutputHandler {
+	std::unique_ptr<StudioCanvasOutputs> canvasOutputs;
+	std::unique_ptr<StudioReplayOutputs> replayOutputs;
+	bool StartStudioReplayOutputs();
+	void StopStudioReplayOutputs(bool force = false);
+	bool StudioReplayOutputsActive() const;
+	OBSOutputAutoRelease StudioReplayOutput() const;
+	bool StartCanvasOutput(bool replay);
+	bool CanvasOutputsActive() const;
 	OBSOutputAutoRelease fileOutput;
 	OBSOutputAutoRelease streamOutput;
 	OBSOutputAutoRelease replayBuffer;
@@ -71,7 +81,7 @@ struct BasicOutputHandler {
 
 	BasicOutputHandler(OBSBasic *main_);
 
-	virtual ~BasicOutputHandler() {};
+	virtual ~BasicOutputHandler();
 
 	virtual std::shared_future<void> SetupStreaming(obs_service_t *service,
 							SetupStreamingContinuation_t continuation) = 0;
@@ -95,10 +105,15 @@ struct BasicOutputHandler {
 	virtual void DestroyVirtualCamView();
 	virtual void DestroyVirtualCameraScene();
 
+	inline bool NativeOutputsActive() const
+	{
+		return streamingActive || recordingActive || delayActive || virtualCamActive ||
+		       multitrackVideoActive || CanvasOutputsActive() || (multiStreamManager && multiStreamManager->IsActive());
+	}
+
 	inline bool Active() const
 	{
-		return streamingActive || recordingActive || delayActive || replayBufferActive || virtualCamActive ||
-		       multitrackVideoActive || (multiStreamManager && multiStreamManager->IsActive());
+		return NativeOutputsActive() || replayBufferActive || StudioReplayOutputsActive();
 	}
 
 protected:

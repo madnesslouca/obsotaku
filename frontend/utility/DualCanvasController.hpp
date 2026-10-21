@@ -35,9 +35,9 @@ class DualCanvasController : public QObject {
 	Q_OBJECT
 
 public:
+	enum class PortraitTransitionMode { Cut = 0, Fade = 1, FollowMain = 2 };
 	static constexpr uint32_t PORTRAIT_WIDTH = 1080;
 	static constexpr uint32_t PORTRAIT_HEIGHT = 1920;
-	static constexpr uint32_t PORTRAIT_MAX_FPS = 60;
 	static const char *CanvasName();
 
 	explicit DualCanvasController(QObject *parent = nullptr);
@@ -50,7 +50,7 @@ public:
 	void Detach();
 
 	/* Follows the program scene. Called on scene change events. */
-	void SyncToProgramScene();
+	Q_INVOKABLE void SyncToProgramScene();
 	/* Removes linked scenes whose horizontal scene was deleted and renames
 	 * linked scenes whose horizontal scene was renamed. */
 	void PruneAndRename();
@@ -58,8 +58,15 @@ public:
 	OBSCanvas PortraitCanvas() const;
 	OBSScene CurrentPortraitScene() const;
 	QString CurrentMainSceneName() const;
+	/* Applies to the next program change. The editable root remains a scene;
+	 * only the canvas' program channel may contain a private transition. */
+	Q_INVOKABLE bool SetPortraitTransition(int mode, int durationMs);
+	Q_INVOKABLE int PortraitTransitionModeValue() const;
+	Q_INVOKABLE int PortraitTransitionDuration() const;
 
 	/* Layer editing on the current vertical scene. */
+	/* Group sources get a recursively independent group tree; normal leaf
+	 * sources remain references so physical inputs are never reopened. */
 	bool AddSource(obs_source_t *source);
 	void SetMirrorFit(MultiStreamPortraitFit fit);
 	bool MirrorFit(MultiStreamPortraitFit &fit) const;
@@ -72,10 +79,17 @@ signals:
 	void portraitSceneChanged();
 	/* Layers of the current vertical scene changed. */
 	void layersChanged();
+	void portraitTransitionSettingsChanged();
 
 private:
 	static void OnFrontendEvent(enum obs_frontend_event event, void *data);
+	static void OnVideoReset(void *data, calldata_t *params);
 	static void OnSceneItemSignal(void *data, calldata_t *params);
+	static void OnPortraitSceneRemoved(void *data, calldata_t *params);
+	static void OnMainTransitionStart(void *data, calldata_t *params);
+	void SyncToMainScene(obs_source_t *mainScene, bool animate, const char *mainTransitionId);
+	void SetProgramScene(obs_scene_t *scene, bool animate, const char *mainTransitionId);
+	void ObserveMainTransition();
 
 	OBSScene FindLinkedScene(obs_source_t *mainScene) const;
 	OBSScene CreateLinkedScene(obs_source_t *mainScene);
@@ -87,7 +101,10 @@ private:
 	OBSWeakCanvas weakCanvas;
 	OBSScene currentScene;
 	OBSWeakSource currentMainScene;
-	MultiStreamPortraitFit defaultFit = MultiStreamPortraitFit::Fill;
+	OBSSource portraitTransition;
+	OBSSource observedMainTransition;
+	OBSSignal mainTransitionStart;
 	bool attached = false;
 	bool signalsConnected = false;
+	bool frontendReady = false;
 };

@@ -102,6 +102,8 @@ OutputVideoSettings MultistreamPreflight::CurrentOutputSettings()
 		settings.height = static_cast<uint32_t>(config_get_uint(config, "Video", "OutputCY"));
 	}
 
+	const auto portraitBitrate = config_get_int(config, "StudioCanvas", "PortraitBitrate");
+	settings.portraitBitrateKbps = portraitBitrate > 0 ? uint32_t(std::clamp<int64_t>(portraitBitrate, 100, 100000)) : 6000;
 	const char *mode = config_get_string(config, "Output", "Mode");
 	if (mode && astrcmpi(mode, "Advanced") == 0) {
 		settings.videoBitrateKbps = AdvancedVideoBitrate();
@@ -142,10 +144,7 @@ vector<PreflightFinding> MultistreamPreflight::Check(const vector<MultiStreamCha
 		if (channel.videoLayout == MultiStreamVideoLayout::Portrait) {
 			channelSettings.width = 1080;
 			channelSettings.height = 1920;
-			channelSettings.framerate = min(channelSettings.framerate, 30u);
-			channelSettings.videoBitrateKbps = channelSettings.videoBitrateKbps == 0
-								   ? 6000
-								   : min(channelSettings.videoBitrateKbps, 6000u);
+			channelSettings.videoBitrateKbps = settings.portraitBitrateKbps;
 			channelSettings.videoCodec = "h264";
 		}
 		const bool outputIsPortrait = channelSettings.height > channelSettings.width;

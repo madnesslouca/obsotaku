@@ -1,9 +1,27 @@
 target_sources(
   obs-studio
   PRIVATE
+    utility/StudioSceneEdit.cpp
+    utility/StudioSceneEdit.hpp
+    utility/PortraitGroupEdit.cpp
+    utility/PortraitGroupEdit.hpp
+    utility/PortraitPreviewEditor.cpp
+    utility/PortraitPreviewEditor.hpp
+    utility/PortraitTransformGeometry.cpp
+    utility/PortraitTransformGeometry.hpp
     utility/AdvancedOutput.cpp
     utility/AdvancedOutput.hpp
     utility/BaseLexer.hpp
+    utility/StudioReplayTemplate.cpp
+    utility/StudioReplayTemplate.hpp
+    utility/StudioReplayOutputs.cpp
+    utility/StudioReplayOutputs.hpp
+    utility/StudioOutputPresetData.cpp
+    utility/StudioOutputPreset.cpp
+    utility/StudioOutputPreset.hpp
+    utility/StudioCanvasOutputs.cpp
+    utility/StudioCanvasOutputs.hpp
+    utility/StudioCanvasWorkspace.hpp
     utility/BasicOutputHandler.cpp
     utility/BasicOutputHandler.hpp
     utility/CrashHandler.cpp
@@ -39,6 +57,14 @@ target_sources(
     utility/DualCanvasController.hpp
     utility/MultiStreamManager.cpp
     utility/MultiStreamManager.hpp
+    utility/StudioSceneAudio.cpp
+    utility/StudioSceneAudio.hpp
+    utility/StudioVodRouting.cpp
+    utility/StudioVodRouting.hpp
+    utility/StudioVodControls.cpp
+    utility/StudioVodControls.hpp
+    utility/MultistreamAudioRouting.cpp
+    utility/MultistreamAudioRouting.hpp
     utility/MultistreamChannelPlan.cpp
     utility/MultistreamChannelPlan.hpp
     utility/MultistreamChannelStore.cpp

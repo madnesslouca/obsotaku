@@ -23,6 +23,8 @@ target_sources(
     widgets/OBSBasic_Clipboard.cpp
     widgets/OBSBasic_ContextToolbar.cpp
     widgets/OBSBasic_Docks.cpp
+    widgets/OBSBasic_StudioWorkspace.cpp
+    widgets/OBSBasic_StudioWidgets.cpp
     widgets/OBSBasic_Dropfiles.cpp
     widgets/OBSBasic_Hotkeys.cpp
     widgets/OBSBasic_Icons.cpp

@@ -12,6 +12,8 @@
 #include "MultistreamChannelStore.hpp"
 
 #include <util/base.h>
+#include <QTimer>
+#include <QThread>
 
 #include <algorithm>
 #include <chrono>
@@ -23,21 +25,21 @@ using namespace std;
 namespace {
 constexpr uint32_t PORTRAIT_WIDTH = 1080;
 constexpr uint32_t PORTRAIT_HEIGHT = 1920;
-constexpr uint32_t PORTRAIT_MAX_FPS = 30;
-constexpr int PORTRAIT_VIDEO_BITRATE_KBPS = 6000;
 
 void WipeSecret(string &value)
 {
 	volatile char *data = value.empty() ? nullptr : value.data();
-	for (size_t index = 0; index < value.size(); ++index)
+	for (size_t index = 0; index < value.size(); ++index) {
 		data[index] = 0;
+	}
 	value.clear();
 }
 
 void WipeChannelSecrets(vector<MultiStreamChannel> &channels)
 {
-	for (auto &channel : channels)
+	for (auto &channel : channels) {
 		WipeSecret(channel.streamKey);
+	}
 }
 } // namespace
 
@@ -47,9 +49,11 @@ MultiStreamManager::~MultiStreamManager()
 	{
 		lock_guard lock(mutex);
 		stateCallback = nullptr;
+		sessionRunning = false;
 		oldDestinations = std::move(destinations);
-		for (auto &retired : retiredDestinations)
+		for (auto &retired : retiredDestinations) {
 			oldDestinations.emplace_back(std::move(retired));
+		}
 		retiredDestinations.clear();
 		active = false;
 		WipeChannelSecrets(channels);
@@ -57,8 +61,9 @@ MultiStreamManager::~MultiStreamManager()
 
 	for (const auto &destination : oldDestinations) {
 		DisconnectSignals(*destination);
-		if (obs_output_active(destination->output))
+		if (obs_output_active(destination->output) || destination->state == MultiStreamChannelState::Starting) {
 			obs_output_force_stop(destination->output);
+		}
 		WipeSecret(destination->channel.streamKey);
 	}
 	DestroyPortraitPipeline();
@@ -99,9 +104,9 @@ bool MultiStreamManager::Configure(vector<MultiStreamChannel> newChannels, strin
 	 * callback already in flight briefly holds that lock while replacing the
 	 * portrait source. */
 	DestroyPortraitPipeline();
+	RetireDestinations();
 	{
 		lock_guard lock(mutex);
-		RetireDestinations();
 		CollectRetiredDestinations();
 		WipeChannelSecrets(channels);
 		channels = std::move(newChannels);
@@ -139,30 +144,57 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 		sessionMainVideoEncoder = OBSEncoderAutoRelease{obs_encoder_get_ref(videoEncoder)};
 	}
 
+	portraitBitrateKbps = outputSettings.portraitBitrateKbps > 0 ? std::clamp(outputSettings.portraitBitrateKbps, 100, 100000) : 6000;
 	/* The main output is already sending this one. */
 	if (!primaryId.empty()) {
-		configuredChannels.erase(remove_if(configuredChannels.begin(), configuredChannels.end(),
-						   [&primaryId](const MultiStreamChannel &channel) {
-							   return channel.id == primaryId;
-						   }),
-					 configuredChannels.end());
+		configuredChannels.erase(
+			remove_if(configuredChannels.begin(), configuredChannels.end(),
+				  [&primaryId](const MultiStreamChannel &channel) { return channel.id == primaryId; }),
+			configuredChannels.end());
 	}
 
 	vector<MultiStreamChannel> enabledChannels;
 	for (const auto &channel : configuredChannels) {
-		if (channel.enabled && !channel.server.empty() && !channel.streamKey.empty())
+		if (channel.enabled && !channel.server.empty() && !channel.streamKey.empty()) {
 			enabledChannels.push_back(channel);
+		}
+	}
+	/* Never silently substitute another mix for an explicitly selected track.
+	 * The single-encoder overload is valid only for that encoder's own mix. */
+	for (const auto &channel : enabledChannels) {
+		obs_encoder_t *selected = channel.audioMixIndex < audioEncodersByTrack.size()
+						  ? audioEncodersByTrack[channel.audioMixIndex]
+						  : nullptr;
+		if (!selected && obs_encoder_get_mixer_index(defaultAudioEncoder) == channel.audioMixIndex) {
+			selected = defaultAudioEncoder;
+		}
+		if (!selected || obs_encoder_get_mixer_index(selected) != channel.audioMixIndex) {
+			error = "Audio track " + to_string(channel.audioMixIndex + 1) + " is unavailable for " +
+				channel.displayName + ". No substitute track was sent.";
+			ReportFailure(enabledChannels, error);
+			return false;
+		}
+		if (channel.vodTrackEnabled && GetStreamPlatformInfo(channel.platform).supportsVodTrack &&
+		    channel.vodTrackIndex != channel.audioMixIndex &&
+		    (channel.vodTrackIndex >= audioEncodersByTrack.size() ||
+		     !audioEncodersByTrack[channel.vodTrackIndex] ||
+		     obs_encoder_get_mixer_index(audioEncodersByTrack[channel.vodTrackIndex]) !=
+			     channel.vodTrackIndex)) {
+			error = "VOD audio track " + to_string(channel.vodTrackIndex + 1) + " is unavailable for " +
+				channel.displayName + ".";
+			ReportFailure(enabledChannels, error);
+			return false;
+		}
 	}
 	/* A portrait primary is prepared before the main OBS output starts. For
 	 * additional destinations, create the shared portrait pipeline only when
 	 * at least one of them is enabled; disabled vertical destinations are wired
 	 * lazily by SetChannelEnabled(). */
-	const auto portraitChannel = find_if(configuredChannels.cbegin(), configuredChannels.cend(),
-					     [](const MultiStreamChannel &channel) {
-						     return channel.enabled &&
-						    channel.videoLayout == MultiStreamVideoLayout::Portrait &&
-						    !channel.server.empty() && !channel.streamKey.empty();
-					     });
+	const auto portraitChannel =
+		find_if(configuredChannels.cbegin(), configuredChannels.cend(), [](const MultiStreamChannel &channel) {
+			return channel.enabled && channel.videoLayout == MultiStreamVideoLayout::Portrait &&
+			       !channel.server.empty() && !channel.streamKey.empty();
+		});
 	if (portraitChannel != configuredChannels.cend() && !portraitVideoEncoder &&
 	    !PreparePortraitPipeline(videoEncoder, portraitChannel->portraitFit, error)) {
 		ReportFailure(enabledChannels, error);
@@ -171,8 +203,9 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 
 	vector<shared_ptr<Destination>> prepared;
 	auto abort = [&](string &target, string message) {
-		for (const auto &destination : prepared)
+		for (const auto &destination : prepared) {
 			DisconnectSignals(*destination);
+		}
 		prepared.clear();
 		target = std::move(message);
 		ReportFailure(enabledChannels, target);
@@ -180,8 +213,9 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 	};
 
 	for (const auto &channel : configuredChannels) {
-		if (channel.server.empty() || channel.streamKey.empty())
+		if (channel.server.empty() || channel.streamKey.empty()) {
 			continue;
+		}
 
 		OBSDataAutoRelease serviceSettings = obs_data_create();
 		obs_data_set_string(serviceSettings, "server", channel.server.c_str());
@@ -193,25 +227,26 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 
 		const string serviceName = "multistream_service_" + channel.id;
 		destination->service = obs_service_create("rtmp_custom", serviceName.c_str(), serviceSettings, nullptr);
-		if (!destination->service)
+		if (!destination->service) {
 			return abort(error, "Could not create the RTMP service for " + channel.displayName + ".");
+		}
 
 		const string outputName = "multistream_output_" + channel.id;
 		destination->output = obs_output_create("rtmp_output", outputName.c_str(), nullptr, nullptr);
-		if (!destination->output)
+		if (!destination->output) {
 			return abort(error, "Could not create the RTMP output for " + channel.displayName + ".");
+		}
 
 		/* audioEncodersByTrack keeps one slot per OBS audio track, so the
 		 * index the user selected always refers to the same track. */
-		obs_encoder_t *selectedAudioEncoder =
-			(channel.audioMixIndex < audioEncodersByTrack.size() &&
-			 audioEncodersByTrack[channel.audioMixIndex])
-				? audioEncodersByTrack[channel.audioMixIndex]
-				: defaultAudioEncoder;
+		obs_encoder_t *selectedAudioEncoder = (channel.audioMixIndex < audioEncodersByTrack.size() &&
+						       audioEncodersByTrack[channel.audioMixIndex])
+							      ? audioEncodersByTrack[channel.audioMixIndex]
+							      : defaultAudioEncoder;
 
 		obs_encoder_t *selectedVideoEncoder = channel.videoLayout == MultiStreamVideoLayout::Portrait
-							    ? portraitVideoEncoder.Get()
-							    : videoEncoder;
+							      ? portraitVideoEncoder.Get()
+							      : videoEncoder;
 		obs_output_set_video_encoder(destination->output, selectedVideoEncoder);
 		obs_output_set_audio_encoder(destination->output, selectedAudioEncoder, 0);
 
@@ -245,14 +280,16 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 	}
 
 	vector<Destination *> toStart;
+	RetireDestinations();
 	{
 		lock_guard lock(mutex);
-		RetireDestinations();
 		destinations = std::move(prepared);
+		sessionRunning = true;
 		active = true;
 		for (const auto &destination : destinations) {
-			if (destination->channel.enabled)
+			if (destination->channel.enabled) {
 				toStart.push_back(destination.get());
+			}
 		}
 	}
 
@@ -288,26 +325,58 @@ void MultiStreamManager::Stop(bool force)
 	{
 		lock_guard lock(mutex);
 		outputs = destinations;
-		for (const auto &retired : retiredDestinations)
+		sessionRunning = false;
+		for (const auto &destination : destinations) {
+			destination->restartPending = false;
+		}
+		for (const auto &retired : retiredDestinations) {
 			outputs.push_back(retired);
+		}
 	}
 
-	for (const auto &destination : outputs) {
-		if (!obs_output_active(destination->output))
-			continue;
-		UpdateState(*destination, MultiStreamChannelState::Stopping);
-		if (force)
-			obs_output_force_stop(destination->output);
-		else
-			obs_output_stop(destination->output);
-	}
+	/* The primary output's stop signal can call us from a libobs thread.
+	 * Cancel immediately, then serialize output control with queued restarts.
+	 * Capture this session's destinations so a late stop cannot stop a new one. */
+	auto stopOutputs = [this, outputs = std::move(outputs), force]() {
+		for (const auto &destination : outputs) {
+			MultiStreamChannelState state;
+			bool stopPending;
+			{
+				lock_guard lock(mutex);
+				state = destination->state;
+				stopPending = destination->stopPending;
+			}
+			/* The native primary's stop callback calls Stop() a second time.
+			 * A secondary may already have signalled Idle while libobs still
+			 * reports it active during encoder teardown. Stopping it again then
+			 * would leave our state at Stopping with no further stop signal. */
+			if (state == MultiStreamChannelState::Stopping || stopPending) {
+				continue;
+			}
+			const bool outputActive = obs_output_active(destination->output);
+			if (!outputActive && state != MultiStreamChannelState::Starting) {
+				continue;
+			}
+			UpdateState(*destination, MultiStreamChannelState::Stopping);
+			if (force || !outputActive) {
+				obs_output_force_stop(destination->output);
+			} else {
+				obs_output_stop(destination->output);
+			}
+		}
 
-	/* An output that never signalled "start" leaves no stop signal behind, so
-	 * the active flag has to be recomputed here as well. Without this the
-	 * manager stays permanently active and refuses every later Configure(). */
-	lock_guard lock(mutex);
-	CollectRetiredDestinations();
-	RecomputeActiveLocked();
+		/* An output that never signalled "start" leaves no stop signal behind, so
+		 * the active flag has to be recomputed here as well. Without this the
+		 * manager stays permanently active and refuses every later Configure(). */
+		lock_guard lock(mutex);
+		CollectRetiredDestinations();
+		RecomputeActiveLocked();
+	};
+	if (QThread::currentThread() == thread()) {
+		stopOutputs();
+	} else {
+		QMetaObject::invokeMethod(this, std::move(stopOutputs), Qt::QueuedConnection);
+	}
 }
 
 bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled, string &error)
@@ -327,7 +396,7 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 		}
 		auto output = find_if(destinations.begin(), destinations.end(),
 				      [&](const auto &item) { return item->channel.id == channelId; });
-		if (output != destinations.end()) {
+		if (output != destinations.end() && sessionRunning) {
 			destination = *output;
 		} else if (!destinations.empty() && enabled && active) {
 			error = "This channel has no prepared streaming output.";
@@ -338,14 +407,35 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 		fit = channel->portraitFit;
 		channelIdToPersist = channelId;
 	}
+	if (enabled && destination) {
+		obs_encoder_t *audio = obs_output_get_audio_encoder(destination->output, 0);
+		if (!audio || obs_encoder_get_mixer_index(audio) != destination->channel.audioMixIndex) {
+			error = "Audio track " + to_string(destination->channel.audioMixIndex + 1) +
+				" is unavailable for " + destination->channel.displayName +
+				". No substitute track was sent.";
+			return false;
+		}
+		if (destination->channel.vodTrackEnabled &&
+		    GetStreamPlatformInfo(destination->channel.platform).supportsVodTrack &&
+		    destination->channel.vodTrackIndex != destination->channel.audioMixIndex) {
+			obs_encoder_t *vod = obs_output_get_audio_encoder(destination->output, 1);
+			if (!vod || obs_encoder_get_mixer_index(vod) != destination->channel.vodTrackIndex) {
+				error = "The selected VOD audio track is unavailable for " +
+					destination->channel.displayName + ".";
+				return false;
+			}
+		}
+	}
 
 	if (enabled && destination && layout == MultiStreamVideoLayout::Portrait && !portraitVideoEncoder) {
-		if (!sessionMainVideoEncoder || !PreparePortraitPipeline(sessionMainVideoEncoder, fit, error))
+		if (!sessionMainVideoEncoder || !PreparePortraitPipeline(sessionMainVideoEncoder, fit, error)) {
 			return false;
+		}
 		lock_guard lock(mutex);
 		for (const auto &item : destinations) {
-			if (item->channel.videoLayout == MultiStreamVideoLayout::Portrait)
+			if (item->channel.videoLayout == MultiStreamVideoLayout::Portrait) {
 				obs_output_set_video_encoder(item->output, portraitVideoEncoder);
+			}
 		}
 	}
 
@@ -358,27 +448,49 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 			return false;
 		}
 		channel->enabled = enabled;
-		if (destination)
+		if (destination) {
 			destination->channel.enabled = enabled;
+		}
 	}
 
 	if (!PersistEnabled(channelIdToPersist, enabled, error)) {
 		lock_guard lock(mutex);
 		auto channel = find_if(channels.begin(), channels.end(),
 				       [&](const MultiStreamChannel &item) { return item.id == channelId; });
-		if (channel != channels.end())
+		if (channel != channels.end()) {
 			channel->enabled = previousEnabled;
-		if (destination)
+		}
+		if (destination) {
 			destination->channel.enabled = previousEnabled;
+		}
 		return false;
 	}
 	if (!destination) {
 		error.clear();
 		return true;
 	}
+	bool stopping;
+	MultiStreamChannelState state;
+	{
+		lock_guard lock(mutex);
+		stopping = destination->stopPending;
+		state = destination->state;
+		/* A quick off/on must wait for the same stop as manual reconnect. */
+		if (!enabled) {
+			destination->restartPending = false;
+		} else if (stopping) {
+			destination->restartPending = true;
+		}
+		RecomputeActiveLocked();
+	}
 
 	if (enabled) {
-		if (obs_output_active(destination->output)) {
+		if (stopping) {
+			QueueRestart(*destination);
+			error.clear();
+			return true;
+		}
+		if (obs_output_active(destination->output) || state == MultiStreamChannelState::Starting) {
 			error.clear();
 			return true;
 		}
@@ -391,9 +503,16 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 			return false;
 		}
 	} else {
-		if (obs_output_active(destination->output)) {
+		if (stopping) {
+			// The stop already in progress will finish with no restart.
+		} else if (obs_output_active(destination->output) || state == MultiStreamChannelState::Starting) {
+			const bool outputActive = obs_output_active(destination->output);
 			UpdateState(*destination, MultiStreamChannelState::Stopping);
-			obs_output_stop(destination->output);
+			if (outputActive) {
+				obs_output_stop(destination->output);
+			} else {
+				obs_output_force_stop(destination->output);
+			}
 		} else {
 			UpdateState(*destination, MultiStreamChannelState::Idle);
 		}
@@ -401,6 +520,87 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 
 	error.clear();
 	return true;
+}
+
+bool MultiStreamManager::RestartChannel(const string &channelId, string &error)
+{
+	shared_ptr<Destination> destination;
+	bool mustStop = false;
+	{
+		lock_guard lock(mutex);
+		auto item = find_if(destinations.begin(), destinations.end(),
+				    [&](const auto &entry) { return entry->channel.id == channelId; });
+		if (!sessionRunning || item == destinations.end() || !(*item)->channel.enabled) {
+			error = "Only an enabled destination in the current streaming session can be reconnected.";
+			return false;
+		}
+		destination = *item;
+		if (!destination->restartPending) {
+			destination->restartPending = true;
+			mustStop = !destination->stopPending &&
+				   (obs_output_active(destination->output) ||
+				    destination->state == MultiStreamChannelState::Starting);
+		}
+		RecomputeActiveLocked();
+	}
+	if (mustStop) {
+		UpdateState(*destination, MultiStreamChannelState::Stopping);
+		obs_output_force_stop(destination->output);
+	}
+	QueueRestart(*destination);
+	error.clear();
+	return true;
+}
+
+void MultiStreamManager::QueueRestart(Destination &destination)
+{
+	weak_ptr<Destination> pending;
+	{
+		lock_guard lock(mutex);
+		if (!sessionRunning || !destination.restartPending || destination.restartQueued) {
+			return;
+		}
+		auto item = find_if(destinations.begin(), destinations.end(),
+				    [&](const auto &entry) { return entry.get() == &destination; });
+		if (item == destinations.end()) {
+			return;
+		}
+		destination.restartQueued = true;
+		pending = *item;
+	}
+	/* Never start from the stop signal: libobs may still be ending capture on
+	 * another thread. QObject cancels this work when the manager is destroyed. */
+	QTimer::singleShot(0, this, [this, pending]() { ResumeRestart(pending); });
+}
+
+void MultiStreamManager::ResumeRestart(const weak_ptr<Destination> &pending)
+{
+	auto destination = pending.lock();
+	if (!destination) {
+		return;
+	}
+	{
+		lock_guard lock(mutex);
+		if (!sessionRunning || !destination->restartPending || !destination->channel.enabled ||
+		    find(destinations.begin(), destinations.end(), destination) == destinations.end()) {
+			destination->restartQueued = false;
+			return;
+		}
+		if (destination->state == MultiStreamChannelState::Stopping || obs_output_active(destination->output)) {
+			QTimer::singleShot(25, this, [this, pending]() { ResumeRestart(pending); });
+			return;
+		}
+		destination->restartPending = false;
+		destination->restartQueued = false;
+		destination->stopPending = false;
+		++destination->reconnects;
+	}
+	UpdateState(*destination, MultiStreamChannelState::Starting);
+	if (!obs_output_start(destination->output)) {
+		const char *error = obs_output_get_last_error(destination->output);
+		UpdateState(*destination, MultiStreamChannelState::Failed,
+			    error && *error ? error : "The output could not be restarted.");
+	}
 }
 
 void MultiStreamManager::SetPrimaryChannelId(const string &channelId)
@@ -421,20 +621,23 @@ MultiStreamChannel MultiStreamManager::FirstReadyChannel() const
 	return MultistreamChannelPlan::FirstReady(channels);
 }
 
-obs_encoder_t *MultiStreamManager::PreparePrimaryVideoEncoder(obs_encoder_t *mainVideoEncoder, string &error)
+obs_encoder_t *MultiStreamManager::PreparePrimaryVideoEncoder(obs_encoder_t *mainVideoEncoder, string &error, int bitrate)
 {
 	if (!mainVideoEncoder) {
 		error = "The main video encoder is not ready.";
 		return nullptr;
 	}
 
+	portraitBitrateKbps = bitrate > 0 ? std::clamp(bitrate, 100, 100000) : 6000;
 	MultiStreamChannel primary;
 	{
 		lock_guard lock(mutex);
-		auto item = find_if(channels.cbegin(), channels.cend(),
-				    [this](const MultiStreamChannel &channel) { return channel.id == primaryChannelId; });
-		if (item != channels.cend())
+		auto item = find_if(channels.cbegin(), channels.cend(), [this](const MultiStreamChannel &channel) {
+			return channel.id == primaryChannelId;
+		});
+		if (item != channels.cend()) {
 			primary = *item;
+		}
 	}
 
 	if (primary.id.empty() || primary.videoLayout != MultiStreamVideoLayout::Portrait) {
@@ -443,25 +646,27 @@ obs_encoder_t *MultiStreamManager::PreparePrimaryVideoEncoder(obs_encoder_t *mai
 		return mainVideoEncoder;
 	}
 
-	if (!PreparePortraitPipeline(mainVideoEncoder, primary.portraitFit, error))
+	if (!PreparePortraitPipeline(mainVideoEncoder, primary.portraitFit, error)) {
 		return nullptr;
+	}
 	return portraitVideoEncoder;
 }
 
 void MultiStreamManager::OnMainChannelChanged(void *data, calldata_t *params)
 {
-	if (calldata_int(params, "channel") != 0)
+	if (calldata_int(params, "channel") != 0) {
 		return;
+	}
 	auto *manager = static_cast<MultiStreamManager *>(data);
 	lock_guard lock(manager->mutex);
-	if (!manager->portraitScene)
+	if (!manager->portraitScene) {
 		return;
-	manager->SetPortraitSource(static_cast<obs_source_t *>(calldata_ptr(params, "source")),
-				   manager->portraitFit);
+	}
+	manager->SetPortraitSource(static_cast<obs_source_t *>(calldata_ptr(params, "source")), manager->portraitFit);
 }
 
 bool MultiStreamManager::PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder, MultiStreamPortraitFit fit,
-					 std::string &error)
+						 std::string &error)
 {
 	DestroyPortraitPipeline();
 
@@ -474,19 +679,18 @@ bool MultiStreamManager::PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder
 	videoInfo.base_height = PORTRAIT_HEIGHT;
 	videoInfo.output_width = PORTRAIT_WIDTH;
 	videoInfo.output_height = PORTRAIT_HEIGHT;
-	if (videoInfo.fps_den == 0 ||
-	    static_cast<uint64_t>(videoInfo.fps_num) >
-		    static_cast<uint64_t>(PORTRAIT_MAX_FPS) * videoInfo.fps_den) {
-		videoInfo.fps_num = PORTRAIT_MAX_FPS;
-		videoInfo.fps_den = 1;
-	}
 	videoInfo.scale_type = OBS_SCALE_BICUBIC;
 
 	OBSCanvas sharedCanvas;
 	{
 		lock_guard providerLock(PortraitProviderMutex());
-		if (PortraitProvider())
+		if (PortraitProvider()) {
 			sharedCanvas = PortraitProvider()();
+			if (!sharedCanvas) {
+				error = "Enable Multi Canvas before starting a portrait destination.";
+				return false;
+			}
+		}
 	}
 	if (sharedCanvas) {
 		/* Dual-canvas mode: the vertical canvas already has its own scenes. */
@@ -541,16 +745,17 @@ bool MultiStreamManager::PreparePortraitPipeline(obs_encoder_t *mainVideoEncoder
 				break;
 			}
 		}
-		blog(LOG_INFO, "Multistream: portrait output uses H.264 encoder '%s' instead of '%s'",
-		     encoderId, mainEncoderId ? mainEncoderId : "unknown");
+		blog(LOG_INFO, "Multistream: portrait output uses H.264 encoder '%s' instead of '%s'", encoderId,
+		     mainEncoderId ? mainEncoderId : "unknown");
 	}
 
-	OBSDataAutoRelease encoderSettings = mainIsH264 ? obs_encoder_get_settings(mainVideoEncoder) : obs_data_create();
-	if (!encoderSettings)
-		encoderSettings = obs_data_create();
-	const int64_t configuredBitrate = obs_data_get_int(encoderSettings, "bitrate");
-	if (configuredBitrate <= 0 || configuredBitrate > PORTRAIT_VIDEO_BITRATE_KBPS)
-		obs_data_set_int(encoderSettings, "bitrate", PORTRAIT_VIDEO_BITRATE_KBPS);
+	OBSDataAutoRelease encoderSettings = obs_data_create();
+	if (mainIsH264) {
+		OBSDataAutoRelease originalSettings = obs_encoder_get_settings(mainVideoEncoder);
+		obs_data_apply(encoderSettings, originalSettings);
+	}
+	obs_data_set_string(encoderSettings, "rate_control", "CBR");
+	obs_data_set_int(encoderSettings, "bitrate", portraitBitrateKbps);
 	obs_data_set_int(encoderSettings, "keyint_sec", 2);
 
 	portraitVideoEncoder =
@@ -576,18 +781,19 @@ void MultiStreamManager::SetPortraitSource(obs_source_t *source, MultiStreamPort
 		obs_sceneitem_remove(portraitSceneItem);
 		portraitSceneItem = nullptr;
 	}
-	if (!portraitScene || !source)
+	if (!portraitScene || !source) {
 		return;
+	}
 
 	portraitSceneItem = obs_scene_add(portraitScene, source);
-	if (!portraitSceneItem)
+	if (!portraitSceneItem) {
 		return;
+	}
 
 	obs_sceneitem_set_alignment(portraitSceneItem, OBS_ALIGN_CENTER);
 	obs_sceneitem_set_bounds_alignment(portraitSceneItem, OBS_ALIGN_CENTER);
-	obs_sceneitem_set_bounds_type(portraitSceneItem,
-				      fit == MultiStreamPortraitFit::Fill ? OBS_BOUNDS_SCALE_OUTER
-									   : OBS_BOUNDS_SCALE_INNER);
+	obs_sceneitem_set_bounds_type(portraitSceneItem, fit == MultiStreamPortraitFit::Fill ? OBS_BOUNDS_SCALE_OUTER
+											     : OBS_BOUNDS_SCALE_INNER);
 	obs_sceneitem_set_scale_filter(portraitSceneItem, OBS_SCALE_LANCZOS);
 	const vec2 bounds{static_cast<float>(PORTRAIT_WIDTH), static_cast<float>(PORTRAIT_HEIGHT)};
 	const vec2 position{PORTRAIT_WIDTH / 2.0f, PORTRAIT_HEIGHT / 2.0f};
@@ -602,8 +808,9 @@ void MultiStreamManager::DestroyPortraitPipeline()
 		mainChannelSignalConnected = false;
 	}
 	portraitVideoEncoder = nullptr;
-	if (portraitCanvas && !portraitCanvasShared)
+	if (portraitCanvas && !portraitCanvasShared) {
 		obs_canvas_set_channel(portraitCanvas, 0, nullptr);
+	}
 	portraitCanvasShared = false;
 	portraitSceneItem = nullptr;
 	portraitScene = nullptr;
@@ -701,8 +908,9 @@ vector<MultiStreamManager::ChannelOutput> MultiStreamManager::ChannelOutputs() c
 	 * the table shows every enabled channel even before anything is sending.
 	 * A destination only exists while the output is up. */
 	for (const auto &channel : channels) {
-		if (!channel.enabled || channel.id == primaryChannelId)
+		if (!channel.enabled || channel.id == primaryChannelId) {
 			continue;
+		}
 
 		ChannelOutput entry{channel.id, channel.displayName, {}};
 		for (const auto &destination : destinations) {
@@ -738,20 +946,30 @@ void MultiStreamManager::ReportFailure(const vector<MultiStreamChannel> &failedC
 		lock_guard lock(mutex);
 		callback = stateCallback;
 	}
-	if (!callback)
+	if (!callback) {
 		return;
+	}
 
-	for (const auto &channel : failedChannels)
+	for (const auto &channel : failedChannels) {
 		callback({channel.id, channel.displayName, MultiStreamChannelState::Failed, error});
+	}
 }
 
 void MultiStreamManager::RetireDestinations()
 {
-	for (auto &destination : destinations) {
-		DisconnectSignals(*destination);
-		retiredDestinations.emplace_back(std::move(destination));
+	vector<shared_ptr<Destination>> retired;
+	{
+		lock_guard lock(mutex);
+		retired = std::move(destinations);
+		for (const auto &destination : retired) {
+			retiredDestinations.push_back(destination);
+			destination->restartPending = false;
+		}
 	}
-	destinations.clear();
+	/* Disconnect may wait for an in-flight signal whose callback needs mutex. */
+	for (const auto &destination : retired) {
+		DisconnectSignals(*destination);
+	}
 }
 
 void MultiStreamManager::CollectRetiredDestinations()
@@ -767,7 +985,7 @@ bool MultiStreamManager::RecomputeActiveLocked()
 {
 	active = false;
 	for (const auto &destination : destinations) {
-		if (destination->state == MultiStreamChannelState::Starting ||
+		if (destination->restartPending || destination->state == MultiStreamChannelState::Starting ||
 		    destination->state == MultiStreamChannelState::Live ||
 		    destination->state == MultiStreamChannelState::Stopping) {
 			active = true;
@@ -780,8 +998,9 @@ bool MultiStreamManager::RecomputeActiveLocked()
 MultiStreamChannelHealth MultiStreamManager::ReadHealth(const Destination &destination)
 {
 	MultiStreamChannelHealth health;
-	if (!destination.output || !obs_output_active(destination.output))
+	if (!destination.output || !obs_output_active(destination.output)) {
 		return health;
+	}
 
 	health.congestion = obs_output_get_congestion(destination.output);
 	health.droppedFrames = obs_output_get_frames_dropped(destination.output);
@@ -789,9 +1008,8 @@ MultiStreamChannelHealth MultiStreamManager::ReadHealth(const Destination &desti
 	health.totalBytes = static_cast<uint64_t>(obs_output_get_total_bytes(destination.output));
 	health.reconnects = destination.reconnects;
 	if (destination.liveSinceUnixTime > 0) {
-		const int64_t now = chrono::duration_cast<chrono::seconds>(
-					    chrono::system_clock::now().time_since_epoch())
-					    .count();
+		const int64_t now =
+			chrono::duration_cast<chrono::seconds>(chrono::system_clock::now().time_since_epoch()).count();
 		health.liveSeconds = max<int64_t>(0, now - destination.liveSinceUnixTime);
 	}
 	return health;
@@ -824,14 +1042,17 @@ void MultiStreamManager::OnOutputStop(void *data, calldata_t *params)
 	const char *lastError = calldata_string(params, "last_error");
 	const auto state = code == OBS_OUTPUT_SUCCESS ? MultiStreamChannelState::Idle : MultiStreamChannelState::Failed;
 	destination->owner->UpdateState(*destination, state, lastError);
+	destination->owner->QueueRestart(*destination);
 }
 
 void MultiStreamManager::ConnectSignals(Destination &destination)
 {
 	signal_handler_t *handler = obs_output_get_signal_handler(destination.output);
-	if (!handler)
+	if (!handler) {
 		return;
+	}
 	signal_handler_connect(handler, "start", OnOutputStart, &destination);
+	signal_handler_connect(handler, "reconnect_success", OnOutputStart, &destination);
 	signal_handler_connect(handler, "stopping", OnOutputStopping, &destination);
 	signal_handler_connect(handler, "stop", OnOutputStop, &destination);
 	signal_handler_connect(handler, "reconnect", OnOutputReconnect, &destination);
@@ -840,12 +1061,15 @@ void MultiStreamManager::ConnectSignals(Destination &destination)
 
 void MultiStreamManager::DisconnectSignals(Destination &destination)
 {
-	if (!destination.signalsConnected)
+	if (!destination.signalsConnected) {
 		return;
+	}
 	signal_handler_t *handler = obs_output_get_signal_handler(destination.output);
-	if (!handler)
+	if (!handler) {
 		return;
+	}
 	signal_handler_disconnect(handler, "start", OnOutputStart, &destination);
+	signal_handler_disconnect(handler, "reconnect_success", OnOutputStart, &destination);
 	signal_handler_disconnect(handler, "stopping", OnOutputStopping, &destination);
 	signal_handler_disconnect(handler, "stop", OnOutputStop, &destination);
 	signal_handler_disconnect(handler, "reconnect", OnOutputReconnect, &destination);
@@ -863,6 +1087,11 @@ void MultiStreamManager::UpdateState(Destination &destination, MultiStreamChanne
 			++destination.reconnects;
 		}
 		destination.state = state;
+		if (state == MultiStreamChannelState::Stopping) {
+			destination.stopPending = true;
+		} else if (state == MultiStreamChannelState::Starting || state == MultiStreamChannelState::Live) {
+			destination.stopPending = false;
+		}
 		destination.lastError = lastError ? lastError : "";
 		if (state == MultiStreamChannelState::Live) {
 			destination.liveSinceUnixTime =
@@ -877,6 +1106,7 @@ void MultiStreamManager::UpdateState(Destination &destination, MultiStreamChanne
 		RecomputeActiveLocked();
 	}
 
-	if (callback)
+	if (callback) {
 		callback(snapshot);
+	}
 }

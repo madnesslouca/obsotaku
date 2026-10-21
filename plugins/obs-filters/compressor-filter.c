@@ -31,6 +31,7 @@
 #define S_ATTACK_TIME                   "attack_time"
 #define S_RELEASE_TIME                  "release_time"
 #define S_OUTPUT_GAIN                   "output_gain"
+#define S_KNEE                          "knee"
 #define S_SIDECHAIN_SOURCE              "sidechain_source"
 
 #define MT_ obs_module_text
@@ -66,6 +67,7 @@ struct compressor_data {
 
 	float ratio;
 	float threshold;
+	float knee;
 	float attack_gain;
 	float release_gain;
 	float output_gain;
@@ -191,6 +193,9 @@ static void compressor_update(void *data, obs_data_t *s)
 
 	cd->ratio = (float)obs_data_get_double(s, S_FILTER_RATIO);
 	cd->threshold = (float)obs_data_get_double(s, S_FILTER_THRESHOLD);
+	cd->knee = (float)obs_data_get_double(s, S_KNEE);
+	if (!isfinite(cd->knee)) cd->knee = 0.0f;
+	cd->knee = fminf(40.0f, fmaxf(0.0f, cd->knee));
 	cd->attack_gain = gain_coefficient(sample_rate, attack_time_ms / MS_IN_S_F);
 	cd->release_gain = gain_coefficient(sample_rate, release_time_ms / MS_IN_S_F);
 	cd->output_gain = db_to_mul(output_gain_db);
@@ -358,6 +363,13 @@ static inline void process_compression(const struct compressor_data *cd, float *
 	for (size_t i = 0; i < num_samples; ++i) {
 		const float env_db = mul_to_db(cd->envelope_buf[i]);
 		float gain = cd->slope * (cd->threshold - env_db);
+		// A quadratic soft knee joins the unity and compressed slopes with
+		// continuous first derivative. Zero keeps the legacy hard-knee curve.
+		const float over = env_db - cd->threshold;
+		if (cd->knee > 0.0f && fabsf(over) < cd->knee * 0.5f) {
+			const float distance = over + cd->knee * 0.5f;
+			gain = -cd->slope * distance * distance / (2.0f * cd->knee);
+		}
 		gain = db_to_mul(fminf(0, gain));
 
 		for (size_t c = 0; c < cd->num_channels; ++c) {
@@ -442,6 +454,7 @@ static void compressor_defaults(obs_data_t *s)
 	obs_data_set_default_int(s, S_ATTACK_TIME, 6);
 	obs_data_set_default_int(s, S_RELEASE_TIME, 60);
 	obs_data_set_default_double(s, S_OUTPUT_GAIN, 0.0f);
+	obs_data_set_default_double(s, S_KNEE, 0.0f);
 	obs_data_set_default_string(s, S_SIDECHAIN_SOURCE, "none");
 }
 
@@ -484,6 +497,8 @@ static obs_properties_t *compressor_properties(void *data)
 	obs_property_int_set_suffix(p, " ms");
 	p = obs_properties_add_int_slider(props, S_RELEASE_TIME, TEXT_RELEASE_TIME, MIN_ATK_RLS_MS, MAX_RLS_MS, 1);
 	obs_property_int_set_suffix(p, " ms");
+	p = obs_properties_add_float_slider(props, S_KNEE, MT_("Compressor.Knee"), 0.0, 40.0, 0.1);
+	obs_property_float_set_suffix(p, " dB");
 	p = obs_properties_add_float_slider(props, S_OUTPUT_GAIN, TEXT_OUTPUT_GAIN, MIN_OUTPUT_GAIN_DB,
 					    MAX_OUTPUT_GAIN_DB, 0.1);
 	obs_property_float_set_suffix(p, " dB");

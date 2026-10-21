@@ -10,6 +10,9 @@
 void OBSDock::closeEvent(QCloseEvent *event)
 {
 	auto msgBox = []() {
+		// A floating dock may queue this before the main window starts closing.
+		if (!OBSBasic::Get() || OBSBasic::Get()->isClosing())
+			return;
 		QMessageBox msgbox(App()->GetMainWindow());
 		msgbox.setWindowTitle(QTStr("DockCloseWarning.Title"));
 		msgbox.setText(QTStr("DockCloseWarning.Text"));

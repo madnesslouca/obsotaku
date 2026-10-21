@@ -569,7 +569,7 @@ static void v4l2_resolution_list(int dev, uint_fast32_t pixelformat, obs_propert
 static void v4l2_framerate_list(int dev, uint_fast32_t pixelformat, uint_fast32_t width, uint_fast32_t height,
 				obs_property_t *prop)
 {
-	struct v4l2_frmivalenum frmival;
+	struct v4l2_frmivalenum frmival = {0};
 	frmival.pixel_format = pixelformat;
 	frmival.width = width;
 	frmival.height = height;
@@ -587,7 +587,7 @@ static void v4l2_framerate_list(int dev, uint_fast32_t pixelformat, uint_fast32_
 	case V4L2_FRMIVAL_TYPE_DISCRETE:
 		while (v4l2_ioctl(dev, VIDIOC_ENUM_FRAMEINTERVALS, &frmival) == 0) {
 			float fps = (float)frmival.discrete.denominator / frmival.discrete.numerator;
-			int pack = v4l2_pack_tuple(frmival.discrete.numerator, frmival.discrete.denominator);
+			int64_t pack = v4l2_pack_tuple(frmival.discrete.numerator, frmival.discrete.denominator);
 			dstr_printf(&buffer, "%.2f", fps);
 			obs_property_list_add_int(prop, buffer.array, pack);
 			frmival.index++;

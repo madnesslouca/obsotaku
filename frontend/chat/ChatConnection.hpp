@@ -16,6 +16,11 @@
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#include <QPointer>
+#include <QSet>
+#include <QJsonObject>
+#include <QNetworkReply>
+#include <functional>
 
 enum class ChatConnectionState {
 	Disconnected,
@@ -24,6 +29,7 @@ enum class ChatConnectionState {
 	Failed,
 	MissingCredential,
 	WaitingForBroadcast,
+	SelectBroadcast,
 	/* The platform has no public chat API we can read. */
 	Unsupported,
 };
@@ -32,6 +38,9 @@ enum class ChatMessageKind {
 	Normal,
 	SuperChat,
 	Membership,
+	Follow,
+	Raid,
+	ChannelPoints,
 	System,
 };
 
@@ -43,9 +52,41 @@ struct ChatChannelRef {
 	QString address;
 	QString displayName;
 	QString accountId;
+	QString broadcastId;
+};
+
+struct ChatBroadcast {
+	QString id;
+	QString title;
+	QString liveChatId;
+};
+
+// A timeout is ambiguous: never automatically retry a possibly delivered message.
+enum class ChatSendState { Delivered, Rejected, Unknown };
+struct ChatSendResult {
+	QString channelId;
+	QString requestId;
+	ChatSendState state = ChatSendState::Unknown;
+	QString providerId;
+	QString detail;
+};
+Q_DECLARE_METATYPE(ChatSendResult)
+
+struct ChatEmote {
+	// UTF-16 offsets into messageText, matching QString operations.
+	int start = 0;
+	int length = 0;
+	StreamPlatform platform = StreamPlatform::CustomRtmp;
+	QString id;
 };
 
 struct ChatMessage {
+	QList<ChatEmote> emotes;
+	QString eventType;
+	QString eventTitle;
+	int eventCount = 0;
+	QString id;
+	QString senderId;
 	QString channelId;
 	StreamPlatform platform = StreamPlatform::CustomRtmp;
 	QString channelName;
@@ -64,6 +105,18 @@ struct ChatMessage {
 	QString paidCurrency;
 };
 
+Q_DECLARE_METATYPE(ChatMessage)
+Q_DECLARE_METATYPE(QList<ChatBroadcast>)
+
+struct ChatAccessToken {
+	QString token;
+	QString clientId;
+	QStringList scopes;
+};
+using ChatTokenCallback = std::function<void(const ChatAccessToken &)>;
+using ChatTokenProvider = std::function<void(StreamPlatform, const QString &, QObject *, ChatTokenCallback)>;
+void LoadChatAccessToken(StreamPlatform, const QString &, QObject *, ChatTokenCallback);
+
 QString ChatCurrentTimestamp();
 QStringList BuildRoleBadges(const ChatMessage &message);
 
@@ -77,7 +130,8 @@ class ChatConnection : public QObject {
 	Q_OBJECT
 
 public:
-	ChatConnection(ChatChannelRef channel, QNetworkAccessManager *netManager, QObject *parent = nullptr);
+	ChatConnection(ChatChannelRef channel, QNetworkAccessManager *netManager, QObject *parent = nullptr,
+		       ChatTokenProvider tokenProvider = {});
 	~ChatConnection() override = default;
 
 	const ChatChannelRef &Channel() const { return channel; }
@@ -91,16 +145,29 @@ public:
 
 	bool IsConnected() const { return connected; }
 	virtual bool CanSend() const { return false; }
-	/* False when the message could not even be handed to the platform. A
-	 * failure after that arrives on statusChanged. */
-	virtual bool SendText(const QString &text, QString &error);
+	/* Accepted requests always produce one sendFinished result. */
+	virtual bool SendText(const QString &text, const QString &requestId, QString &error);
 
 signals:
+	void sendFinished(const ChatSendResult &result);
+	void broadcastsAvailable(const QString &channelId, const QList<ChatBroadcast> &broadcasts);
+	void messageRemoved(const QString &channelId, const QString &messageId, const QString &senderId);
 	void messageReceived(const ChatMessage &message);
 	void statusChanged(const QString &channelId, StreamPlatform platform, ChatConnectionState state,
 			   const QString &detail);
 
 protected:
+	void BeginSession();
+	void EndSession();
+	void WithAccessToken(ChatTokenCallback callback);
+	void TrackReply(QNetworkReply *reply);
+	void BeginSend(const QString &requestId);
+	void FinishSend(const QString &requestId, ChatSendState state, const QString &providerId = {},
+			const QString &detail = {});
+	void PostMessage(const QString &requestId, const QString &text, const QNetworkRequest &request,
+			 const QJsonObject &body);
+	quint64 generation = 0;
+	bool stopped = true;
 	void EmitStatus(ChatConnectionState state, const QString &detail = {});
 	/* Reconnects with an exponential backoff, capped, and only while the
 	 * connection still has a target. */
@@ -116,4 +183,9 @@ protected:
 	QTimer *reconnectTimer = nullptr;
 	int reconnectDelayMs = 5000;
 	bool connected = false;
+
+private:
+	ChatTokenProvider tokenProvider;
+	QList<QPointer<QNetworkReply>> replies;
+	QSet<QString> pendingSends;
 };

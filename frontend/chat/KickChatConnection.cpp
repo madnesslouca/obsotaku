@@ -8,6 +8,7 @@
 ******************************************************************************/
 
 #include "KickChatConnection.hpp"
+#include "ChatEmotes.hpp"
 
 #include <qt-wrappers.hpp>
 
@@ -22,6 +23,7 @@
 #include <QPointer>
 #include <QRandomGenerator>
 #include <QUrl>
+#include <QTextBoundaryFinder>
 
 #include <vector>
 
@@ -47,18 +49,21 @@ QByteArray RandomBytes(int count)
 
 void KickChatConnection::Start()
 {
-	if (channel.address.trimmed().isEmpty())
+	if (channel.address.trimmed().isEmpty()) {
 		return;
+	}
+	BeginSession();
 	EmitStatus(ChatConnectionState::Connecting);
-	if (chatroomId.isEmpty())
+	if (chatroomId.isEmpty()) {
 		ResolveChatroom();
-	else
+	} else {
 		OpenSocket();
+	}
 }
 
 void KickChatConnection::Stop()
 {
-	StopReconnect();
+	EndSession();
 	if (socket) {
 		socket->disconnect(this);
 		socket->abort();
@@ -78,6 +83,7 @@ void KickChatConnection::ResolveChatroom()
 	const QString slug = channel.address.trimmed().toLower();
 	const QUrl url(QStringLiteral("https://kick.com/api/v2/channels/%1/chatroom").arg(slug));
 	QNetworkRequest request(url);
+	request.setTransferTimeout(15000);
 	/* This endpoint sits behind Cloudflare, which turns away clients that do
 	 * not look like a browser. Anything less than a full set of browser
 	 * headers comes back as 403 and chat never connects. */
@@ -92,11 +98,13 @@ void KickChatConnection::ResolveChatroom()
 	blog(LOG_INFO, "[multistream chat] resolving Kick chatroom for '%s'", QT_TO_UTF8(slug));
 
 	QNetworkReply *reply = netManager->get(request);
+	TrackReply(reply);
 	QPointer<KickChatConnection> guard(this);
 	connect(reply, &QNetworkReply::finished, this, [this, guard, reply, slug]() {
 		reply->deleteLater();
-		if (!guard || channel.address.trimmed().isEmpty())
+		if (!guard || channel.address.trimmed().isEmpty()) {
 			return;
+		}
 
 		const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 		if (reply->error() != QNetworkReply::NoError) {
@@ -110,11 +118,13 @@ void KickChatConnection::ResolveChatroom()
 		const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
 		if (doc.isObject()) {
 			const QJsonObject obj = doc.object();
-			const QJsonValue id = obj.contains(QStringLiteral("id"))
-						      ? obj[QStringLiteral("id")]
-						      : obj[QStringLiteral("chatroom")].toObject()[QStringLiteral("id")];
-			if (!id.isUndefined() && !id.isNull())
+			const QJsonValue id =
+				obj.contains(QStringLiteral("id"))
+					? obj[QStringLiteral("id")]
+					: obj[QStringLiteral("chatroom")].toObject()[QStringLiteral("id")];
+			if (!id.isUndefined() && !id.isNull()) {
 				chatroomId = QString::number(id.toVariant().toLongLong());
+			}
 		}
 
 		if (chatroomId.isEmpty()) {
@@ -153,8 +163,9 @@ void KickChatConnection::OpenSocket()
 
 void KickChatConnection::OnConnected()
 {
-	if (!socket)
+	if (!socket) {
 		return;
+	}
 
 	const QString handshake =
 		QStringLiteral("GET /app/%1?protocol=7&client=obs-multistream&version=1.0 HTTP/1.1\r\n"
@@ -172,8 +183,9 @@ void KickChatConnection::OnConnected()
 
 void KickChatConnection::OnReadyRead()
 {
-	if (!socket)
+	if (!socket) {
 		return;
+	}
 
 	const QByteArray chunk = socket->readAll();
 	if (buffer.size() + chunk.size() > MAX_CHAT_BUFFER_BYTES) {
@@ -182,16 +194,18 @@ void KickChatConnection::OnReadyRead()
 		return;
 	}
 	buffer.append(chunk);
-	if (!handshakeComplete && !ProcessHandshake())
+	if (!handshakeComplete && !ProcessHandshake()) {
 		return;
+	}
 	ProcessFrames();
 }
 
 bool KickChatConnection::ProcessHandshake()
 {
 	const int headerEnd = buffer.indexOf("\r\n\r\n");
-	if (headerEnd < 0)
+	if (headerEnd < 0) {
 		return false;
+	}
 
 	const QByteArray header = buffer.left(headerEnd);
 	buffer.remove(0, headerEnd + 4);
@@ -225,8 +239,9 @@ bool KickChatConnection::ProcessHandshake()
 
 void KickChatConnection::SendFrame(quint8 opcode, const QByteArray &payload)
 {
-	if (!socket || socket->state() != QAbstractSocket::ConnectedState)
+	if (!socket || socket->state() != QAbstractSocket::ConnectedState) {
 		return;
+	}
 
 	QByteArray frame;
 	frame.append(static_cast<char>(0x80 | opcode));
@@ -240,15 +255,17 @@ void KickChatConnection::SendFrame(quint8 opcode, const QByteArray &payload)
 		frame.append(static_cast<char>(length & 0xFF));
 	} else {
 		frame.append(static_cast<char>(0x80 | 127));
-		for (int shift = 56; shift >= 0; shift -= 8)
+		for (int shift = 56; shift >= 0; shift -= 8) {
 			frame.append(static_cast<char>((length >> shift) & 0xFF));
+		}
 	}
 
 	const QByteArray mask = RandomBytes(4);
 	frame.append(mask);
 	QByteArray masked = payload;
-	for (qsizetype index = 0; index < masked.size(); ++index)
+	for (qsizetype index = 0; index < masked.size(); ++index) {
 		masked[index] = masked[index] ^ mask[index % 4];
+	}
 	frame.append(masked);
 
 	socket->write(frame);
@@ -267,23 +284,27 @@ void KickChatConnection::ProcessFrames()
 		qsizetype offset = 2;
 
 		if (length == 126) {
-			if (buffer.size() < offset + 2)
+			if (buffer.size() < offset + 2) {
 				return;
+			}
 			length = (static_cast<quint8>(buffer[offset]) << 8) | static_cast<quint8>(buffer[offset + 1]);
 			offset += 2;
 		} else if (length == 127) {
-			if (buffer.size() < offset + 8)
+			if (buffer.size() < offset + 8) {
 				return;
+			}
 			length = 0;
-			for (int index = 0; index < 8; ++index)
+			for (int index = 0; index < 8; ++index) {
 				length = (length << 8) | static_cast<quint8>(buffer[offset + index]);
+			}
 			offset += 8;
 		}
 
 		QByteArray mask;
 		if (masked) {
-			if (buffer.size() < offset + 4)
+			if (buffer.size() < offset + 4) {
 				return;
+			}
 			mask = buffer.mid(offset, 4);
 			offset += 4;
 		}
@@ -292,14 +313,16 @@ void KickChatConnection::ProcessFrames()
 			socket->abort();
 			return;
 		}
-		if (static_cast<quint64>(buffer.size()) < static_cast<quint64>(offset) + length)
+		if (static_cast<quint64>(buffer.size()) < static_cast<quint64>(offset) + length) {
 			return;
+		}
 
 		QByteArray payload = buffer.mid(offset, static_cast<qsizetype>(length));
 		buffer.remove(0, offset + static_cast<qsizetype>(length));
 		if (masked) {
-			for (qsizetype index = 0; index < payload.size(); ++index)
+			for (qsizetype index = 0; index < payload.size(); ++index) {
 				payload[index] = payload[index] ^ mask[index % 4];
+			}
 		}
 
 		switch (opcode) {
@@ -310,8 +333,9 @@ void KickChatConnection::ProcessFrames()
 			}
 			fragment.append(payload);
 			if (fin) {
-				if (fragmentOpcode == 0x1)
+				if (fragmentOpcode == 0x1) {
 					HandlePayload(fragment);
+				}
 				fragment.clear();
 				fragmentOpcode = 0;
 			}
@@ -319,8 +343,9 @@ void KickChatConnection::ProcessFrames()
 		case 0x1:
 		case 0x2:
 			if (fin) {
-				if (opcode == 0x1)
+				if (opcode == 0x1) {
 					HandlePayload(payload);
+				}
 			} else {
 				fragmentOpcode = opcode;
 				fragment = payload;
@@ -343,8 +368,9 @@ void KickChatConnection::ProcessFrames()
 void KickChatConnection::HandlePayload(const QByteArray &payload)
 {
 	const QJsonDocument doc = QJsonDocument::fromJson(payload);
-	if (!doc.isObject())
+	if (!doc.isObject()) {
 		return;
+	}
 
 	const QJsonObject obj = doc.object();
 	const QString event = obj[QStringLiteral("event")].toString();
@@ -361,37 +387,44 @@ void KickChatConnection::HandlePayload(const QByteArray &payload)
 		SendFrame(0x1, QJsonDocument(pong).toJson(QJsonDocument::Compact));
 		return;
 	}
-	if (event != QStringLiteral("App\\Events\\ChatMessageEvent"))
+	if (event != QStringLiteral("App\\Events\\ChatMessageEvent")) {
 		return;
+	}
 
 	const QJsonDocument eventDoc = QJsonDocument::fromJson(obj[QStringLiteral("data")].toString().toUtf8());
-	if (!eventDoc.isObject())
+	if (!eventDoc.isObject()) {
 		return;
+	}
 
 	const QJsonObject dataObj = eventDoc.object();
 	ChatMessage msg = NewMessage();
 	msg.messageText = dataObj[QStringLiteral("content")].toString();
+	msg.id = dataObj[QStringLiteral("id")].toString();
 
 	const QJsonObject sender = dataObj[QStringLiteral("sender")].toObject();
 	msg.senderName = sender[QStringLiteral("username")].toString();
+	msg.senderId = sender[QStringLiteral("id")].toVariant().toString();
 	msg.userColor = sender[QStringLiteral("identity")].toObject()[QStringLiteral("color")].toString();
 
 	const QJsonArray badges = sender[QStringLiteral("identity")].toObject()[QStringLiteral("badges")].toArray();
 	for (const QJsonValue &badge : badges) {
 		const QString type = badge.toObject()[QStringLiteral("type")].toString().toLower();
-		if (type.contains(QStringLiteral("mod")))
+		if (type.contains(QStringLiteral("mod"))) {
 			msg.isModerator = true;
-		else if (type.contains(QStringLiteral("sub")))
+		} else if (type.contains(QStringLiteral("sub"))) {
 			msg.isSubscriber = true;
-		else if (type.contains(QStringLiteral("vip")))
+		} else if (type.contains(QStringLiteral("vip"))) {
 			msg.isVip = true;
-		else if (type.contains(QStringLiteral("broadcaster")) || type.contains(QStringLiteral("host")))
+		} else if (type.contains(QStringLiteral("broadcaster")) || type.contains(QStringLiteral("host"))) {
 			msg.isBroadcaster = true;
+		}
 	}
+	ChatEmotes::ParseKick(msg);
 	msg.roleBadges = BuildRoleBadges(msg);
 
-	if (!msg.senderName.isEmpty() && !msg.messageText.isEmpty())
+	if (!msg.senderName.isEmpty() && !msg.messageText.isEmpty()) {
 		emit messageReceived(msg);
+	}
 }
 
 void KickChatConnection::OnError()
@@ -411,4 +444,42 @@ void KickChatConnection::OnDisconnected()
 	handshakeComplete = false;
 	EmitStatus(ChatConnectionState::Disconnected);
 	ScheduleReconnect();
+}
+
+bool KickChatConnection::CanSend() const
+{
+	bool valid = false;
+	const auto userId = channel.accountId.toLongLong(&valid);
+	return !stopped && valid && userId > 0;
+}
+
+bool KickChatConnection::SendText(const QString &text, const QString &requestId, QString &error)
+{
+	if (!CanSend()) {
+		error = "auth";
+		return false;
+	}
+	QTextBoundaryFinder finder(QTextBoundaryFinder::Grapheme, text);
+	int count = 0;
+	while (finder.toNextBoundary() >= 0) {
+		++count;
+	}
+	if (count > 500 || text.toUtf8().size() > 2048) {
+		error = "too-long";
+		return false;
+	}
+	BeginSend(requestId);
+	WithAccessToken([this, text, requestId](const ChatAccessToken &access) {
+		if (access.token.isEmpty()) {
+			FinishSend(requestId, ChatSendState::Rejected, {}, QStringLiteral("auth"));
+			return;
+		}
+		QNetworkRequest request(QUrl(QStringLiteral("https://api.kick.com/public/v1/chat")));
+		request.setRawHeader("Authorization", QStringLiteral("Bearer %1").arg(access.token).toUtf8());
+		PostMessage(
+			requestId, text, request,
+			{{"broadcaster_user_id", channel.accountId.toLongLong()}, {"content", text}, {"type", "user"}});
+	});
+	error.clear();
+	return true;
 }

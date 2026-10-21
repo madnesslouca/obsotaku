@@ -48,6 +48,9 @@ void setupDockAction(QDockWidget *dock)
 
 void OBSBasic::on_resetDocks_triggered(bool force)
 {
+	if (force && studioLayoutSeeded &&
+	    !config_has_user_value(App()->GetUserConfig(), "BasicWindow", "DockState"))
+		return;
 #ifdef BROWSER_AVAILABLE
 	if ((extraDocks.size() || extraCustomDocks.size() || extraBrowserDocks.size()) && !force)
 #else
@@ -77,6 +80,8 @@ void OBSBasic::on_resetDocks_triggered(bool force)
 #endif
 #undef RESET_DOCKLIST
 
+	if (studioWorkspaceAction && studioWorkspaceAction->isChecked())
+		studioWorkspaceAction->setChecked(false);
 	restoreState(startingDockLayout);
 	ui->sideDocks->setChecked(true);
 

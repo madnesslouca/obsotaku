@@ -606,9 +606,9 @@ static int obs_init_video_mix(struct obs_video_info *ovi, struct obs_core_video_
 {
 	struct video_output_info vi;
 
+	pthread_mutex_init_value(&video->gpu_encoder_lifecycle_mutex);
 	pthread_mutex_init_value(&video->gpu_encoder_mutex);
 
-	make_video_info(&vi, ovi);
 	video->ovi = *ovi;
 
 	/* main view graphics thread drives all frame output,
@@ -621,6 +621,9 @@ static int obs_init_video_mix(struct obs_video_info *ovi, struct obs_core_video_
 		video->ovi.fps_den = main_ovi.fps_den;
 	}
 	pthread_mutex_unlock(&obs->video.mixes_mutex);
+
+	/* The output timebase must use the same FPS as the restored canvas. */
+	make_video_info(&vi, &video->ovi);
 
 	video->gpu_conversion = ovi->gpu_conversion;
 	video->gpu_was_active = false;
@@ -640,6 +643,8 @@ static int obs_init_video_mix(struct obs_video_info *ovi, struct obs_core_video_
 		return OBS_VIDEO_FAIL;
 	}
 
+	if (pthread_mutex_init(&video->gpu_encoder_lifecycle_mutex, NULL) != 0)
+		return OBS_VIDEO_FAIL;
 	if (pthread_mutex_init(&video->gpu_encoder_mutex, NULL) < 0)
 		return OBS_VIDEO_FAIL;
 
@@ -810,6 +815,8 @@ void obs_free_video_mix(struct obs_core_video_mix *video)
 		memset(video->textures_copied, 0, sizeof(video->textures_copied));
 		video->texture_converted = false;
 
+		pthread_mutex_destroy(&video->gpu_encoder_lifecycle_mutex);
+		pthread_mutex_init_value(&video->gpu_encoder_lifecycle_mutex);
 		pthread_mutex_destroy(&video->gpu_encoder_mutex);
 		pthread_mutex_init_value(&video->gpu_encoder_mutex);
 		da_free(video->gpu_encoders);
@@ -3186,6 +3193,8 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 	struct obs_core_video_mix *video = get_mix_for_video(encoder->media);
 	bool success = true;
 
+	pthread_mutex_lock(&video->gpu_encoder_lifecycle_mutex);
+
 	obs_enter_graphics();
 	pthread_mutex_lock(&video->gpu_encoder_mutex);
 
@@ -3204,6 +3213,7 @@ bool start_gpu_encode(obs_encoder_t *encoder)
 		video_output_inc_texture_encoders(video->video);
 	}
 
+	pthread_mutex_unlock(&video->gpu_encoder_lifecycle_mutex);
 	return success;
 }
 
@@ -3211,6 +3221,11 @@ void stop_gpu_encode(obs_encoder_t *encoder)
 {
 	struct obs_core_video_mix *video = get_mix_for_video(encoder->media);
 	bool call_free = false;
+
+	/* Two outputs can stop their texture encoders on separate capture threads.
+	 * The last one must not destroy gpu_encode_inactive while another still
+	 * waits on it. A concurrent start must not reuse buffers during teardown. */
+	pthread_mutex_lock(&video->gpu_encoder_lifecycle_mutex);
 
 	os_atomic_dec_long(&video->gpu_encoder_active);
 	video_output_dec_texture_encoders(video->video);
@@ -3232,6 +3247,7 @@ void stop_gpu_encode(obs_encoder_t *encoder)
 		pthread_mutex_unlock(&video->gpu_encoder_mutex);
 		obs_leave_graphics();
 	}
+	pthread_mutex_unlock(&video->gpu_encoder_lifecycle_mutex);
 }
 
 bool obs_video_active(void)

@@ -1,0 +1,108 @@
+#!/usr/bin/env python3
+"""Build a pinned optional Composite Blur module outside the OBS checkout.
+
+Default output is a private staging prefix; installing into OBS requires the
+explicit --install-prefix option, with OBS closed. No elevated privileges.
+Run with Python on Windows; its native OBS SDK and toolchain are required.
+"""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+
+REPOSITORY = "https://github.com/FiniteSingularity/obs-composite-blur.git"
+COMMIT = "0783c13660a939143bb2d0c3b1f69310f413348a"  # upstream v1.6.0
+
+
+def run(*args):
+    subprocess.run([str(a) for a in args], check=True)
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--obs-prefix", type=Path, required=True,
+                        help="native fork prefix containing its libobs SDK")
+    parser.add_argument("--work-root", type=Path,
+                        default=Path.home() / ".cache/obs-composite-blur-studio")
+    parser.add_argument("--install-prefix", type=Path,
+                        help="explicit opt-in deployment; leave absent to stage only")
+    parser.add_argument("--jobs", type=int, default=2)
+    args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be positive")
+    sdk = args.obs_prefix.expanduser().resolve()
+    if not sdk.is_dir():
+        parser.error("--obs-prefix must exist")
+    root = args.work_root.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    source, build, stage = root / "obs-composite-blur", root / "build", root / "stage"
+    if not source.exists():
+        run("git", "clone", "--no-checkout", "--filter=blob:none", REPOSITORY, source)
+        run("git", "-C", source, "checkout", "--detach", COMMIT)
+    head = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    if head != COMMIT:
+        raise RuntimeError("Existing source is not the pinned commit; choose another --work-root")
+    dirty = subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True)
+    if dirty:
+        raise RuntimeError("Source has changes; preserve them and choose another --work-root")
+    run("cmake", "-S", source, "-B", build, "-G", "Ninja",
+        "-DCMAKE_BUILD_TYPE=RelWithDebInfo", f"-DCMAKE_PREFIX_PATH={sdk}",
+        f"-DCMAKE_INSTALL_PREFIX={stage}", "-DCMAKE_INSTALL_LIBDIR=lib64")
+    run("cmake", "--build", build, "--parallel", args.jobs)
+    component = ["--component", "Legacy"] if sys.platform.startswith("linux") else []
+    run("cmake", "--install", build, "--prefix", stage, *component)
+    license_dir = stage / "share/licenses/obs-composite-blur"
+    license_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source / "LICENSE", license_dir / "LICENSE")
+    artifacts = {str(p.relative_to(stage)): digest(p) for p in stage.rglob("*") if p.is_file()}
+    report = {"repository": REPOSITORY, "commit": COMMIT, "version": "1.6.0",
+              "platform": sys.platform, "obs_sdk_prefix": str(sdk),
+              "staged_prefix": str(stage), "artifacts_sha256": artifacts,
+              "certification": "build/staging only; GPU and Windows runtime require separate tests"}
+    (root / "build-manifest.json").write_text(json.dumps(report, indent=2) + "\n")
+    if args.install_prefix:
+        target = args.install_prefix.expanduser().resolve()
+        if target == stage:
+            raise RuntimeError("--install-prefix must differ from the private stage")
+        if sys.platform.startswith("linux"):
+            for proc in Path("/proc").iterdir():
+                if not proc.name.isdigit():
+                    continue
+                try:
+                    if (proc / "exe").resolve().name == "obs":
+                        raise RuntimeError("Close OBS before optional deployment")
+                except (FileNotFoundError, PermissionError, ProcessLookupError):
+                    pass
+        elif sys.platform == "win32":
+            tasks = subprocess.check_output(["tasklist", "/FO", "CSV", "/NH"], text=True)
+            if '"obs64.exe"' in tasks.lower() or '"obs32.exe"' in tasks.lower():
+                raise RuntimeError("Close OBS before optional deployment")
+        # Never silently replace an unrelated installed module or shader asset.
+        for relative, expected in artifacts.items():
+            dest = target / relative
+            if dest.exists() and (not dest.is_file() or digest(dest) != expected):
+                raise RuntimeError(f"Existing different file must be backed up first: {dest}")
+        for relative in artifacts:
+            dest = target / relative
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(stage / relative, dest)
+        report["installed_prefix"] = str(target)
+        (root / "build-manifest.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(f"Manifest: {root / 'build-manifest.json'}")
+    print("Optional plugin staged; no user scene or profile was changed.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        sys.exit(str(error))

@@ -27,19 +27,19 @@ public:
 	void Start() override;
 	void Stop() override;
 	bool CanSend() const override;
-	bool SendText(const QString &text, QString &error) override;
+	bool SendText(const QString &text, const QString &requestId, QString &error) override;
 
 private:
-	void ResolveLiveChat();
+	friend class ChatIntegrationTest;
+	void ResolveLiveChat(const QString &pageToken = {});
 	void Poll();
-	void WithAccessToken(std::function<void(const QString &)> continuation);
 	void ScheduleRetry(int milliseconds);
 
 	QTimer *pollTimer = nullptr;
 	QString liveChatId;
 	QString nextPageToken;
-	QString accessToken;
-	qint64 accessTokenExpiresAt = 0;
+	QList<ChatBroadcast> broadcasts;
+	bool resolving = false;
 	/* The first poll returns the backlog; emitting it would replay old
 	 * messages every time the dock is reopened. */
 	bool primed = false;

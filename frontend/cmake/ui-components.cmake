@@ -92,6 +92,11 @@ target_sources(
     components/VolumeAccessibleInterface.cpp
     components/VolumeAccessibleInterface.hpp
     components/VolumeControl.cpp
+    components/StudioAudioEffects.cpp
+    components/StudioAudioEffects.hpp
+    components/StudioEffectControls.cpp
+    components/StudioEffectControls.hpp
+    components/VolumeControl_Studio.cpp
     components/VolumeControl.hpp
     components/VolumeMeter.cpp
     components/VolumeMeter.hpp

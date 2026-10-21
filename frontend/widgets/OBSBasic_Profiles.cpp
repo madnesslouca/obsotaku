@@ -702,6 +702,9 @@ void OBSBasic::ActivateProfile(const OBSProfile &profile, bool reset)
 	if (reset) {
 		UpdateProfileEncoders();
 		ResetProfileData();
+	} else if (outputHandler) {
+		/* File copies do not retain module-aware defaults from the old config. */
+		InitBasicConfigDefaults2();
 	}
 
 	RefreshProfiles();

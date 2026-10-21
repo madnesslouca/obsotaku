@@ -10,9 +10,12 @@
 #pragma once
 
 #include "ChatConnection.hpp"
+#include "TwitchEventSub.hpp"
 
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QQueue>
+#include <functional>
 
 #include <memory>
 #include <vector>
@@ -25,7 +28,9 @@ class MultiStreamChatAggregator : public QObject {
 	Q_OBJECT
 
 public:
-	explicit MultiStreamChatAggregator(QObject *parent = nullptr);
+	using ConnectionFactory = std::function<std::unique_ptr<ChatConnection>(const ChatChannelRef &,
+										QNetworkAccessManager *, QObject *)>;
+	explicit MultiStreamChatAggregator(QObject *parent = nullptr, ConnectionFactory factory = {});
 	~MultiStreamChatAggregator() override;
 
 	/* Replaces the live set: drops connections no longer listed, keeps the
@@ -39,22 +44,34 @@ public:
 	bool IsConnected(const QString &channelId) const;
 	bool CanSend(const QString &channelId) const;
 	/* False when the message could not be handed to the platform at all. */
-	bool SendText(const QString &channelId, const QString &text, QString &error);
+	bool SendText(const QString &channelId, const QString &text, const QString &requestId, QString &error);
 
 	/* Whether this platform has a send path at all, regardless of any
-	 * connection being up. Kick chat is read-only in this build. */
+	 * connection being up. */
 	static bool PlatformCanSend(StreamPlatform platform);
 
 signals:
+	void sendFinished(const ChatSendResult &result);
+	void broadcastsAvailable(const QString &channelId, const QList<ChatBroadcast> &broadcasts);
+	void messageRemoved(const QString &channelId, const QString &messageId, const QString &senderId);
 	void messageReceived(const ChatMessage &message);
+	void messageUpdated(const ChatMessage &message);
+	void activityStatusChanged(const QString &channelId, ChatConnectionState state, const QString &detail);
 	void statusChanged(const QString &channelId, StreamPlatform platform, ChatConnectionState state,
 			   const QString &detail);
 
 private:
+	void ForwardMessage(const ChatMessage &message);
+	void RefreshActivity(const std::vector<ChatChannelRef> &channels);
 	ChatConnection *FindConnection(const QString &channelId) const;
 	static std::unique_ptr<ChatConnection> MakeConnection(const ChatChannelRef &channel,
 							      QNetworkAccessManager *netManager, QObject *parent);
 
+	std::vector<ChatChannelRef> channels;
+	std::vector<std::unique_ptr<TwitchEventSub>> activity;
+	ConnectionFactory factory;
+	QSet<QString> seenIds;
+	QQueue<QString> seenOrder;
 	QNetworkAccessManager *netManager = nullptr;
 	std::vector<std::unique_ptr<ChatConnection>> connections;
 };

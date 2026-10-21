@@ -21,7 +21,7 @@
 static inline OBSScene GetCurrentScene()
 {
 	OBSBasic *main = OBSBasic::Get();
-	return main->GetCurrentScene();
+	return main->GetStudioEditingScene();
 }
 
 SourceTreeItem::SourceTreeItem(SourceTree *tree_, OBSSceneItem sceneitem_) : tree(tree_), sceneitem(sceneitem_)
@@ -376,7 +376,7 @@ void SourceTreeItem::ExitEditModeInternal(bool save)
 	}
 
 	OBSBasic *main = OBSBasic::Get();
-	OBSScene scene = main->GetCurrentScene();
+	OBSScene scene = main->GetStudioEditingScene();
 
 	newName = editor->text().toStdString();
 
@@ -425,13 +425,13 @@ void SourceTreeItem::ExitEditModeInternal(bool save)
 
 	QSignalBlocker sourcesSignalBlocker(this);
 	std::string prevName(obs_source_get_name(source));
-	std::string scene_uuid = obs_source_get_uuid(main->GetCurrentSceneSource());
+	std::string scene_uuid = obs_source_get_uuid(obs_scene_get_source(main->GetStudioEditingScene()));
 	auto undo = [scene_uuid, prevName, main](const std::string &data) {
 		OBSSourceAutoRelease source = obs_get_source_by_uuid(data.c_str());
 		obs_source_set_name(source, prevName.c_str());
 
 		OBSSourceAutoRelease scene_source = obs_get_source_by_uuid(scene_uuid.c_str());
-		main->SetCurrentScene(scene_source.Get(), true);
+		main->SetStudioEditingScene(scene_source.Get());
 	};
 
 	std::string editedName = newName;
@@ -441,7 +441,7 @@ void SourceTreeItem::ExitEditModeInternal(bool save)
 		obs_source_set_name(source, editedName.c_str());
 
 		OBSSourceAutoRelease scene_source = obs_get_source_by_uuid(scene_uuid.c_str());
-		main->SetCurrentScene(scene_source.Get(), true);
+		main->SetStudioEditingScene(scene_source.Get());
 	};
 
 	const char *uuid = obs_source_get_uuid(source);

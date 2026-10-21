@@ -1,0 +1,408 @@
+@OBSThemeMeta {
+    name: 'Studio';
+    id: 'org.zyon.Studio';
+    extends: 'com.obsproject.Yami';
+    author: 'Zyon';
+    dark: 'true';
+}
+
+@OBSThemeVars {
+    --font_base_value: 8.5;
+    --grey1: #626269;
+    --grey2: #505055;
+    --grey3: #414145;
+    --grey4: #353538;
+    --grey5: #2d2d30;
+    --grey6: #252527;
+    --grey7: #1e1e1e;
+    --grey8: #141414;
+    --primary: #5266db;
+    --primary_light: #7588ef;
+    --primary_lighter: #a0adff;
+    --primary_dark: #3d4db3;
+    --border_color: #353538;
+    --list_item_bg_selected: #35384b;
+    --list_item_bg_hover: #2d2f38;
+    --input_bg: #252527;
+    --input_bg_hover: #2d2d30;
+    --input_bg_focus: #292b36;
+    --input_border: #414145;
+    --input_border_focus: var(--primary_light);
+    --button_bg: #29292c;
+    --button_bg_hover: #38383d;
+    --button_bg_down: #222226;
+    --button_border: #505055;
+}
+
+QDockWidget::title {
+    background: var(--grey7);
+    padding: 8px;
+    border-bottom: 1px solid var(--border_color);
+}
+
+QToolBar#studioToolbar {
+    background: var(--grey7);
+    border: none;
+    border-bottom: 1px solid var(--border_color);
+    spacing: 8px;
+    padding: 8px 12px;
+}
+
+QToolBar#studioToolbar QPushButton {
+    min-width: 110px;
+    padding: 5px 12px;
+    border-radius: 4px;
+}
+
+QPushButton#studioStreamButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                               stop:0 #3868da, stop:1 #8055da);
+    color: white;
+    border-color: var(--primary_light);
+}
+
+QPushButton#studioStreamButton:hover {
+    background: var(--primary_light);
+}
+
+QPushButton#studioRecordButton {
+    border-color: #757580;
+}
+
+/* Compact editor chrome. Scoped to this workspace so ordinary OBS stays usable. */
+OBSBasic[studioWorkspace="true"] {
+    font-size: 12px;
+}
+OBSBasic[studioWorkspace="true"] > QTabBar {
+    min-height: 0px;
+    max-height: 0px;
+}
+QWidget#studioDockHeader {
+    background: #1e1e1e;
+    border-bottom: 1px solid #303030;
+    min-height: 30px;
+    max-height: 30px;
+}
+QWidget#studioDockHeader QLabel {
+    font-size: 11px;
+    color: #c4c4ca;
+    font-weight: 600;
+}
+QWidget#studioDockHeader QToolButton {
+    border: none;
+    background: transparent;
+    color: #96969e;
+    font-size: 18px;
+    min-width: 22px;
+    min-height: 22px;
+    padding: 0;
+}
+QToolBar#studioToolbar {
+    min-height: 36px;
+    max-height: 36px;
+    padding: 2px 10px;
+    spacing: 8px;
+}
+QToolBar#studioToolbar QPushButton {
+    min-width: 80px;
+    max-height: 22px;
+    padding: 2px 10px;
+    font-size: 11px;
+}
+QToolButton#studioClipButton {
+    min-height: 22px;
+    padding: 0 12px 0 7px;
+    border: 1px solid #454549;
+    border-radius: 4px;
+}
+QLabel#studioHeaderMetrics {
+    color: #909099;
+    font-size: 10px;
+    padding: 0 12px;
+}
+QToolBar#studioSidebar {
+    background: #1e1e1e;
+    border: none;
+    border-left: 1px solid #303030;
+    spacing: 4px;
+}
+QToolBar#studioSidebar QToolButton {
+    font-size: 18px;
+    min-width: 30px;
+    max-width: 30px;
+    min-height: 30px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: #909099;
+}
+QToolBar#studioSidebar QToolButton:hover {
+    background: #303034;
+    color: #e2e2e2;
+}
+StudioInspectorDock QLabel#studioSourceDetails {
+    color: #909099;
+    font-size: 10px;
+}
+StudioInspectorDock QDoubleSpinBox {
+    min-height: 24px;
+    padding: 0 6px;
+    border-radius: 3px;
+    background: #28282a;
+}
+StudioInspectorDock QPushButton {
+    font-size: 11px;
+    min-height: 22px;
+    padding: 1px 6px;
+}
+QLabel#studioSectionLabel {
+    color: #909099;
+    border-top: 1px solid #303030;
+    padding-top: 9px;
+}
+OBSBasic[studioWorkspace="true"] SourceTree,
+OBSBasic[studioWorkspace="true"] SceneTree {
+    background: #1e1e1e;
+    border: none;
+    font-size: 11px;
+}
+OBSBasic[studioWorkspace="true"] QStatusBar {
+    font-size: 10px;
+    color: #787880;
+    max-height: 18px;
+}
+
+OBSBasic[studioWorkspace="true"] SceneTree::item:checked {
+    background: #2c2c2e;
+    color: #d0d0d7;
+}
+
+OBSBasic[studioWorkspace="true"] SceneTree::item:selected,
+OBSBasic[studioWorkspace="true"] SceneTree::item:selected:hover,
+OBSBasic[studioWorkspace="true"] SourceTree::item:selected,
+OBSBasic[studioWorkspace="true"] SourceTree::item:selected:hover {
+    background: #2b2b2e;
+    border-color: transparent;
+    color: #d0d0d7;
+}
+OBSBasic[studioWorkspace="true"] .mixer-category {
+    background: #29292c;
+    color: #96969e;
+    border: none;
+}
+
+/* Own Qt channel strip: source header, effects, meter/fader, controls, device. */
+VolumeControl[studioStrip="true"] {
+    background: #141414;
+    border: 1px solid #303033;
+    border-radius: 3px;
+    margin: 0px 6px 0px 0px;
+}
+VolumeControl[studioStrip="true"] VolumeName {
+    background: #27272a;
+    color: #dedee5;
+    border-bottom: 1px solid #3a3a3f;
+    padding: 0px 3px;
+    font-size: 11px;
+}
+VolumeControl[studioStrip="true"] #studioMixerEffects {
+    background: #101012;
+    border-bottom: 1px solid #2e2e32;
+}
+VolumeControl[studioStrip="true"] QListWidget {
+    background: transparent;
+    border: none;
+    font-size: 10px;
+    padding: 0px;
+}
+VolumeControl[studioStrip="true"] QListWidget::item {
+    min-height: 18px;
+    padding: 0px 1px;
+    border-bottom: 1px solid #252529;
+}
+VolumeControl[studioStrip="true"] QPushButton {
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 19px;
+    max-height: 19px;
+    padding: 0px 2px;
+    border: 1px solid #080808;
+    border-radius: 4px;
+    font-size: 10px;
+    color: #aaaab5;
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                               stop:0 #39393e, stop:0.48 #242428, stop:1 #151517);
+}
+VolumeControl[studioStrip="true"] QPushButton:hover {
+    color: #eeeeef;
+    border-color: #62626d;
+}
+VolumeControl[studioStrip="true"] QPushButton:checked {
+    color: #58ddb4;
+    border-color: #56b79b;
+    background: #1b2925;
+}
+VolumeControl[studioStrip="true"] QPushButton#studioMixerMute:checked {
+    color: #ff9996;
+    border-color: #bb6461;
+    background: #352222;
+}
+VolumeControl[studioStrip="true"] QPushButton#studioMixerCue:checked {
+    color: #6dcdfc;
+    border-color: #4389b0;
+    background: #182b38;
+}
+VolumeControl[studioStrip="true"] QPushButton#studioMixerAddEffect {
+    min-width: 0px;
+    max-width: 10000px;
+    min-height: 23px;
+    max-height: 23px;
+    font-size: 19px;
+    color: #aaaab3;
+    background: transparent;
+    border: none;
+}
+VolumeControl[studioStrip="true"] QToolButton#studioMixerDevice {
+    min-height: 23px;
+    max-height: 23px;
+    padding: 0px 15px 0px 5px;
+    background: #28282b;
+    border: 1px solid #39393f;
+    border-radius: 4px;
+    color: #ceced7;
+    font-size: 10px;
+    text-align: left;
+}
+VolumeControl[studioStrip="true"] QToolButton#studioMixerDevice::menu-indicator {
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+    right: 4px;
+}
+VolumeControl[studioStrip="true"] QLabel#studioMixerPeak,
+VolumeControl[studioStrip="true"] QLabel#volLabel {
+    font-size: 8px;
+    min-height: 16px;
+    max-height: 16px;
+    color: #bcbcc7;
+}
+VolumeControl[studioStrip="true"] QSlider#studioMixerFader::groove:vertical {
+    width: 3px;
+    background: #080808;
+    border: 1px solid #303034;
+    border-radius: 1px;
+}
+VolumeControl[studioStrip="true"] QSlider#studioMixerFader::handle:vertical {
+    height: 10px;
+    margin: 0px -7px;
+    background: #c3c3ca;
+    border: 1px solid #81818c;
+    border-radius: 2px;
+}
+
+/* Override the inherited vertical mixer's wider label and slider margins. */
+#vVolumeWidgets VolumeControl[studioStrip="true"] QLabel#volLabel,
+#vVolumeWidgets VolumeControl[studioStrip="true"] QLabel#studioMixerPeak {
+    min-width: 0px;
+    margin: 0px;
+    padding: 0px;
+}
+#vMixerScrollArea VolumeControl[studioStrip="true"] QSlider#studioMixerFader {
+    min-width: 22px;
+    max-width: 22px;
+    margin: 0px;
+    padding: 0px;
+}
+#vVolumeWidgets VolumeControl[studioStrip="true"] QSlider#studioMixerFader::add-page:vertical,
+#vVolumeWidgets VolumeControl[studioStrip="true"] QSlider#studioMixerFader::sub-page:vertical {
+    background: transparent;
+    border: none;
+}
+
+#vVolumeWidgets VolumeControl[studioStrip="true"] QLabel#volLabel {
+    min-width: 32px;
+    max-width: 32px;
+    margin-left: 0px;
+    margin-right: 0px;
+}
+
+VolumeControl[studioStrip="true"] VolumeMeter#studioMixerMeter {
+    qproperty-backgroundNominalColor: #141417;
+    qproperty-backgroundWarningColor: #141417;
+    qproperty-backgroundErrorColor: #141417;
+    qproperty-foregroundNominalColor: #58dfa5;
+    qproperty-foregroundWarningColor: #e8cb78;
+    qproperty-foregroundErrorColor: #eb8282;
+    qproperty-majorTickColor: #85858e;
+    qproperty-minorTickColor: #47474f;
+}
+
+/* Transient effect panels sit beside a channel, outside the narrow strip. */
+QFrame#studioEffectPicker, QFrame#studioEffectEditor {
+    background: #202022;
+    border: 1px solid #44444a;
+    border-radius: 5px;
+}
+QFrame#studioEffectPicker QListWidget {
+    background: #171719;
+    border: none;
+}
+QFrame#studioEffectPicker QListWidget::item {
+    min-height: 28px;
+    padding: 2px 6px;
+}
+QFrame#studioEffectEditor QPushButton {
+    min-width: 20px;
+    padding: 4px 8px;
+}
+QFrame#studioEffectEditor QCheckBox#studioEffectEnabled {
+    font-weight: 600;
+    color: #c7c7d2;
+}
+QFrame#studioEffectEditor QCheckBox#studioEffectEnabled::indicator {
+    width: 8px;
+    height: 8px;
+    image: none;
+    border: none;
+    border-radius: 4px;
+    background-color: #686870;
+}
+QFrame#studioEffectEditor QCheckBox#studioEffectEnabled::indicator:checked {
+    background-color: #57dfb0;
+    border-radius: 4px;
+}
+
+QWidget#studioCompactEffectControls QSlider::groove:horizontal {
+    height: 4px;
+    background: #505056;
+    border: none;
+}
+QWidget#studioCompactEffectControls QSlider::sub-page:horizontal,
+QWidget#studioCompactEffectControls QSlider::add-page:horizontal {
+    background: #505056;
+}
+QWidget#studioCompactEffectControls QSlider::handle:horizontal {
+    background: #d6d6db;
+    width: 3px;
+    margin: -5px 0px;
+    border: none;
+    border-radius: 0px;
+}
+QWidget#studioCompactEffectControls QDoubleSpinBox {
+    background: #29292d;
+    border: 1px solid #404045;
+    border-radius: 4px;
+    padding: 4px;
+    min-height: 18px;
+}
+
+QPushButton#studioAudioVodExclude:checked {
+    color: #cfacff;
+    background: #342445;
+    border-color: #a67bd5;
+}
+QLabel#studioMixerVodBadge {
+    font-size: 9px;
+    color: #cfacff;
+    background: #342445;
+    padding: 0px;
+}

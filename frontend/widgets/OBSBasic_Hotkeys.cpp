@@ -78,6 +78,25 @@ void OBSBasic::InitHotkeys()
 
 void OBSBasic::ProcessHotkey(obs_hotkey_id id, bool pressed)
 {
+	// Keep the established ReplayBuffer.Save binding and settings entry, while
+	// its idle native placeholder acts as a control for both independent buffers.
+	struct ReplayHotkey { obs_hotkey_id id; obs_output_t *output; bool match = false; } replay{
+		id, outputHandler ? outputHandler->replayBuffer.Get() : nullptr};
+	obs_enum_hotkeys([](void *opaque, obs_hotkey_id current, obs_hotkey_t *key) {
+		auto &replay = *static_cast<ReplayHotkey *>(opaque);
+		if (current != replay.id) return true;
+		if (replay.output && obs_hotkey_get_registerer_type(key) == OBS_HOTKEY_REGISTERER_OUTPUT &&
+		    !strcmp(obs_hotkey_get_name(key), "ReplayBuffer.Save")) {
+			OBSOutputAutoRelease owner = obs_weak_output_get_output(
+				static_cast<obs_weak_output_t *>(obs_hotkey_get_registerer(key)));
+			replay.match = owner == replay.output;
+		}
+		return false;
+	}, &replay);
+	if (replay.match) {
+		if (pressed) ReplayBufferSave();
+		return;
+	}
 	obs_hotkey_trigger_routed_callback(id, pressed);
 }
 

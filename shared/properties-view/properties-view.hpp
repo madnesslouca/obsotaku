@@ -164,6 +164,7 @@ public:
 #undef obj_constructor
 
 	inline obs_data_t *GetSettings() const { return settings; }
+	void FlushPendingChanges();
 
 	inline void UpdateSettings()
 	{

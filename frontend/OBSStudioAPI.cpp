@@ -417,7 +417,7 @@ obs_output_t *OBSStudioAPI::obs_frontend_get_recording_output()
 
 obs_output_t *OBSStudioAPI::obs_frontend_get_replay_buffer_output()
 {
-	OBSOutput out = main->outputHandler->replayBuffer.Get();
+	auto out = main->outputHandler->StudioReplayOutput();
 	return obs_output_get_ref(out);
 }
 
@@ -760,4 +760,10 @@ obs_frontend_callbacks *InitializeAPIInterface(OBSBasic *main)
 	obs_frontend_callbacks *api = new OBSStudioAPI(main);
 	obs_frontend_set_callbacks_internal(api);
 	return api;
+}
+
+extern bool safe_mode;
+bool OBSStudioAPI::obs_frontend_is_safe_mode_enabled()
+{
+	return safe_mode;
 }

@@ -71,6 +71,8 @@ struct noise_suppress_data {
 	struct deque output_buffers[MAX_PREPROC_CHANNELS];
 
 	bool use_rnnoise;
+	bool studio_voice;
+	bool enable_agc;
 	bool has_mono_src;
 	volatile bool reinit_done;
 #ifdef LIBSPEEXDSP_ENABLED
@@ -199,6 +201,15 @@ static void noise_suppress_update(void *data, obs_data_t *s)
 	ng->suppress_level = (int)obs_data_get_int(s, S_SUPPRESS_LEVEL);
 	ng->latency = 1000000000LL / (1000 / BUFFER_SIZE_MSEC);
 	ng->use_rnnoise = strcmp(method, S_METHOD_RNN) == 0;
+#ifdef LIBSPEEXDSP_ENABLED
+	ng->studio_voice = strcmp(obs_source_get_id(ng->context), "studio_voice_filter") == 0;
+	if (ng->studio_voice) {
+		const int level = (int)obs_data_get_int(s, "level");
+		ng->use_rnnoise = false;
+		ng->suppress_level = level <= 0 ? -15 : level == 1 ? -30 : -45;
+		ng->enable_agc = obs_data_get_bool(s, "enable_agc");
+	}
+#endif
 
 	/* Process 10 millisecond segments to keep latency low. */
 	/* Also RNNoise only supports buffers of this exact size. */
@@ -267,8 +278,19 @@ static inline void process_speexdsp(struct noise_suppress_data *ng)
 {
 #ifdef LIBSPEEXDSP_ENABLED
 	/* Set args */
-	for (size_t i = 0; i < ng->channels; i++)
+	for (size_t i = 0; i < ng->channels; i++) {
 		speex_preprocess_ctl(ng->spx_states[i], SPEEX_PREPROCESS_SET_NOISE_SUPPRESS, &ng->suppress_level);
+		if (ng->studio_voice) {
+			int enabled = ng->enable_agc;
+			float target = 32768.0f * 0.125f;
+			int max_gain = 12, increase = 6, decrease = 24;
+			speex_preprocess_ctl(ng->spx_states[i], SPEEX_PREPROCESS_SET_AGC, &enabled);
+			speex_preprocess_ctl(ng->spx_states[i], SPEEX_PREPROCESS_SET_AGC_LEVEL, &target);
+			speex_preprocess_ctl(ng->spx_states[i], SPEEX_PREPROCESS_SET_AGC_MAX_GAIN, &max_gain);
+			speex_preprocess_ctl(ng->spx_states[i], SPEEX_PREPROCESS_SET_AGC_INCREMENT, &increase);
+			speex_preprocess_ctl(ng->spx_states[i], SPEEX_PREPROCESS_SET_AGC_DECREMENT, &decrease);
+		}
+	}
 
 	/* Convert to 16bit */
 	for (size_t i = 0; i < ng->channels; i++)
@@ -551,3 +573,39 @@ struct obs_source_info noise_suppress_filter_v2 = {
 	.get_defaults = noise_suppress_defaults_v2,
 	.get_properties = noise_suppress_properties,
 };
+
+#ifdef LIBSPEEXDSP_ENABLED
+static const char *studio_voice_name(void *unused)
+{
+	UNUSED_PARAMETER(unused);
+	return obs_module_text("Studio.VoiceClarity");
+}
+static void studio_voice_defaults(obs_data_t *settings)
+{
+	obs_data_set_default_int(settings, "level", 1);
+	obs_data_set_default_bool(settings, "enable_agc", false);
+}
+static obs_properties_t *studio_voice_properties(void *unused)
+{
+	UNUSED_PARAMETER(unused);
+	obs_properties_t *props = obs_properties_create();
+	obs_property_t *level = obs_properties_add_list(props, "level", MT_("Studio.VoiceLevel"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(level, MT_("Studio.VoiceLow"), 0);
+	obs_property_list_add_int(level, MT_("Studio.VoiceModerate"), 1);
+	obs_property_list_add_int(level, MT_("Studio.VoiceHigh"), 2);
+	obs_properties_add_bool(props, "enable_agc", MT_("Studio.VoiceAGC"));
+	return props;
+}
+struct obs_source_info studio_voice_filter = {
+	.id = "studio_voice_filter",
+	.type = OBS_SOURCE_TYPE_FILTER,
+	.output_flags = OBS_SOURCE_AUDIO,
+	.get_name = studio_voice_name,
+	.create = noise_suppress_create,
+	.destroy = noise_suppress_destroy,
+	.update = noise_suppress_update,
+	.filter_audio = noise_suppress_filter_audio,
+	.get_defaults = studio_voice_defaults,
+	.get_properties = studio_voice_properties,
+};
+#endif
