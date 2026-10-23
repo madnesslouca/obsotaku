@@ -441,3 +441,58 @@ outside that acceptance. These restore checks do not certify media behavior.
 The earlier Windows Main RTMP movement failure remains open. Passing native
 accounting, lifetime and timing checks does not constitute another successful
 Windows six-output media run or a complete Windows distribution.
+
+
+## Capture-start refusal and transport ownership
+
+RTMP, FFmpeg recording and replay now propagate an explicit refusal from
+`obs_output_begin_data_capture` instead of retaining provisional resources or
+reporting a successful start. The recording caller retires only its own helper
+pipe; replay retains its existing packet ring and last saved path.
+
+An RTMP sender that exits while initialization is still running transfers its
+resources to the connection owner and stays joinable. It never waits for the
+begin callback to return. Cleanup and terminal signaling have one owner; startup
+failure does not use `end_data_capture` as a generic rollback. Reentrant Stop
+also avoids joining the calling connection thread while preserving joins from
+other threads.
+
+The portable checks compile actual plugin translation units. Begin/preflight,
+metadata and protocol operations are injected; native workers, synchronization,
+loopback sockets and helper processes remain real. Negative controls preserve
+the original startup-refusal and early-worker failures. Windows secondary-worker
+checks use a controlled worker, not the complete socket backend. These checks
+do not certify an RTMP handshake, core attach rollback, arbitrary concurrent
+start/destruction or a generation-aware output transaction.
+
+Native Linux and Windows checks passed, including the27-criterion mux/replay
+suite and all eight platform-specific RTMP scenarios. Controls reproduce the
+original failures and the early candidate's incomplete cleanup; the successful
+path retains the other output. The canonical standalone adapter was compiled
+and executed natively on Windows as well. Counts overlap and are not aggregate
+feature coverage.
+
+The installed Linux combination then passed436 native assertions, nine fully
+decoded moving-video/997 Hz files,96 PTS/DTS checks and27 first-keyframe/initial
+A/V checks. It used unchanged15 fps dimensions and movement thresholds, two
+local receivers, two recordings and two replay buffers. The Portrait receiver
+was interrupted while Main continued; all sampled movement windows had100%
+distinct frames. Only obs-outputs and obs-ffmpeg changed; the previous binaries
+were preserved and the other1,809 runtime files remained identical.
+
+The126 normal configuration/keyring files were preserved. Pulse names, defaults,
+mutes and volumes were identical, and no application streams remained. The raw
+snapshot comparator reported changed runtime indices for one sink and source;
+that failure was retained and stable settings were reviewed separately. No
+claim is made that runtime indices or other applications' streams stayed equal.
+The test process closed normally and its opt-in module was archived.
+
+The clean Linux modules are SHA256
+`c80e6334ef86c7200a74c554888d214482ceab2f39e4ca0ecd31fe66695ac358`
+(obs-outputs) and
+`85b17d1a956becc7e9b871227f9043da2d9791148fb634c12af763e3abc04c18`
+(obs-ffmpeg). The frontend/core/API remain the preceding accepted combination.
+These short synthetic tests do not certify physical capture, sustained60 fps,
+public services or a Windows distribution. The earlier Windows Main RTMP
+movement failure remains open pending a separate clean-runtime media acceptance.
+Other begin callers and the complete RAW startup transaction remain pending.

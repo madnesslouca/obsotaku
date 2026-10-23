@@ -73,6 +73,9 @@ struct rtmp_stream {
 	volatile bool active;
 	volatile bool disconnected;
 	volatile bool encode_error;
+	/* Atomic startup terminal ownership, never waited on by the worker. */
+	volatile long capture_start_state;
+	volatile long capture_start_terminal_code;
 	pthread_t send_thread;
 
 	int max_shutdown_time_sec;

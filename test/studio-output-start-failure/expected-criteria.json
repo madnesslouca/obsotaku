@@ -1,0 +1,47 @@
+{
+  "scope": "Normative fixture criterion counts; not execution evidence or unique feature coverage.",
+  "mux_replay": {
+    "linux": 27,
+    "windows": 27
+  },
+  "rtmp": {
+    "basic": {
+      "linux": 16,
+      "windows": 34
+    },
+    "early-false": {
+      "linux": 20,
+      "windows": 42
+    },
+    "stop-true": {
+      "linux": 20,
+      "windows": 42
+    },
+    "meta-fail": {
+      "linux": 20,
+      "windows": 42
+    },
+    "meta-retire": {
+      "linux": 20,
+      "windows": 42
+    },
+    "connecting-stop": {
+      "linux": 20,
+      "windows": 42
+    },
+    "other-connecting-stop": {
+      "linux": 21,
+      "windows": 44
+    },
+    "unsupported": {
+      "linux": 16,
+      "windows": null
+    },
+    "socket-fail": {
+      "linux": null,
+      "windows": 22
+    }
+  },
+  "candidate_failure_count": 0,
+  "native_platform_receipt_required": true
+}

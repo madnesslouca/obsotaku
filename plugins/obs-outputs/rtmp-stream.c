@@ -60,6 +60,13 @@ static void log_rtmp(int level, const char *format, va_list args)
 	blogva(LOG_INFO, format, args);
 }
 
+enum capture_start_state {
+	CAPTURE_STARTING,
+	CAPTURE_COMMITTED,
+	CAPTURE_REFUSED,
+	CAPTURE_RETIRED_TO_PARENT,
+};
+
 static inline size_t num_buffered_packets(struct rtmp_stream *stream);
 
 static inline void free_packets(struct rtmp_stream *stream)
@@ -207,7 +214,7 @@ static void rtmp_stream_stop(void *data, uint64_t ts)
 	if (stopping(stream) && ts != 0)
 		return;
 
-	if (connecting(stream))
+	if (connecting(stream) && !pthread_equal(pthread_self(), stream->connect_thread))
 		pthread_join(stream->connect_thread, NULL);
 
 	stream->stop_ts = ts / 1000ULL;
@@ -629,6 +636,62 @@ static void log_sndbuf_size(struct rtmp_stream *stream)
 }
 #endif
 
+static void cleanup_send_transport(struct rtmp_stream *stream, bool report_terminal)
+{
+	bool encode_error = os_atomic_load_bool(&stream->encode_error);
+
+	if (disconnected(stream)) {
+		info("Disconnected from %s", stream->path.array);
+	} else if (encode_error) {
+		info("Encoder error, disconnecting");
+		send_footers(stream); // Y2023 spec
+	} else {
+		info("User stopped the stream");
+		send_footers(stream); // Y2023 spec
+	}
+
+#ifdef _WIN32
+	log_sndbuf_size(stream);
+#endif
+
+	if (stream->new_socket_loop && stream->socket_thread_active) {
+		os_event_signal(stream->send_thread_signaled_exit);
+		os_event_signal(stream->buffer_has_data_event);
+		pthread_join(stream->socket_thread, NULL);
+		stream->socket_thread_active = false;
+		stream->rtmp.m_bCustomSend = false;
+	}
+
+	set_output_error(stream);
+
+	RTMP_Close(&stream->rtmp);
+
+	/* reset bitrate on stop */
+	if (stream->dbr_enabled) {
+		if (stream->dbr_cur_bitrate != stream->dbr_orig_bitrate) {
+			stream->dbr_cur_bitrate = stream->dbr_orig_bitrate;
+			dbr_set_bitrate(stream);
+		}
+	}
+
+	if (report_terminal) {
+		if (!stopping(stream)) {
+			pthread_detach(stream->send_thread);
+			obs_output_signal_stop(stream->output, OBS_OUTPUT_DISCONNECTED);
+		} else if (encode_error) {
+			obs_output_signal_stop(stream->output, OBS_OUTPUT_ENCODE_ERROR);
+		} else {
+			obs_output_end_data_capture(stream->output);
+		}
+	}
+
+	free_packets(stream);
+	os_event_reset(stream->stop_event);
+	os_atomic_set_bool(&stream->active, false);
+	stream->sent_headers = false;
+
+}
+
 static void *send_thread(void *data)
 {
 	struct rtmp_stream *stream = data;
@@ -695,54 +758,18 @@ static void *send_thread(void *data)
 	}
 
 	bool encode_error = os_atomic_load_bool(&stream->encode_error);
-
-	if (disconnected(stream)) {
-		info("Disconnected from %s", stream->path.array);
-	} else if (encode_error) {
-		info("Encoder error, disconnecting");
-		send_footers(stream); // Y2023 spec
-	} else {
-		info("User stopped the stream");
-		send_footers(stream); // Y2023 spec
+	int terminal_code = encode_error ? OBS_OUTPUT_ENCODE_ERROR :
+		(stopping(stream) ? OBS_OUTPUT_SUCCESS : OBS_OUTPUT_DISCONNECTED);
+	os_atomic_set_long(&stream->capture_start_terminal_code, terminal_code);
+	long expected = CAPTURE_STARTING;
+	if (os_atomic_compare_exchange_long(&stream->capture_start_state, &expected,
+					    CAPTURE_RETIRED_TO_PARENT)) {
+		/* Initialization may still be publishing transport fields or sending
+		 * metadata. Return joinable without touching any startup-owned resource.
+		 * The parent joins and cleans only after finishing that initialization. */
+		return NULL;
 	}
-
-#ifdef _WIN32
-	log_sndbuf_size(stream);
-#endif
-
-	if (stream->new_socket_loop) {
-		os_event_signal(stream->send_thread_signaled_exit);
-		os_event_signal(stream->buffer_has_data_event);
-		pthread_join(stream->socket_thread, NULL);
-		stream->socket_thread_active = false;
-		stream->rtmp.m_bCustomSend = false;
-	}
-
-	set_output_error(stream);
-
-	RTMP_Close(&stream->rtmp);
-
-	/* reset bitrate on stop */
-	if (stream->dbr_enabled) {
-		if (stream->dbr_cur_bitrate != stream->dbr_orig_bitrate) {
-			stream->dbr_cur_bitrate = stream->dbr_orig_bitrate;
-			dbr_set_bitrate(stream);
-		}
-	}
-
-	if (!stopping(stream)) {
-		pthread_detach(stream->send_thread);
-		obs_output_signal_stop(stream->output, OBS_OUTPUT_DISCONNECTED);
-	} else if (encode_error) {
-		obs_output_signal_stop(stream->output, OBS_OUTPUT_ENCODE_ERROR);
-	} else {
-		obs_output_end_data_capture(stream->output);
-	}
-
-	free_packets(stream);
-	os_event_reset(stream->stop_event);
-	os_atomic_set_bool(&stream->active, false);
-	stream->sent_headers = false;
+	cleanup_send_transport(stream, expected == CAPTURE_COMMITTED);
 
 	return NULL;
 }
@@ -975,11 +1002,35 @@ static inline bool reset_semaphore(struct rtmp_stream *stream)
 	return os_sem_init(&stream->send_sem, 0) == 0;
 }
 
+/* Called only by the connection owner before a successful capture commit. */
+static int retire_send_start(struct rtmp_stream *stream, int code)
+{
+	long expected = CAPTURE_STARTING;
+	bool worker_running = os_atomic_compare_exchange_long(&stream->capture_start_state, &expected,
+							     CAPTURE_REFUSED);
+	if (worker_running) {
+		stream->stop_ts = 0;
+		os_event_signal(stream->stop_event);
+		os_sem_post(stream->send_sem);
+	} else {
+		assert(expected == CAPTURE_RETIRED_TO_PARENT);
+	}
+	/* The worker never waits for this owner, and never detaches before commit.
+	 * No plugin mutex is held across the join. */
+	pthread_join(stream->send_thread, NULL);
+	if (!worker_running)
+		cleanup_send_transport(stream, false);
+	os_event_reset(stream->stop_event);
+	return code;
+}
+
 static int init_send(struct rtmp_stream *stream)
 {
 	int ret;
 	obs_output_t *context = stream->output;
 
+	os_atomic_set_long(&stream->capture_start_state, CAPTURE_STARTING);
+	os_atomic_set_long(&stream->capture_start_terminal_code, OBS_OUTPUT_ERROR);
 	reset_semaphore(stream);
 
 	ret = pthread_create(&stream->send_thread, NULL, send_thread, stream);
@@ -999,7 +1050,7 @@ static int init_send(struct rtmp_stream *stream)
 			stream->rtmp.last_error_code = errno;
 #endif
 			warn("Failed to set non-blocking socket");
-			return OBS_OUTPUT_ERROR;
+			return retire_send_start(stream, OBS_OUTPUT_ERROR);
 		}
 
 		os_event_reset(stream->send_thread_signaled_exit);
@@ -1060,14 +1111,13 @@ static int init_send(struct rtmp_stream *stream)
 
 #ifndef _WIN32
 		warn("New socket loop not supported on this platform");
-		return OBS_OUTPUT_ERROR;
+		return retire_send_start(stream, OBS_OUTPUT_ERROR);
 #else
 		ret = pthread_create(&stream->socket_thread, NULL, socket_thread_windows, stream);
 
 		if (ret != 0) {
-			RTMP_Close(&stream->rtmp);
 			warn("Failed to create socket thread");
-			return OBS_OUTPUT_ERROR;
+			return retire_send_start(stream, OBS_OUTPUT_ERROR);
 		}
 
 		stream->socket_thread_active = true;
@@ -1082,10 +1132,33 @@ static int init_send(struct rtmp_stream *stream)
 	if (!send_meta_data(stream)) {
 		warn("Disconnected while attempting to send metadata");
 		set_output_error(stream);
-		return OBS_OUTPUT_DISCONNECTED;
+		return retire_send_start(stream, OBS_OUTPUT_DISCONNECTED);
 	}
 
-	obs_output_begin_data_capture(stream->output, 0);
+	if (os_atomic_load_long(&stream->capture_start_state) == CAPTURE_RETIRED_TO_PARENT) {
+		int code = (int)os_atomic_load_long(&stream->capture_start_terminal_code);
+		if (code != OBS_OUTPUT_SUCCESS)
+			return retire_send_start(stream, code);
+	}
+
+	if (!obs_output_begin_data_capture(stream->output, 0)) {
+		int code = retire_send_start(stream, OBS_OUTPUT_ERROR);
+		obs_output_set_last_error(stream->output, "Failed to begin data capture.");
+		return code;
+	}
+
+	long expected = CAPTURE_STARTING;
+	if (!os_atomic_compare_exchange_long(&stream->capture_start_state, &expected, CAPTURE_COMMITTED)) {
+		/* The worker completed while begin was emitting callbacks. Joining a
+		 * handed-off worker cannot wait for begin or call back into its owner. */
+		assert(expected == CAPTURE_RETIRED_TO_PARENT);
+		pthread_join(stream->send_thread, NULL);
+		cleanup_send_transport(stream, false);
+		int code = (int)os_atomic_load_long(&stream->capture_start_terminal_code);
+		if (code == OBS_OUTPUT_SUCCESS)
+			obs_output_end_data_capture(stream->output);
+		return code;
+	}
 
 	return OBS_OUTPUT_SUCCESS;
 }

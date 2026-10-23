@@ -439,7 +439,15 @@ static inline bool ffmpeg_mux_start_internal(struct ffmpeg_muxer *stream, obs_da
 	os_atomic_set_bool(&stream->capturing, true);
 	os_atomic_set_bool(&stream->stopping, false);
 	stream->total_bytes = 0;
-	obs_output_begin_data_capture(stream->output, 0);
+	if (!obs_output_begin_data_capture(stream->output, 0)) {
+		os_atomic_set_bool(&stream->capturing, false);
+		os_atomic_set_bool(&stream->active, false);
+		os_atomic_set_bool(&stream->stopping, false);
+		os_process_pipe_destroy(stream->pipe);
+		stream->pipe = NULL;
+		obs_output_set_last_error(stream->output, "Failed to begin data capture.");
+		return false;
+	}
 
 	info("Writing file '%s'...", stream->path.array);
 	return true;
@@ -1089,7 +1097,15 @@ static bool replay_buffer_start(void *data)
 	os_atomic_set_bool(&stream->capturing, true);
 	stream->total_bytes = 0;
 	pthread_mutex_unlock(&stream->replay_mutex);
-	obs_output_begin_data_capture(stream->output, 0);
+	if (!obs_output_begin_data_capture(stream->output, 0)) {
+		pthread_mutex_lock(&stream->replay_mutex);
+		os_atomic_set_bool(&stream->capturing, false);
+		os_atomic_set_bool(&stream->active, false);
+		os_atomic_set_bool(&stream->stopping, false);
+		pthread_mutex_unlock(&stream->replay_mutex);
+		obs_output_set_last_error(stream->output, "Failed to begin data capture.");
+		return false;
+	}
 
 	return true;
 }
