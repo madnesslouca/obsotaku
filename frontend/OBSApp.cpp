@@ -624,9 +624,11 @@ bool OBSApp::InitGlobalConfig()
 	/* Restores are staged by the UI and applied here, after all storage roots
 	 * are known but before user.ini, profiles, and scene collections are read.
 	 * This also prevents shutdown from overwriting freshly restored files. */
-	const bool hadPendingRestore = CloudBackupArchive::HasPendingRestore();
+	CloudBackupRoots restoreRoots;
 	QString restoreError;
-	if (!CloudBackupArchive::ApplyPendingRestore(restoreError)) {
+	const bool rootsCaptured = CloudBackupArchive::CaptureRoots(restoreRoots, restoreError);
+	const bool hadPendingRestore = rootsCaptured && CloudBackupArchive::HasPendingRestore(restoreRoots);
+	if (!rootsCaptured || !CloudBackupArchive::ApplyPendingRestore(restoreRoots, restoreError)) {
 		blog(LOG_ERROR, "Could not apply the pending Google Drive backup: %s", QT_TO_UTF8(restoreError));
 		OBSErrorBox(nullptr, "%s", QT_TO_UTF8(restoreError));
 	} else if (hadPendingRestore) {

@@ -174,9 +174,13 @@ public:
 			passphrase->setPlaceholderText(QTStr("CloudBackup.Passphrase.Placeholder"));
 			layout->addWidget(passphrase);
 			restoreCredentials = new QCheckBox(QTStr("CloudBackup.Restore.Credentials"), this);
-			restoreCredentials->setChecked(true);
-			restoreCredentials->setToolTip(QTStr("CloudBackup.Restore.Credentials.Help"));
+			restoreCredentials->setChecked(false);
+			restoreCredentials->setEnabled(false);
+			restoreCredentials->setToolTip(QTStr("CloudBackup.CredentialsPaused"));
 			layout->addWidget(restoreCredentials);
+			auto *restriction = new QLabel(QTStr("CloudBackup.CredentialsPaused"), this);
+			restriction->setWordWrap(true);
+			layout->addWidget(restriction);
 		}
 		auto *mappingLabel = new QLabel(QTStr("CloudBackup.Restore.PathMappings"), this);
 		mappingLabel->setWordWrap(true);
@@ -304,9 +308,13 @@ void GoogleDriveBackupDialog::BuildUi()
 	for (QCheckBox *check : {generalCheck, profilesCheck, scenesCheck, pluginsCheck})
 		optionsLayout->addWidget(check);
 	secretsCheck = new QCheckBox(QTStr("CloudBackup.IncludeSecrets"), optionsGroup);
-	secretsCheck->setEnabled(CloudBackupArchive::EncryptionSupported());
-	secretsCheck->setToolTip(QTStr("CloudBackup.IncludeSecrets.Help"));
+	secretsCheck->setChecked(false);
+	secretsCheck->setEnabled(false);
+	secretsCheck->setToolTip(QTStr("CloudBackup.CredentialsPaused"));
 	optionsLayout->addWidget(secretsCheck);
+	auto *restriction = new QLabel(QTStr("CloudBackup.CredentialsPaused"), optionsGroup);
+	restriction->setWordWrap(true);
+	optionsLayout->addWidget(restriction);
 	passphraseEdit = new QLineEdit(optionsGroup);
 	passphraseEdit->setEchoMode(QLineEdit::Password);
 	passphraseEdit->setPlaceholderText(QTStr("CloudBackup.Passphrase.Placeholder"));
@@ -769,6 +777,9 @@ void GoogleDriveBackupDialog::BackupNow()
 		return;
 	const auto session = connectionSession;
 	if (!CurrentContext(connectionMetadataCurrent, session)) return;
+	CloudBackupRoots roots;
+	QString rootsError;
+	if (!CloudBackupArchive::CaptureRoots(roots, rootsError)) { activityStatus->setText(rootsError); return; }
 	if (!SaveSettings()) return;
 	const auto metadataCurrent = GoogleDriveBackupClient::CaptureConfigurationGuard(GoogleDriveBackupClient::ConfigurationPart::All);
 	CloudBackupOptions options;
@@ -786,14 +797,13 @@ void GoogleDriveBackupDialog::BackupNow()
 	connectionRequest = request;
 	QPointer<GoogleDriveBackupDialog> guard(this);
 	QObject *dispatcher = MultistreamGuiDispatcher();
-	StartTask([cancel, guard, dispatcher, registration, options, retention, request, metadataCurrent, session]() {
+	StartTask([cancel, guard, dispatcher, registration, options, retention, request, metadataCurrent, session, roots]() {
 		QByteArray archive;
 		CloudBackupSummary summary;
 		GoogleDriveBackupItem uploaded;
 		QString error;
 		bool success = !cancel.IsCancelled() && GoogleDriveBackupClient::ValidateSession(session, error, request);
-		// Archive root selection remains a separately documented isolation gap.
-		if (success) success = CloudBackupArchive::Create(options, archive, summary, error);
+		if (success) success = CloudBackupArchive::Create(roots, options, archive, summary, error, [cancel] { return cancel.IsCancelled(); });
 		if (success)
 			success = GoogleDriveBackupClient::Upload(archive, summary.computerName, summary.obsVersion,
 							  summary.createdUtc, summary.encrypted, uploaded, error, registration, cancel, session);
@@ -802,10 +812,12 @@ void GoogleDriveBackupDialog::BackupNow()
 			if (!GoogleDriveBackupClient::Prune(retention, pruneError, registration, cancel, session))
 				blog(LOG_WARNING, "Google Drive backup retention failed.");
 		}
-		QMetaObject::invokeMethod(dispatcher, [guard, success, error, metadataCurrent, session]() {
+		QMetaObject::invokeMethod(dispatcher, [guard, success, error, metadataCurrent, session, roots]() {
 			if (!guard) return;
 			guard->connectionRequest.reset();
 			if (!guard->CurrentContext(metadataCurrent, session)) return;
+			QString rootsError;
+			if (!CloudBackupArchive::RootsCurrent(roots, rootsError)) { guard->SetBusy(false, rootsError); return; }
 			if (success) {
 				if (!SaveCloudField("LastBackupUnix", to_string(QDateTime::currentSecsSinceEpoch()))) {
 					guard->SetBusy(false, tr("O upload terminou, mas não foi possível salvar a data do backup.")); return;
@@ -832,6 +844,9 @@ GoogleDriveBackupItem GoogleDriveBackupDialog::SelectedItem() const
 void GoogleDriveBackupDialog::RestoreSelected()
 {
 	if (busy) return; // Also covers the history itemDoubleClicked gesture.
+	CloudBackupRoots roots;
+	QString rootsError;
+	if (!CloudBackupArchive::CaptureRoots(roots, rootsError)) { activityStatus->setText(rootsError); return; }
 	const auto metadataCurrent = historyMetadataCurrent;
 	const auto session = historySession;
 	const auto registration = GoogleDriveBackupClient::Registration();
@@ -845,15 +860,17 @@ void GoogleDriveBackupDialog::RestoreSelected()
 	const OAuthHttpClient::Cancellation cancel{httpCancelled, MultistreamTaskPool().StopToken()};
 	QPointer<GoogleDriveBackupDialog> guard(this);
 	QObject *dispatcher = MultistreamGuiDispatcher();
-	StartTask([cancel, guard, dispatcher, registration, item, metadataCurrent, session]() {
+	StartTask([cancel, guard, dispatcher, registration, item, metadataCurrent, session, roots]() {
 		QByteArray archive;
 		QString error;
 		const bool success = GoogleDriveBackupClient::Download(item.id, archive, error, registration, cancel, session);
-		QMetaObject::invokeMethod(dispatcher, [guard, success, archive = std::move(archive), item, error, metadataCurrent, session]() mutable {
+		QMetaObject::invokeMethod(dispatcher, [guard, success, archive = std::move(archive), item, error, metadataCurrent, session, roots]() mutable {
 			if (!guard || !guard->CurrentContext(metadataCurrent, session)) return;
+			QString rootsError;
+			if (!CloudBackupArchive::RootsCurrent(roots, rootsError)) { guard->SetBusy(false, rootsError); return; }
 			guard->SetBusy(false, success ? QTStr("CloudBackup.DownloadComplete") : error);
 			if (success)
-				guard->HandleRestoreArchive(std::move(archive), item.encrypted, [metadataCurrent, session] { return metadataCurrent && metadataCurrent() && GoogleDriveBackupClient::SessionCurrent(session); });
+				guard->HandleRestoreArchive(std::move(archive), item.encrypted, [metadataCurrent, session, roots] { QString ignored; return metadataCurrent && metadataCurrent() && GoogleDriveBackupClient::SessionCurrent(session) && CloudBackupArchive::RootsCurrent(roots, ignored); });
 		}, Qt::QueuedConnection);
 	});
 }
@@ -861,6 +878,14 @@ void GoogleDriveBackupDialog::RestoreSelected()
 void GoogleDriveBackupDialog::HandleRestoreArchive(QByteArray archive, bool encryptedHint, function<bool()> contextCurrent)
 {
 	if (!contextCurrent) contextCurrent = CloudMetadataGuard();
+	CloudBackupRoots roots;
+	QString rootsError;
+	if (!CloudBackupArchive::CaptureRoots(roots, rootsError)) { activityStatus->setText(rootsError); return; }
+	const auto sourceCurrent = contextCurrent;
+	contextCurrent = [sourceCurrent, roots] {
+		QString ignored;
+		return sourceCurrent && sourceCurrent() && CloudBackupArchive::RootsCurrent(roots, ignored);
+	};
 	if (!contextCurrent()) { activityStatus->setText(tr("A configuração mudou antes de restaurar.")); return; }
 	const QByteArray magic("OBSCLOUD2");
 	const bool encryptedArchive = archive.size() > magic.size() && archive.startsWith(magic) &&
@@ -879,13 +904,17 @@ void GoogleDriveBackupDialog::HandleRestoreArchive(QByteArray archive, bool encr
 	SetBusy(true, QTStr("CloudBackup.PreparingRestore"));
 	QPointer<GoogleDriveBackupDialog> guard(this);
 	QObject *dispatcher = MultistreamGuiDispatcher();
-	StartTask([guard, dispatcher, archive = std::move(archive), options]() {
+	const OAuthHttpClient::Cancellation cancel{httpCancelled, MultistreamTaskPool().StopToken()};
+	StartTask([guard, dispatcher, archive = std::move(archive), options, roots, contextCurrent, cancel]() {
 		QString safety;
 		QString error;
-		const bool success = CloudBackupArchive::StageRestore(archive, options, safety, error);
-		QMetaObject::invokeMethod(dispatcher, [guard, success, safety, error]() {
+		const bool success = CloudBackupArchive::StageRestore(roots, archive, options, safety, error, [cancel] { return cancel.IsCancelled(); });
+		QMetaObject::invokeMethod(dispatcher, [guard, success, safety, error, contextCurrent]() {
 			if (!guard)
 				return;
+			if (!contextCurrent()) {
+				guard->SetBusy(false, tr("O contexto mudou. Uma intenção já publicada permanece vinculada somente às raízes originais.")); return;
+			}
 			guard->SetBusy(false, success ? QTStr("CloudBackup.RestoreReady") : error);
 			if (success) {
 				guard->restartRequired = true;
@@ -961,7 +990,15 @@ void GoogleDriveBackupDialog::ExportSelected()
 
 void GoogleDriveBackupDialog::ImportLocal()
 {
-	const auto contextCurrent = CloudMetadataGuard();
+	if (busy) return;
+	CloudBackupRoots roots;
+	QString rootsError;
+	if (!CloudBackupArchive::CaptureRoots(roots, rootsError)) { activityStatus->setText(rootsError); return; }
+	const auto metadataCurrent = CloudMetadataGuard();
+	const auto contextCurrent = [metadataCurrent, roots] {
+		QString ignored;
+		return metadataCurrent() && CloudBackupArchive::RootsCurrent(roots, ignored);
+	};
 	const QString path = QFileDialog::getOpenFileName(this, QTStr("CloudBackup.Import"), {},
 							 QTStr("CloudBackup.FileFilter"));
 	if (path.isEmpty()) return;

@@ -23,6 +23,7 @@ Run widgets with `QT_QPA_PLATFORM=offscreen` and private runtime/config director
 | studio-cloud-session-check | none | 65 |
 | studio-cloud-settings-check | none | 23 |
 | studio-cloud-registration-check | none | 6 |
+| studio-cloud-archive-ui-check | none | 18, restore-options root context and credential controls |
 
 The historical `--remote-before` and `--auth-before` names identify preserved before/after scenarios; they execute corrected behavior in the final source. `studio-cloud-registration-check --null-config` is also available for subprocess-only unavailable-config reproduction. The pre-fix process terminated with SIGSEGV; disable core dumps and never run such a crash reproduction in the main test process.
 
@@ -31,5 +32,7 @@ The legacy scheduler happy-path fixture establishes authorization through real `
 Credential tests cover exact RAW recovery, new authorization serialization, unexpected external replacement/absence, durable GUI decisions, stopped or destroyed receivers and late deliveries. Session tests cover old-item/new-token prevention, both upload phases, pagination and retention removal. Draft tests retain valid local edits while refusing stale settings after independent authorization edits. OAuth exchange is counted at entry so shutdown acceptance proves that a queued noncancellable request never started.
 
 `messagebox-contract.cpp` preserves the directed QMessageBox oracle reproduction: use an actual Yes button click, not `done(Yes)`. Real libcurl cancellation has separate loopback coverage in `studio-http-cancel`; the 75-criterion OAuth credential-removal suite lives in `studio-oauth-removal`.
+
+The additional archive UI helper accepts the real restore-options dialog twice: an unchanged synthetic root reaches fake staging, while a scene-root-only change rejects it without changing account metadata or RAW. It also checks that credential restore remains disabled and unchecked with an explanation. Its root capture covers synthetic config/scene paths, not native filesystem identities, every root, or an unavailable App.
 
 These helpers do not certify real services or credentials, Archive/root isolation, performance of the complete app, media or Windows execution. Archive/Create/StageRestore are substituted here; their pending-publication/root contract requires separate real Archive tests.

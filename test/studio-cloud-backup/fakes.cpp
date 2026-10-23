@@ -33,12 +33,14 @@ struct config_data {map<pair<string,string>,string> fields;};
 static config_data config, alternateConfig;
 static bool alternateScope=false;
 static FakeApp app;
+static int archiveRootRevision=0;
 bool configUnavailable=false,appUnavailable=false;
 static mutex secretMutex;
 static optional<string> cloudRaw;
 static int replacementLoadNumber=0;
 static optional<string> replacementLoadRaw;
 static bool Gui(){return QThread::currentThread()==QCoreApplication::instance()->thread();}
+void SelectArchiveRootVersion(int value){if(!Gui())++configOnWorker;archiveRootRevision=value;}
 static void ConfigAccess(){if(!Gui())++configOnWorker;}
 config_t *FakeApp::GetUserConfig(){ConfigAccess();return configUnavailable?nullptr:(alternateScope?&alternateConfig:&config);}
 config_t *FakeApp::GetAppConfig(){ConfigAccess();return configUnavailable?nullptr:(alternateScope?&alternateConfig:&config);}
@@ -61,6 +63,7 @@ optional<string> CloudRaw(){lock_guard lock(secretMutex);return cloudRaw;}
 void SetCloudReplacementAtLoad(int number,string raw){lock_guard lock(secretMutex);replacementLoadNumber=number;replacementLoadRaw=std::move(raw);}
 void ReplaceCloudRaw(optional<string> raw){lock_guard lock(secretMutex);cloudRaw=std::move(raw);}
 void ResetFacts(){
+ archiveRootRevision=0;
  nextPageOnce=false;richListExtra=false;externalLoadReplacements=0;{lock_guard lock(secretMutex);replacementLoadNumber=0;replacementLoadRaw.reset();}
  saveCommitCancel=allowAuthorization=blockExchange=exchangeEntered=releaseExchange=false;exchangeCalls=browserCalls=0;
  httpDownloadCalls=0;stageRestores=0;configSaveFailures=0;richListResponses=false;configUnavailable=appUnavailable=false;
@@ -135,7 +138,32 @@ bool OAuthHttpClient::SendBytes(const string&,const string&,const string&,const 
  if(!HttpDelay(cancel,error))return false;++httpCalls;response.statusCode=200;response.body=R"({"id":"qa-item"})";error.clear();return true;}
 string OAuthHttpClient::UrlEncode(const string&value){return value;}
 bool CloudBackupArchive::EncryptionSupported(){return true;}
-bool CloudBackupArchive::Create(const CloudBackupOptions&,QByteArray&archive,CloudBackupSummary&summary,QString&error){++archives;archive="fixture";summary.createdUtc=QDateTime::currentDateTimeUtc();error.clear();return true;}
-bool CloudBackupArchive::StageRestore(const QByteArray&,const CloudBackupOptions&,QString&,QString&error){++stageRestores;error="Restore outside fixture scope.";return false;}
+bool CloudBackupArchive::CaptureRoots(CloudBackupRoots &roots,QString &error){
+ if(!Gui())++configOnWorker;
+ roots.configRoot=QString::fromStdString(app.userConfigLocation.generic_string())+"/obs-studio";
+ roots.globalConfigPath=roots.configRoot+"/global.ini";
+ roots.profilesRoot=roots.configRoot+"/basic/profiles";
+ roots.scenesRoot=roots.configRoot+"/basic/scenes-"+QString::number(archiveRootRevision);
+ roots.pluginConfigRoot=roots.configRoot+"/plugin_config";
+ roots.pluginManagerRoot=roots.configRoot+"/plugin_manager";
+ roots.pendingRoot=roots.configRoot+"/cloud-restore";
+ roots.safetyRoot=roots.configRoot+"/backups/cloud";
+ roots.coordinationRoot="/fixture/shared-cache";
+ roots.obsVersion="synthetic";roots.identity=roots.configRoot+"|"+roots.scenesRoot;error.clear();return true;
+}
+bool CloudBackupArchive::RootsCurrent(const CloudBackupRoots &roots,QString &error){
+ CloudBackupRoots current;CaptureRoots(current,error);
+ if(current.identity!=roots.identity){error="Synthetic archive roots changed.";return false;}error.clear();return true;
+}
+bool CloudBackupArchive::Create(const CloudBackupRoots&,const CloudBackupOptions&,QByteArray&archive,CloudBackupSummary&summary,QString&error,const std::function<bool()> &cancel){
+ if(Gui())++ioOnGui;
+ if(cancel&&cancel()){error="Archive cancelled.";return false;}
+ ++archives;archive="fixture";summary.createdUtc=QDateTime::currentDateTimeUtc();error.clear();return true;
+}
+bool CloudBackupArchive::StageRestore(const CloudBackupRoots&,const QByteArray&,const CloudBackupOptions&,QString&,QString&error,const std::function<bool()> &cancel){
+ if(Gui())++ioOnGui;
+ if(cancel&&cancel()){error="Restore cancelled.";return false;}
+ ++stageRestores;error="Restore outside fixture scope.";return false;
+}
 
 void SelectCloudConfigScope(bool alternate){alternateScope=alternate;app.userConfigLocation=alternate?"/fixture/B":"/fixture/A";}

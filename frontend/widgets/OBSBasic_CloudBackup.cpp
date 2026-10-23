@@ -47,6 +47,11 @@ void OBSBasic::RunAutomaticGoogleDriveBackup()
 	if (lastBackup > 0 && now - lastBackup < static_cast<int64_t>(intervalDays) * 24 * 60 * 60)
 		return;
 
+	CloudBackupRoots roots;
+	QString rootsError;
+	if (!CloudBackupArchive::CaptureRoots(roots, rootsError)) {
+		blog(LOG_WARNING, "Automatic backup could not capture local storage roots."); return;
+	}
 	SaveProjectNow();
 	config_save_safe(App()->GetAppConfig(), "tmp", nullptr);
 	config_save_safe(config, "tmp", nullptr);
@@ -71,7 +76,7 @@ void OBSBasic::RunAutomaticGoogleDriveBackup()
 	auto request = std::make_shared<SecureTokenStore::RequestContext>();
 	QPointer<OBSBasic> guard(this);
 	QObject *dispatcher = MultistreamGuiDispatcher();
-	const bool accepted = MultistreamTaskPool().start([guard, dispatcher, registration, request, options, retention, cancel, metadataCurrent, sessionRevision]() {
+	const bool accepted = MultistreamTaskPool().start([guard, dispatcher, registration, request, options, retention, cancel, metadataCurrent, sessionRevision, roots]() {
 		QByteArray archive;
 		CloudBackupSummary summary;
 		GoogleDriveBackupItem uploaded;
@@ -82,7 +87,7 @@ void OBSBasic::RunAutomaticGoogleDriveBackup()
 		bool success = connected && session.epoch == sessionRevision && !cancel.IsCancelled();
 		if (connected && session.epoch != sessionRevision)
 			error = QObject::tr("A conta mudou antes de iniciar o backup automático.");
-		if (success) success = CloudBackupArchive::Create(options, archive, summary, error);
+		if (success) success = CloudBackupArchive::Create(roots, options, archive, summary, error, [cancel] { return cancel.IsCancelled(); });
 		if (success)
 			success = GoogleDriveBackupClient::Upload(archive, summary.computerName, summary.obsVersion,
 							  summary.createdUtc, false, uploaded, error, registration, cancel, session);
@@ -91,11 +96,13 @@ void OBSBasic::RunAutomaticGoogleDriveBackup()
 			if (!GoogleDriveBackupClient::Prune(retention, pruneError, registration, cancel, session))
 				blog(LOG_WARNING, "Automatic cloud backup retention failed.");
 		}
-		QMetaObject::invokeMethod(dispatcher, [guard, success, skipped, metadataCurrent, session]() {
+		QMetaObject::invokeMethod(dispatcher, [guard, success, skipped, metadataCurrent, session, roots]() {
 			if (!guard)
 				return;
 			guard->googleDriveBackupRunning = false;
-			if (success && metadataCurrent() && GoogleDriveBackupClient::SessionCurrent(session)) {
+			QString rootsError;
+			if (success && metadataCurrent() && GoogleDriveBackupClient::SessionCurrent(session) &&
+			    CloudBackupArchive::RootsCurrent(roots, rootsError)) {
 				config_t *config = App()->GetUserConfig();
 				const char *raw = config_get_string(config, CONFIG_SECTION, "LastBackupUnix");
 				const std::optional<std::string> previous = config_has_user_value(config, CONFIG_SECTION, "LastBackupUnix")

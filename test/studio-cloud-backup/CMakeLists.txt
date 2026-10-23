@@ -104,3 +104,18 @@ if(MSVC)
  target_compile_options(studio-cloud-registration-check PRIVATE /utf-8)
  target_compile_definitions(studio-cloud-registration-check PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
+
+add_executable(studio-cloud-archive-ui-check archive-ui-check.cpp fakes.cpp fake/oauth/AuthListener.hpp fake/UrlSink.hpp
+  "${REPO}/frontend/dialogs/GoogleDriveBackupDialog.cpp"
+  "${REPO}/frontend/dialogs/GoogleDriveBackupDialog.hpp"
+  "${REPO}/frontend/oauth/GoogleDriveBackupClient.cpp"
+  "${REPO}/frontend/oauth/OAuthTokenSet.cpp"
+  "${REPO}/frontend/utility/SecureTokenStore.cpp"
+  "${REPO}/frontend/utility/StreamPlatform.cpp"
+  "${REPO}/deps/json11/json11.cpp")
+target_include_directories(studio-cloud-archive-ui-check PRIVATE fake "${REPO}/frontend" "${REPO}/libobs" "${REPO}/deps/json11")
+target_link_libraries(studio-cloud-archive-ui-check PRIVATE Threads::Threads Qt6::Widgets)
+if(MSVC)
+ target_compile_options(studio-cloud-archive-ui-check PRIVATE /utf-8)
+ target_compile_definitions(studio-cloud-archive-ui-check PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()

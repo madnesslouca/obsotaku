@@ -95,13 +95,10 @@ frontend candidate below has a separate build and acceptance scope.
   headless diagnostic reproduced a 400 ms global PCM gap during a queued group
   hide; the earlier root traversal does not cover activation reference walks.
   That diagnostic did not use a GPU, physical device or normal application.
-- Bind a staged restore to its original local roots before applying or rolling
-  back files. A real archive test on temporary A/B trees reproduced destination
-  redirection after changing only the scene root, including a rollback that
-  wrote A's original bytes into B. No normal configuration was involved; the
-  root-binding correction is separate from credential-session guards. A separate
-  same-root test also reproduced rollback replacing a legitimate post-staging
-  edit with older bytes; fresh recovery at application time remains required.
+- Complete native Windows import/restart/restore interface acceptance, real
+  Drive-account validation and a user-facing failed-restore recovery workflow.
+  Credential backup/restore is temporarily disabled pending separate vault
+  isolation validation; ordinary file backup/restore remains available.
 - Measure acoustic monitoring quality and hardware latency independently.
 
 The audio traversal acquires/releases child references per block; scratch storage
@@ -242,3 +239,135 @@ connection; the final acceptance used an integral copy receiver with the same
 media criteria and no corrective remux or audio discard. Three generic leaked
 objects were reported at shutdown without an isolated cause; no leak-free claim
 is made.
+
+## Restore destination and recovery follow-up
+
+Backup and restore operations now receive immutable local storage roots captured
+on the GUI thread. Worker/startup checks bind those roots to native filesystem
+identities, reject symbolic links/reparse points and duplicate effective targets,
+and coordinate operations with a per-user process lock. Imported archive paths
+cannot select absolute local destinations. A missing root has an explicit
+ancestor/relative-path contract; clearing the volatile cache does not invalidate
+an otherwise matching pending restore.
+
+Restoring global settings also requires a readable local global.ini so its
+existing Locations section can be preserved. If it is absent or unreadable,
+staging refuses the import, keeps the previous pending restore and explains how
+to repair/reopen the local configuration. It neither imports another machine's
+paths nor silently selects default roots. A transport that excludes global.ini
+can still restore other settings under its separate checks.
+
+Each attempt owns a separate staging directory. A validated pending pointer is
+published atomically; failed or canceled staging preserves an existing pending
+restore. Before the first live write, application creates a fresh recovery copy
+and journal from the current destination bytes. A failed application preserves
+those recovery files and refuses silent automatic repetition. Payload integrity
+is checked against the exact byte array consumed by each write. Successful
+application removes the pending pointer before cleaning the staging directory.
+
+Credential export and restoration currently fail closed before credential access
+or changes to live configuration, with disabled controls and an explanation in the interface.
+This restriction is separate from support for reading encrypted transport files:
+Windows native tests exercised real encryption/decryption, wrong-passphrase
+rejection and file-only restore without accessing the credential store.
+
+Linux V3.1 real-Archive tests passed 172 criteria, including changed-root rejection,
+fresh rollback after a post-preflight failure, incomplete rollback reporting,
+payload tampering, interprocess locking and canceled staging. An independent
+supplement passed 52 contract criteria plus 106 preconditions over ten scenarios.
+Windows native V3.1 real-Archive tests passed 170 criteria across basic, actual
+sharing-violation rollback and paths/encryption/process-lock suites. Setup checks
+and overlapping cases are counted within these scoped totals.
+
+The V3.2 Linux frontend was rebuilt (SHA256
+`5304b53ab8b2e726b1524e8cc72ae1b4dc99594b623ff4edea34d96f48cb8b31`). A separate
+native interface roundtrip passed 95 phase checks: import through the real file
+picker and options, staging, automatic restart, startup application and another
+restart without reapplication. Main/Portrait graph UUIDs, sources, transforms,
+colors, dimensions and settings matched the saved project. Its normal 126 files
+and Pulse device/default/mute/volume state were preserved. This verifies project
+structure and settings; widget screenshots do not certify rendered pixels.
+Cloud fake-backend adapters separately retained 433 checks plus two null-config
+booleans and added 18 root/options criteria; they do not validate real Archive.
+
+These accepted results use temporary configurations and synthetic projects;
+invalid fixture attempts are excluded from their counts. They do not validate
+public providers, normal credentials, physical capture or concurrent-media restore. The path checks do not provide hostile-filesystem check/open atomicity,
+crash-atomic multi-file recovery or protection against native identifier reuse.
+Legitimate aliases can be refused conservatively. Failed recovery remains
+explicit and requires manual handling; no recovery wizard has been added.
+The earlier V3.2 Linux deployment updated the frontend and two locale files; core, API and
+plugins retain the earlier media baseline. Installed frontend startup passed six
+separate empty-profile criteria with relative RPATH and no library-path override.
+That V3.2 installed frontend SHA256 was
+`027af42c9aa4db6cc206d131b91970de6d47efd970b51bd6499b0e7edddcbaa8`;
+it is superseded by the V3.3 deployment below.
+No normal project was opened, and normal configuration/Pulse state was preserved.
+This deployment does not certify new media or real-account behavior.
+
+A focused real-Archive regression was added under `test/studio-archive-roots`.
+Its Linux before run failed three of 50 checks with all preconditions satisfied;
+the fail-closed correction passed the same 50 checks (37 preconditions and 13
+contract assertions). It verifies rejection and preservation with a missing
+local global file, custom local Locations with a readable file, and a transport
+that does not include global.ini. Counts overlap the broader restore suites.
+
+Windows native validation repeated the 170 basic/sharing/path criteria against
+the final readability-guard source and passed the additional focused 50 checks,
+for 220 scoped checks (138 preconditions and 82 contract criteria). The earlier
+V3.1 results remain separate. The Linux 50-check target also built and passed
+from its canonical test directory with the default source-root configuration;
+that repeat validates fixture integration and adds no distinct behavioral scope.
+
+## Portable configuration path follow-up
+
+Native Windows startup testing exposed a capture-boundary issue that the
+absolute-path Archive fixtures did not cover: portable configuration paths were
+still relative when strict root validation ran. Capture now converts nonempty
+local paths to normalized absolute paths lexically, using the process working
+directory. Empty bases, unavailable App state and embedded NUL remain invalid;
+worker identity, alias and locking checks remain strict. A captured snapshot
+continues targeting the same directories after the working directory changes.
+
+The expanded Qt Core fixture retains the original 50 controls. Before this
+correction, relative capture failed after 86 checks; 34 dependent checks were
+not reached. The corrected source passed all 120 checks on Linux, including
+relative paths, invalid inputs, current-context rejection after CWD changes and
+Create/Stage/Apply using the original snapshot. Windows native tests passed the
+same 120 plus the 170 basic/sharing/path checks, totaling 290 scoped criteria.
+Earlier V3.1/V3.2 evidence remains attached to its original source snapshots.
+The earlier Windows frontend failed startup and its post-dismissal actor result
+was excluded from acceptance; a successful algorithm build did not certify that
+application boundary. Concurrent changes to process CWD during capture have not
+been validated; no guarantee of atomic multi-field CWD capture is made.
+
+The final V3.3 Linux frontend (build SHA256
+`0c27ebff4da285ac30201153245cf7451844bef8bb02feb1632a82740cb89155`)
+passed a new 95-phase native import/stage/automatic-restart/restore/restart run,
+including the repeated 30-check verification. Its source and transport helper
+both used the final capture implementation. Graph, UUIDs, settings and normal
+126 files/Pulse state were preserved; no rendered-pixel or media acceptance is
+assigned to those widget/structure checks.
+
+Only the installed executable was then replaced, retaining its prior backup;
+the other 1810 installed files, including core, API, plugins and locales, retained
+bytes and modes. The installed V3.3 frontend SHA256 is
+`647407ef2dfb5dc065916166878c383270e1cb7b9f58bbc9f3cf8b214a63f336`.
+Six isolated startup/GUI-close criteria passed without a library-path override,
+with the real relative RPATH, private config/bus/audio endpoint and PID/starttime
+identity checks. Repeated observations cover the same six criteria. An earlier
+observer failure was excluded; its exact cause was not inferred without captured
+environment bytes. No normal project was opened and the application was left
+closed without test modules or streams.
+
+The final native Windows frontend linked SHA256
+`5a49793307f76993a748e77aeb05979594db579578c92a79938cb6a302080759`.
+Its last incremental build changed only the Archive translation unit after the
+preceding four-unit integration build; core/API remained unchanged. A fresh
+portable empty-profile startup passed four scoped criteria, exited normally and
+produced no restore-startup error, with no dialog dismissal or bypass. The GUI
+heartbeat's maximum observed gap was 33 ms. This is a startup boundary check,
+not a new credential-store, full restore-interface or media acceptance. Original
+configuration/runtime, locales and source files were preserved and test modules
+removed from loading paths. Windows still requires full distribution and real
+provider/hardware validation; the earlier movement failure remains open.
