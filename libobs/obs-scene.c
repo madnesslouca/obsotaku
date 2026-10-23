@@ -308,6 +308,27 @@ static void scene_enum_all_sources(void *data, obs_source_enum_proc_t enum_callb
 	scene_enum_sources(data, enum_callback, param, false);
 }
 
+/* Parent audio locks stabilize item active_refs through a structural move. */
+static bool active_graph_prepare_move(struct obs_active_child_move *move, obs_sceneitem_t *item,
+				     obs_scene_t *parent)
+{
+	memset(move, 0, sizeof(*move));
+	if (os_atomic_load_long(&item->active_refs) > 0) {
+		move->old_parent = item->parent->source;
+		move->new_parent = parent->source;
+		move->child = item->source;
+	}
+	return true;
+}
+
+static bool active_graph_move_item(obs_sceneitem_t *item, obs_scene_t *parent)
+{
+	struct obs_active_child_move move;
+	if (!active_graph_prepare_move(&move, item, parent))
+		return false;
+	return obs_source_reparent_active_children(&move, 1);
+}
+
 static inline void detach_sceneitem(struct obs_scene_item *item)
 {
 	if (item->prev)
@@ -3604,8 +3625,29 @@ obs_sceneitem_t *obs_scene_insert_group(obs_scene_t *scene, const char *name, ob
 
 	/* ------------------------- */
 
+	for (size_t i = 0; i < count; i++) {
+		if (!obs_source_active_child_can_reparent(sub_scene->source, items[i]->source)) {
+			obs_sceneitem_remove(item);
+			obs_scene_release(sub_scene);
+			return NULL;
+		}
+	}
+
 	full_lock(scene);
 	full_lock(sub_scene);
+	struct obs_active_child_move *moves = bzalloc(sizeof(*moves) * count);
+	bool prepared = true;
+	for (size_t i = 0; i < count; i++)
+		prepared &= active_graph_prepare_move(&moves[i], items[i], sub_scene);
+	bool moved = prepared && obs_source_reparent_active_children(moves, count);
+	bfree(moves);
+	if (!moved) {
+		full_unlock(sub_scene);
+		full_unlock(scene);
+		obs_sceneitem_remove(item);
+		obs_scene_release(sub_scene);
+		return NULL;
+	}
 	sub_scene->first_item = items[0];
 
 	for (size_t i = count; i > 0; i--) {
@@ -3729,6 +3771,7 @@ void obs_sceneitem_group_ungroup(obs_sceneitem_t *item)
 
 	/* ------------------------- */
 
+	set_visibility(item, false);
 	detach_sceneitem(item);
 	full_unlock(scene);
 
@@ -3745,7 +3788,7 @@ void obs_sceneitem_group_ungroup2(obs_sceneitem_t *item, bool signal)
 
 void obs_sceneitem_group_add_item(obs_sceneitem_t *group, obs_sceneitem_t *item)
 {
-	if (!group || !group->is_group || !item)
+	if (!group || !group->is_group || !item || group == item)
 		return;
 
 	obs_scene_t *scene = group->parent;
@@ -3759,8 +3802,16 @@ void obs_sceneitem_group_add_item(obs_sceneitem_t *group, obs_sceneitem_t *item)
 
 	/* ------------------------- */
 
+	if (!obs_source_active_child_can_reparent(groupscene->source, item->source))
+		return;
+
 	full_lock(scene);
 	full_lock(groupscene);
+	if (!active_graph_move_item(item, groupscene)) {
+		full_unlock(groupscene);
+		full_unlock(scene);
+		return;
+	}
 
 	remove_group_transform(group, item);
 
@@ -3789,8 +3840,16 @@ void obs_sceneitem_group_remove_item(obs_sceneitem_t *group, obs_sceneitem_t *it
 
 	/* ------------------------- */
 
+	if (!obs_source_active_child_can_reparent(scene->source, item->source))
+		return;
+
 	full_lock(scene);
 	full_lock(groupscene);
+	if (!active_graph_move_item(item, scene)) {
+		full_unlock(groupscene);
+		full_unlock(scene);
+		return;
+	}
 
 	remove_group_transform(group, item);
 
@@ -3907,6 +3966,16 @@ bool obs_scene_reorder_items2(obs_scene_t *scene, struct obs_sceneitem_order_inf
 	if (!scene)
 		return false;
 
+	for (size_t i = 0; i < item_order_size; i++) {
+		struct obs_sceneitem_order_info *info = &item_order[i];
+		obs_scene_t *parent = info->group ? info->group->source->context.data : scene;
+		if (info->item->parent != parent &&
+		    !obs_source_active_child_can_reparent(parent->source, info->item->source)) {
+			obs_scene_release(scene);
+			return false;
+		}
+	}
+
 	full_lock(scene);
 
 	if (sceneitems_match2(scene, item_order, item_order_size)) {
@@ -3915,6 +3984,20 @@ bool obs_scene_reorder_items2(obs_scene_t *scene, struct obs_sceneitem_order_inf
 		return false;
 	}
 
+	struct obs_active_child_move *moves = bzalloc(sizeof(*moves) * item_order_size);
+	bool prepared = true;
+	for (size_t i = 0; i < item_order_size; i++) {
+		struct obs_sceneitem_order_info *info = &item_order[i];
+		obs_scene_t *parent = info->group ? info->group->source->context.data : scene;
+		prepared &= active_graph_prepare_move(&moves[i], info->item, parent);
+	}
+	bool moved = prepared && obs_source_reparent_active_children(moves, item_order_size);
+	bfree(moves);
+	if (!moved) {
+		full_unlock(scene);
+		obs_scene_release(scene);
+		return false;
+	}
 	for (size_t i = 0; i < item_order_size; i++) {
 		struct obs_sceneitem_order_info *info = &item_order[i];
 		if (!info->item->is_group) {

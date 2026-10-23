@@ -418,8 +418,10 @@ static void ss_update(void *data, obs_data_t *settings)
 	/* ------------------------------------- */
 	/* clean up and restart transition */
 
-	if (old_tr)
+	if (old_tr) {
+		obs_source_remove_active_child(ss->source, old_tr);
 		obs_source_release(old_tr);
+	}
 	free_files(&old_files);
 
 	/* ------------------------- */
@@ -645,7 +647,10 @@ static void ss_destroy(void *data)
 {
 	struct slideshow *ss = data;
 
-	obs_source_release(ss->transition);
+	if (ss->transition) {
+		obs_source_remove_active_child(ss->source, ss->transition);
+		obs_source_release(ss->transition);
+	}
 	free_files(&ss->files);
 	pthread_mutex_destroy(&ss->mutex);
 	calldata_free(&ss->cd);

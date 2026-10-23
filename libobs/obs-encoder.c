@@ -866,10 +866,10 @@ void obs_encoder_stop(obs_encoder_t *encoder, encoded_callback_t new_packet, voi
 
 	pthread_mutex_unlock(&encoder->callbacks_mutex);
 
-	encoder->encoder_packet_times.num = 0;
-
 	if (last) {
 		remove_connection(encoder, true);
+		/* Disconnect drains the producer. Other callbacks retain the shared timeline. */
+		encoder->encoder_packet_times.num = 0;
 		pthread_mutex_unlock(&encoder->init_mutex);
 
 		struct obs_encoder_group *group = encoder->encoder_group;

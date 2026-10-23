@@ -91,12 +91,12 @@ frontend candidate below has a separate build and acceptance scope.
 - Validate sustained 60 fps capture, long-duration stress and public-service VOD.
 - Complete distribution and public-account validation; native credential UI has
   isolated Linux and Windows evidence and does not certify real provider accounts.
-- Resolve scene/group deactivation while its video lock is held. A directed
-  headless diagnostic reproduced a 400 ms global PCM gap during a queued group
-  hide; the earlier root traversal does not cover activation reference walks.
-  That diagnostic did not use a GPU, physical device or normal application.
-- Complete native Windows import/restart/restore interface acceptance, real
-  Drive-account validation and a user-facing failed-restore recovery workflow.
+- Extend the active-child accounting checks to third-party plugin compatibility,
+  long-running graphs and physical capture. The directed group-hide PCM defect
+  is corrected and has separate native Linux/Windows acceptance below.
+- Complete real Drive-account validation, plugin-settings restore coverage and
+  a user-facing failed-restore recovery workflow. Native Windows restore/restart
+  acceptance is recorded below with its limited scope.
   Credential backup/restore is temporarily disabled pending separate vault
   isolation validation; ordinary file backup/restore remains available.
 - Measure acoustic monitoring quality and hardware latency independently.
@@ -371,3 +371,73 @@ not a new credential-store, full restore-interface or media acceptance. Original
 configuration/runtime, locales and source files were preserved and test modules
 removed from loading paths. Windows still requires full distribution and real
 provider/hardware validation; the earlier movement failure remains open.
+
+
+## Active-child accounting and output lifetime follow-up
+
+Hiding a group no longer traverses plugin enumeration while adjusting activation
+counts. Active relationships own child references and propagate credits in
+O(V+E), preserving duplicate paths and MAIN/AUX roots. The complete affected
+subgraph is validated before publication; invalid credits reject the operation
+without partial changes. Real group insertion, reparenting, reorder and ungroup
+transfer accounting before changing visual parent links. Generic preflight
+runs before the scene's own audio locks.
+
+Plugins must balance successful `obs_source_add_active_child` calls with removal,
+including relationships created while a parent is inactive. Enumeration alone
+does not register activation. The bundled slideshows now remove replaced child
+relationships before releasing their transition. Slideshow mk2 also acquires a
+strong transition snapshot under a short mutex; callbacks and releases occur
+outside it. Empty-list Next/Previous behavior remains unchanged.
+
+Stopping a non-final or absent callback no longer clears buffered composition
+timing for another consumer of the same encoder. Only the final callback removal
+clears that history after producer disconnection. This small correction is
+independent of the pending output-start transaction work.
+
+| Native scenario | Linux | Windows VM |
+| --- | --- | --- |
+| Shared encoder timing, buffered synthetic codec | 35 checks: four failures before, none after | Same 35 checks and four reproduced failures, none after |
+| Active graph / real scene operations / lifecycle | 43 / 21 / 15, all pass | 43 / 21 / 15, all pass |
+| Group-hide PCM / independent-root contention | 23 / 24, all pass | 23 / 24, all pass |
+| Overflow and deep chain / preflight / transition lifecycle | 23 / 8 / 60, all pass | 23 / 8 / 60, all pass |
+| Slideshow ownership | 49 pass | 49 pass |
+| Slideshow snapshot lifetime | 38 checks: ten failures before, none after | Same 38 checks: ten failures before, none after |
+
+The native counts overlap and are not unique feature coverage. Graph tests use
+synthetic sources and PCM. The transition test uses real core and Cut paths, and
+a Fade translation unit with shader creation replaced; it does not certify
+rendered fades, GPU effects, Stinger or PCM crossfades. Timing observations are
+not hard-real-time guarantees. A layered 51-node graph no longer expands its
+millions of paths under the accounting gate, but generic inactive plugin
+enumeration outside that gate can still take hundreds of milliseconds.
+
+The clean installed Linux core is SHA256
+`67ce155ffe6f3bf9ee8b4901fe0901a3a766b633bae5225351a8743cbb546f05`;
+image-source is
+`c172616be6e9c92cf0730d67eb36a079cc1b51a60599362af351a505ca98dbcc`.
+Previous binaries were preserved. The frontend remains `647407ef` and the API
+remains `1ce64049`. Only these two runtime files changed; no test adapters were
+installed. Linkage adjustment changed only `.dynstr` compared with built files.
+
+This installed combination passed a new isolated simultaneous-output run:
+434 executed assertions, nine fully decoded moving-video/997 Hz media files,
+96 PTS/DTS checks and 27 first-keyframe/initial-A/V checks. It uses the same
+15 fps Main/Portrait dimensions, local receivers and unchanged 85% movement
+criterion as above; all sampled movement windows contained 100% distinct frames.
+The immutable module performed three fewer repeated wait-poll assertions than
+the historical 437-check run, with identical distinct assertions and deadlines.
+One destination was interrupted while the other continued. Normal 126 files,
+Pulse device/default/mute/volume state and the other 1,809 installed files were
+preserved. The process closed normally and its opt-in module was archived.
+No physical device, public service or sustained 60 fps behavior was certified.
+
+The separate native Windows restore workflow completed 96 phase checks: seed15,
+import21, verify30 and repeated verify30. Preferences, profiles, scenes and
+canvases were exercised across actual restart/restore; plugin settings remained
+unselected. Google API, credential transport and crash-atomic recovery remain
+outside that acceptance. These restore checks do not certify media behavior.
+
+The earlier Windows Main RTMP movement failure remains open. Passing native
+accounting, lifetime and timing checks does not constitute another successful
+Windows six-output media run or a complete Windows distribution.

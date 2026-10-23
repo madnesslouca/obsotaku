@@ -1,0 +1,27 @@
+# Explicit opt-in for a disposable test core. Never install this instrumented core.
+function(studio_active_graph_attach_adapters target source_root)
+ if(NOT TARGET "${target}")
+  message(FATAL_ERROR "Create the test libobs target before attaching its adapters")
+ endif()
+ get_target_property(already "${target}" STUDIO_GRAPH_QA_ATTACHED)
+ if(already)
+  message(FATAL_ERROR "Active graph test adapters are already attached")
+ endif()
+ get_target_property(target_sources "${target}" SOURCES)
+ foreach(source IN LISTS target_sources)
+  if(source MATCHES "(^|[/\\\\])(graph-shim|route-adapter)\\.c$")
+   message(FATAL_ERROR "The test core already contains graph/route adapters")
+  endif()
+ endforeach()
+ if(NOT EXISTS "${source_root}/libobs/obs-internal.h")
+  message(FATAL_ERROR "Pass the matching full SDK source root")
+ endif()
+ get_filename_component(test_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+ target_sources("${target}" PRIVATE "${test_root}/adapters/graph-shim.c" "${test_root}/adapters/route-adapter.c")
+ target_include_directories("${target}" PRIVATE "${source_root}" "${source_root}/libobs")
+ target_compile_definitions("${target}" PRIVATE STUDIO_TEST_AUDIO_REGISTRY
+   STUDIO_TEST_AUDIO_REGISTRY_ATTACH=obs_audio_view_add
+   STUDIO_TEST_AUDIO_REGISTRY_DETACH=obs_audio_view_remove
+   STUDIO_TEST_AUDIO_REGISTRY_COLLECT=obs_audio_roots_collect)
+ set_property(TARGET "${target}" PROPERTY STUDIO_GRAPH_QA_ATTACHED TRUE)
+endfunction()

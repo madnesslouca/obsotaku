@@ -705,6 +705,7 @@ static inline void obs_source_frame_decref(struct obs_source_frame *frame)
 
 static bool obs_source_filter_remove_refless(obs_source_t *source, obs_source_t *filter);
 static void obs_source_destroy_defer(struct obs_source *source);
+static void active_graph_clear(obs_source_t *source);
 
 void obs_source_destroy(struct obs_source *source)
 {
@@ -776,6 +777,7 @@ static void obs_source_destroy_defer(struct obs_source *source)
 		source->info.destroy(source->context.data);
 		source->context.data = NULL;
 	}
+	active_graph_clear(source);
 
 	blog(LOG_DEBUG, "%ssource '%s' destroyed", source->context.private ? "private " : "", source->context.name);
 
@@ -1196,69 +1198,181 @@ static void hide_source(obs_source_t *source)
 	obs_source_dosignal(source, "source_hide", "hide");
 }
 
-static void activate_tree(obs_source_t *parent, obs_source_t *child, void *param)
-{
-	os_atomic_inc_long(&child->activate_refs);
+/* This gate protects ONLY the authoritative active-child multigraph and its
+ * credits. No enumeration, plugin, signal, allocator, release or other mutex
+ * may run under it. Every edge owns its child until detached; membership and
+ * inherited credits are one transaction, including create-before-attach. */
+static pthread_mutex_t active_graph_mutex = PTHREAD_MUTEX_INITIALIZER;
+struct active_graph_edge {
+	obs_source_t *child;
+	struct active_graph_edge *next;
+};
 
-	UNUSED_PARAMETER(parent);
-	UNUSED_PARAMETER(param);
+/* Per-source intrusive scratch is reset on EVERY exit. No epoch can wrap and
+ * no allocation/release/plugin invocation is required while the gate is held. */
+static void active_graph_scratch_clear(obs_source_t *head)
+{
+	while (head) {
+		obs_source_t *next = head->active_graph_scratch_all_next;
+		head->active_graph_scratch_all_next = NULL;
+		head->active_graph_scratch_ready_next = NULL;
+		head->active_graph_scratch_seen = false;
+		head->active_graph_scratch_indegree = 0;
+		head->active_graph_scratch_show_delta = 0;
+		head->active_graph_scratch_active_delta = 0;
+		head = next;
+	}
 }
 
-static void deactivate_tree(obs_source_t *parent, obs_source_t *child, void *param)
+static void active_graph_scratch_append(obs_source_t **tail, obs_source_t *child)
 {
-	os_atomic_dec_long(&child->activate_refs);
-
-	UNUSED_PARAMETER(parent);
-	UNUSED_PARAMETER(param);
+	child->active_graph_scratch_seen = true;
+	(*tail)->active_graph_scratch_all_next = child;
+	*tail = child;
 }
 
-static void show_tree(obs_source_t *parent, obs_source_t *child, void *param)
+static bool active_graph_reaches(obs_source_t *source, obs_source_t *target)
 {
-	os_atomic_inc_long(&child->show_refs);
-
-	UNUSED_PARAMETER(parent);
-	UNUSED_PARAMETER(param);
+	obs_source_t *tail = source;
+	source->active_graph_scratch_seen = true;
+	bool found = source == target;
+	for (obs_source_t *cur = source; cur && !found; cur = cur->active_graph_scratch_all_next) {
+		for (struct active_graph_edge *edge = cur->active_graph_edges; edge; edge = edge->next) {
+			if (edge->child == target) {
+				found = true;
+				break;
+			}
+			if (!edge->child->active_graph_scratch_seen)
+				active_graph_scratch_append(&tail, edge->child);
+		}
+	}
+	active_graph_scratch_clear(source);
+	return found;
 }
 
-static void hide_tree(obs_source_t *parent, obs_source_t *child, void *param)
+/* One topological propagation per vertex/edge, preserving duplicate/path
+ * multiplicity by summing incoming deltas. Validate every signed32 result
+ * BEFORE publishing any reference or caller-owned root credit. */
+static bool active_graph_adjust(obs_source_t *source, long show, long activate)
 {
-	os_atomic_dec_long(&child->show_refs);
-
-	UNUSED_PARAMETER(parent);
-	UNUSED_PARAMETER(param);
+	if (!show && !activate)
+		return true;
+	bool valid = false;
+	obs_source_t *tail = source;
+	size_t vertices = 1, processed = 0;
+	source->active_graph_scratch_seen = true;
+	for (obs_source_t *cur = source; cur; cur = cur->active_graph_scratch_all_next) {
+		for (struct active_graph_edge *edge = cur->active_graph_edges; edge; edge = edge->next) {
+			obs_source_t *child = edge->child;
+			if (!child->active_graph_scratch_seen) {
+				if (vertices == SIZE_MAX)
+					goto finish;
+				active_graph_scratch_append(&tail, child);
+				vertices++;
+			}
+			if (child->active_graph_scratch_indegree == SIZE_MAX)
+				goto finish;
+			child->active_graph_scratch_indegree++;
+		}
+	}
+	if (source->active_graph_scratch_indegree)
+		goto finish;
+	source->active_graph_scratch_show_delta = show;
+	source->active_graph_scratch_active_delta = activate;
+	obs_source_t *ready_tail = source;
+	for (obs_source_t *cur = source; cur; cur = cur->active_graph_scratch_ready_next) {
+		const int64_t sd = cur->active_graph_scratch_show_delta;
+		const int64_t ad = cur->active_graph_scratch_active_delta;
+		const int64_t ns = os_atomic_load_long(&cur->show_refs) + sd;
+		const int64_t na = os_atomic_load_long(&cur->activate_refs) + ad;
+		if (sd < -INT32_MAX || sd > INT32_MAX || ad < -INT32_MAX || ad > INT32_MAX ||
+		    ns < 0 || ns > INT32_MAX || na < 0 || na > ns)
+			goto finish;
+		processed++;
+		for (struct active_graph_edge *edge = cur->active_graph_edges; edge; edge = edge->next) {
+			obs_source_t *child = edge->child;
+			/* Both operands are bounded signed32, so the signed64 sum is safe. */
+			const int64_t next_sd = child->active_graph_scratch_show_delta + sd;
+			const int64_t next_ad = child->active_graph_scratch_active_delta + ad;
+			if (next_sd < -INT32_MAX || next_sd > INT32_MAX ||
+			    next_ad < -INT32_MAX || next_ad > INT32_MAX)
+				goto finish;
+			child->active_graph_scratch_show_delta = next_sd;
+			child->active_graph_scratch_active_delta = next_ad;
+			if (--child->active_graph_scratch_indegree == 0) {
+				ready_tail->active_graph_scratch_ready_next = child;
+				ready_tail = child;
+			}
+		}
+	}
+	if (processed != vertices)
+		goto finish;
+	for (obs_source_t *cur = source; cur; cur = cur->active_graph_scratch_all_next) {
+		os_atomic_store_long(&cur->show_refs,
+			(long)(os_atomic_load_long(&cur->show_refs) + cur->active_graph_scratch_show_delta));
+		os_atomic_store_long(&cur->activate_refs,
+			(long)(os_atomic_load_long(&cur->activate_refs) + cur->active_graph_scratch_active_delta));
+	}
+	valid = true;
+finish:
+	active_graph_scratch_clear(source);
+	return valid;
 }
 
 void obs_source_activate(obs_source_t *source, enum view_type type)
 {
 	if (!obs_source_valid(source, "obs_source_activate"))
 		return;
-
-	os_atomic_inc_long(&source->show_refs);
-	obs_source_enum_active_tree(source, show_tree, NULL);
-
-	if (type == MAIN_VIEW) {
-		os_atomic_inc_long(&source->activate_refs);
-		obs_source_enum_active_tree(source, activate_tree, NULL);
+	pthread_mutex_lock(&active_graph_mutex);
+	long activate = type == MAIN_VIEW ? 1 : 0;
+	bool valid = active_graph_adjust(source, 1, activate);
+	if (valid) {
+		source->active_graph_own_show++;
+		source->active_graph_own_activate += activate;
 	}
+	pthread_mutex_unlock(&active_graph_mutex);
+	if (!valid)
+		blog(LOG_ERROR, "Active-child activation refused: signed32 credit limit or graph invariant");
 }
 
 void obs_source_deactivate(obs_source_t *source, enum view_type type)
 {
 	if (!obs_source_valid(source, "obs_source_deactivate"))
 		return;
-
-	if (os_atomic_load_long(&source->show_refs) > 0) {
-		os_atomic_dec_long(&source->show_refs);
-		obs_source_enum_active_tree(source, hide_tree, NULL);
-	}
-
-	if (type == MAIN_VIEW) {
-		if (os_atomic_load_long(&source->activate_refs) > 0) {
-			os_atomic_dec_long(&source->activate_refs);
-			obs_source_enum_active_tree(source, deactivate_tree, NULL);
+	pthread_mutex_lock(&active_graph_mutex);
+	long activate = type == MAIN_VIEW && source->active_graph_own_activate > 0 ? 1 : 0;
+	long show = type == MAIN_VIEW ? activate :
+		(source->active_graph_own_show > source->active_graph_own_activate ? 1 : 0);
+	/* A caller may only return its own root credits, never inherited ones. */
+	bool valid = true;
+	if (show) {
+		valid = active_graph_adjust(source, -show, -activate);
+		if (valid) {
+			source->active_graph_own_show--;
+			source->active_graph_own_activate -= activate;
 		}
 	}
+	pthread_mutex_unlock(&active_graph_mutex);
+	if (!valid)
+		blog(LOG_ERROR, "Active-child deactivation refused: graph credit invariant");
 }
+
+static void active_graph_clear(obs_source_t *source)
+{
+	pthread_mutex_lock(&active_graph_mutex);
+	struct active_graph_edge *edge = source->active_graph_edges;
+	source->active_graph_edges = NULL;
+	for (struct active_graph_edge *cur = edge; cur; cur = cur->next)
+		active_graph_adjust(cur->child, -source->show_refs, -source->activate_refs);
+	pthread_mutex_unlock(&active_graph_mutex);
+	while (edge) {
+		struct active_graph_edge *next = edge->next;
+		obs_source_release(edge->child);
+		bfree(edge);
+		edge = next;
+	}
+}
+
 
 static inline struct obs_source_frame *get_closest_frame(obs_source_t *source, uint64_t sys_time);
 
@@ -4692,46 +4806,143 @@ static void check_descendant(obs_source_t *parent, obs_source_t *child, void *pa
 		info->exists = true;
 }
 
+bool obs_source_active_child_can_reparent(obs_source_t *parent, obs_source_t *child)
+{
+	if (parent == child)
+		return false;
+	struct descendant_info info = {false, parent};
+	obs_source_enum_full_tree(child, check_descendant, &info);
+	return !info.exists;
+}
+
+/* Caller allocates the immutable move descriptors before entering the gate.
+ * On failure every earlier move is reversed, preserving the original graph.
+ * No user callback/visual attachment can occur during this transaction. */
+bool obs_source_reparent_active_children(struct obs_active_child_move *moves, size_t count)
+{
+	pthread_mutex_lock(&active_graph_mutex);
+	size_t i;
+	for (i = 0; i < count; i++) {
+		struct obs_active_child_move *m = &moves[i];
+		m->edge = NULL;
+		if (!m->old_parent || m->old_parent == m->new_parent)
+			continue;
+		struct active_graph_edge **cursor = &m->old_parent->active_graph_edges;
+		while (*cursor && (*cursor)->child != m->child)
+			cursor = &(*cursor)->next;
+		if (!*cursor)
+			break;
+		struct active_graph_edge *edge = *cursor;
+		*cursor = edge->next;
+		if (!active_graph_adjust(m->child, -m->old_parent->show_refs, -m->old_parent->activate_refs)) {
+			edge->next = m->old_parent->active_graph_edges;
+			m->old_parent->active_graph_edges = edge;
+			break;
+		}
+		if (active_graph_reaches(m->child, m->new_parent) ||
+		    !active_graph_adjust(m->child, m->new_parent->show_refs, m->new_parent->activate_refs)) {
+			edge->next = m->old_parent->active_graph_edges;
+			m->old_parent->active_graph_edges = edge;
+			bool restored = active_graph_adjust(m->child, m->old_parent->show_refs, m->old_parent->activate_refs);
+			assert(restored);
+			UNUSED_PARAMETER(restored);
+			break;
+		}
+		edge->next = m->new_parent->active_graph_edges;
+		m->new_parent->active_graph_edges = edge;
+		m->edge = edge;
+	}
+	bool success = i == count;
+	if (!success) {
+		while (i) {
+			struct obs_active_child_move *m = &moves[--i];
+			if (!m->edge)
+				continue;
+			struct active_graph_edge **cursor = &m->new_parent->active_graph_edges;
+			while (*cursor && *cursor != m->edge)
+				cursor = &(*cursor)->next;
+			struct active_graph_edge *edge = *cursor;
+			*cursor = edge->next;
+			bool removed = active_graph_adjust(m->child, -m->new_parent->show_refs, -m->new_parent->activate_refs);
+			assert(removed);
+			UNUSED_PARAMETER(removed);
+			edge->next = m->old_parent->active_graph_edges;
+			m->old_parent->active_graph_edges = edge;
+			bool restored = active_graph_adjust(m->child, m->old_parent->show_refs, m->old_parent->activate_refs);
+			assert(restored);
+			UNUSED_PARAMETER(restored);
+			m->edge = NULL;
+		}
+	}
+	pthread_mutex_unlock(&active_graph_mutex);
+	return success;
+}
+
 bool obs_source_add_active_child(obs_source_t *parent, obs_source_t *child)
 {
+	if (!obs_ptr_valid(parent, "obs_source_add_active_child") ||
+	    !obs_ptr_valid(child, "obs_source_add_active_child") || parent == child)
+		return false;
+	/* Preserve the legacy full-tree contract, including inactive descendants.
+	 * Arbitrary plugin enumeration must finish BEFORE taking the graph gate. */
 	struct descendant_info info = {false, parent};
-
-	if (!obs_ptr_valid(parent, "obs_source_add_active_child"))
-		return false;
-	if (!obs_ptr_valid(child, "obs_source_add_active_child"))
-		return false;
-	if (parent == child) {
-		blog(LOG_WARNING, "obs_source_add_active_child: "
-				  "parent == child");
-		return false;
-	}
-
 	obs_source_enum_full_tree(child, check_descendant, &info);
 	if (info.exists)
 		return false;
-
-	for (int i = 0; i < parent->show_refs; i++) {
-		enum view_type type;
-		type = (i < parent->activate_refs) ? MAIN_VIEW : AUX_VIEW;
-		obs_source_activate(child, type);
+	struct active_graph_edge *edge = bzalloc(sizeof(*edge));
+	edge->child = obs_source_get_ref(child);
+	if (!edge->child) {
+		bfree(edge);
+		return false;
 	}
-
-	return true;
+	pthread_mutex_lock(&active_graph_mutex);
+	bool allowed = !active_graph_reaches(child, parent);
+	if (allowed) {
+		edge->next = parent->active_graph_edges;
+		parent->active_graph_edges = edge;
+		allowed = active_graph_adjust(child, parent->show_refs, parent->activate_refs);
+		if (!allowed)
+			parent->active_graph_edges = edge->next;
+	}
+	pthread_mutex_unlock(&active_graph_mutex);
+	if (!allowed) {
+		obs_source_release(edge->child);
+		bfree(edge);
+	}
+	return allowed;
 }
 
 void obs_source_remove_active_child(obs_source_t *parent, obs_source_t *child)
 {
-	if (!obs_ptr_valid(parent, "obs_source_remove_active_child"))
+	if (!obs_ptr_valid(parent, "obs_source_remove_active_child") ||
+	    !obs_ptr_valid(child, "obs_source_remove_active_child"))
 		return;
-	if (!obs_ptr_valid(child, "obs_source_remove_active_child"))
-		return;
-
-	for (int i = 0; i < parent->show_refs; i++) {
-		enum view_type type;
-		type = (i < parent->activate_refs) ? MAIN_VIEW : AUX_VIEW;
-		obs_source_deactivate(child, type);
+	pthread_mutex_lock(&active_graph_mutex);
+	struct active_graph_edge **cursor = &parent->active_graph_edges;
+	while (*cursor && (*cursor)->child != child)
+		cursor = &(*cursor)->next;
+	struct active_graph_edge *edge = *cursor;
+	bool valid = true;
+	if (edge) {
+		*cursor = edge->next;
+		valid = active_graph_adjust(child, -parent->show_refs, -parent->activate_refs);
+		if (!valid) {
+			edge->next = *cursor;
+			*cursor = edge;
+			edge = NULL;
+		}
+	}
+	pthread_mutex_unlock(&active_graph_mutex);
+	if (!valid)
+		blog(LOG_ERROR, "Active-child detach refused: graph credit invariant");
+	/* Scene/transition callers still own their item reference here. No last
+	 * reference release or source destruction can happen under the graph gate. */
+	if (edge) {
+		obs_source_release(edge->child);
+		bfree(edge);
 	}
 }
+
 
 void obs_source_save(obs_source_t *source)
 {

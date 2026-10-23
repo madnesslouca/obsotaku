@@ -1498,16 +1498,24 @@ EXPORT void obs_source_skip_video_filter(obs_source_t *filter);
 /**
  * Adds an active child source.  Must be called by parent sources on child
  * sources when the child is added and active.  This ensures that the source is
- * properly activated if the parent is active.
+ * properly activated if the parent is active. Call this even while the parent
+ * is inactive; enumeration callbacks do not register an active relationship.
  *
- * @returns true if source can be added, false if it causes recursion
+ * Each successful call records one relationship and retains the child until a
+ * matching remove call or parent destruction. The caller keeps its own reference.
+ * Balance successful calls when the child is removed or becomes inactive.
+ *
+ * @returns true if added; false for invalid arguments, recursion, or a graph
+ * credit limit/invariant violation. Failure leaves the graph unchanged.
  */
 EXPORT bool obs_source_add_active_child(obs_source_t *parent, obs_source_t *child);
 
 /**
  * Removes an active child source.  Must be called by parent sources on child
  * sources when the child is removed or inactive.  This ensures that the source
- * is properly deactivated if the parent is no longer active.
+ * receives the correct inherited activation state. Removes one matching
+ * relationship; a missing relationship is a no-op. The caller keeps its own
+ * reference to the child.
  */
 EXPORT void obs_source_remove_active_child(obs_source_t *parent, obs_source_t *child);
 

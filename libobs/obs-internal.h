@@ -1047,7 +1047,25 @@ struct obs_source {
 
 	/* canvas this source belongs to (only used for scenes) */
 	obs_weak_canvas_t *canvas;
+	/* Active-child ownership and root credits; guarded by active_graph_mutex. */
+	struct active_graph_edge *active_graph_edges;
+	long active_graph_own_show;
+	long active_graph_own_activate;
+	/* Intrusive scratch, used only while active_graph_mutex is held. */
+	struct obs_source *active_graph_scratch_all_next;
+	struct obs_source *active_graph_scratch_ready_next;
+	bool active_graph_scratch_seen;
+	size_t active_graph_scratch_indegree;
+	int64_t active_graph_scratch_show_delta;
+	int64_t active_graph_scratch_active_delta;
 };
+
+struct obs_active_child_move {
+	obs_source_t *old_parent, *new_parent, *child;
+	void *edge; /* Internal transaction identity, zero before each call. */
+};
+extern bool obs_source_active_child_can_reparent(obs_source_t *parent, obs_source_t *child);
+extern bool obs_source_reparent_active_children(struct obs_active_child_move *moves, size_t count);
 
 extern struct obs_source_info *get_source_info(const char *id);
 extern struct obs_source_info *get_source_info2(const char *unversioned_id, uint32_t ver);
