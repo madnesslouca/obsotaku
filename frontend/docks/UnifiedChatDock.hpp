@@ -108,6 +108,24 @@ private:
 	void UpdateStatusSummary();
 	void SetConnectionAppearance(const char *state);
 	void RenderMessages();
+	void RenderPendingMessages();
+	void RenderMessagesImpl(bool rebuild, bool preserveStripes = false);
+	struct RenderedRow {
+		quint64 sequence;
+		int position;
+	};
+	QList<RenderedRow> renderedChatRows;
+	QList<RenderedRow> renderedActivityRows;
+	quint64 nextMessageSequence = 0;
+	quint64 renderedThrough = 0;
+	int nextChatStripe = 0;
+	int nextActivityStripe = 0;
+	bool renderInvalidated = false;
+	QSet<QString> chatImageResources;
+	QSet<QString> activityImageResources;
+	qsizetype chatImageBytes = 0;
+	qsizetype activityImageBytes = 0;
+	int retiredRowsSinceRebuild = 0;
 	void UpdateEmptyState();
 	bool ChannelFilterEnabled(const QString &channelId) const;
 	void RegisterPlatformIcons();

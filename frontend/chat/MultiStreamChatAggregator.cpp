@@ -52,13 +52,14 @@ ChatConnection *MultiStreamChatAggregator::FindConnection(const QString &channel
 {
 	const auto item = std::find_if(connections.begin(), connections.end(),
 				       [&](const std::unique_ptr<ChatConnection> &connection) {
-					       return connection->Channel().channelId == channelId;
+					       return connection && connection->Channel().channelId == channelId;
 				       });
 	return item != connections.end() ? item->get() : nullptr;
 }
 
 void MultiStreamChatAggregator::SetChannels(const std::vector<ChatChannelRef> &channels)
 {
+	reconnectEnabled = true;
 	std::vector<std::unique_ptr<ChatConnection>> kept;
 	std::vector<const ChatChannelRef *> toOpen;
 
@@ -126,6 +127,7 @@ void MultiStreamChatAggregator::DisconnectAll()
 
 void MultiStreamChatAggregator::StopAll()
 {
+	reconnectEnabled = false;
 	for (auto &events : activity) {
 		events->Stop();
 	}
@@ -134,6 +136,31 @@ void MultiStreamChatAggregator::StopAll()
 			connection->Stop();
 		}
 	}
+}
+
+bool MultiStreamChatAggregator::ReconnectChannel(const QString &channelId)
+{
+	QPointer<MultiStreamChatAggregator> guard(this);
+	QPointer<ChatConnection> connection = FindConnection(channelId);
+	if (!reconnectEnabled || !connection || reconnectingChannels.contains(channelId)) {
+		return false;
+	}
+	reconnectingChannels.insert(channelId);
+	// Stop emits Unknown for pending sends, then status updates synchronously.
+	// Observers may stop everything or remove this channel during those signals.
+	connection->Stop();
+	if (!guard || !reconnectEnabled || !connection || FindConnection(channelId) != connection) {
+		if (guard) {
+			reconnectingChannels.remove(channelId);
+		}
+		return false;
+	}
+	connection->Start();
+	const bool restarted = guard && reconnectEnabled && connection && FindConnection(channelId) == connection;
+	if (guard) {
+		reconnectingChannels.remove(channelId);
+	}
+	return restarted;
 }
 
 bool MultiStreamChatAggregator::IsConnected(const QString &channelId) const

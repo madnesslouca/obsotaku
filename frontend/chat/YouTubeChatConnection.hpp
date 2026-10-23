@@ -31,9 +31,12 @@ public:
 
 private:
 	friend class ChatIntegrationTest;
+	friend class ChatProviderErrorsTest;
 	void ResolveLiveChat(const QString &pageToken = {});
 	void Poll();
 	void ScheduleRetry(int milliseconds);
+	bool HandleApiError(QNetworkReply *reply);
+	void SuspendPolling(ChatConnectionState state, const QString &detail);
 
 	QTimer *pollTimer = nullptr;
 	QString liveChatId;
@@ -44,4 +47,7 @@ private:
 	 * messages every time the dock is reopened. */
 	bool primed = false;
 	bool requestInFlight = false;
+	bool pollingSuspended = false;
+	quint64 readGeneration = 0;
+	int lastPollIntervalMs = 5000;
 };

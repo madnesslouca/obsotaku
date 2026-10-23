@@ -23,7 +23,9 @@
 #include "VST3HostApp.h"
 #include "VST3Plugin.h"
 #include "StudioVst3Parameters.hpp"
+#include "StudioVst3ScanProcess.hpp"
 #include <QApplication>
+#include <QFile>
 #include <QWidget>
 #include <QTimer>
 #include <VST3Scanner.h>
@@ -34,6 +36,7 @@
 #include <media-io/audio-io.h>
 #include <media-io/audio-resampler.h>
 #include <obs-module.h>
+#include <obs.hpp>
 #ifdef __linux__
 #include <obs-nix-platform.h>
 #endif
@@ -171,171 +174,124 @@ void unloadHost()
 	gHostApp.reset();
 }
 // -------------------- initial scanning ------------------
-VST3Scanner *list;
+static std::shared_ptr<const VST3Scanner> vst3Catalog = std::make_shared<const VST3Scanner>();
 std::atomic<bool> vst3ScanDone;
 static std::thread vst3ScanThread;
-os_process_pipe_t *vst3ScanPipe;
-
-static os_process_pipe_t *start_pipe(const char *jsonpath)
-{
-	char *exe = os_get_executable_path_ptr(VST3_SCANNER);
-	os_process_args_t *args = os_process_args_create(exe);
-	bfree(exe);
-
-	os_process_args_add_arg(args, jsonpath);
-
-	os_process_pipe_t *pipe = os_process_pipe_create2(args, "r");
-	os_process_args_destroy(args);
-	return pipe;
-}
+static std::atomic<bool> vst3ScanCancelled{false};
+// Owned by the UI thread; deleting it removes pending scan notifications.
+static QObject *vst3ScanNotifications = nullptr;
 
 static bool vst3JSONLoad()
 {
-	char *path = obs_module_config_path("vst3list.json");
-	if (!path) {
+	char *rawPath = obs_module_config_path("vst3list.json");
+	if (!rawPath)
 		return false;
-	}
-
-	obs_data_t *root = obs_data_create_from_json_file_safe(path, "bak");
-	bfree(path);
-	if (!root) {
-		return false;
-	}
-
-	obs_data_array_t *jsonPluginList = obs_data_get_array(root, "plugins");
-	if (!jsonPluginList) {
-		obs_data_release(root);
-		return false;
-	}
-
-	list->pluginList.clear();
-	list->classCount.clear();
-
-	size_t jsonPluginNumber = obs_data_array_count(jsonPluginList);
-	for (size_t i = 0; i < jsonPluginNumber; ++i) {
-		obs_data_t *obj = obs_data_array_item(jsonPluginList, i);
-		VST3ClassInfo classInfo;
-
-		classInfo.name = obs_data_get_string(obj, "name");
-		classInfo.id = obs_data_get_string(obj, "id");
-		classInfo.path = obs_data_get_string(obj, "path");
-		classInfo.pluginName = obs_data_get_string(obj, "pluginName");
-		classInfo.discardable = obs_data_get_bool(obj, "discardable");
-		classInfo.isFX = obs_data_get_bool(obj, "isFX");
-
-		obs_data_release(obj);
-
-		if (classInfo.path.empty()) {
+	const QString path = QString::fromUtf8(rawPath);
+	bfree(rawPath);
+	// Limits apply to cache metadata, not plugin binaries or audio processing.
+	constexpr qint64 maxCacheBytes = 8 * 1024 * 1024;
+	constexpr size_t maxCacheClasses = 4096;
+	for (const QString &candidate : {path, path + QStringLiteral(".bak")}) {
+		if (vst3ScanCancelled.load(std::memory_order_acquire))
+			return false;
+		QFile file(candidate);
+		if (!file.open(QIODevice::ReadOnly))
+			continue;
+		const QByteArray json = file.read(maxCacheBytes + 1);
+		if (json.size() > maxCacheBytes) {
+			blog(LOG_WARNING, "[VST3 Scanner] Catalog exceeds the 8MiB metadata limit");
 			continue;
 		}
-
-		try {
-			if (!std::filesystem::exists(std::filesystem::u8path(classInfo.path))) {
+		OBSDataAutoRelease root = obs_data_create_from_json(json.constData());
+		if (!root)
+			continue;
+		OBSDataArrayAutoRelease entries = obs_data_get_array(root, "plugins");
+		if (!entries || obs_data_array_count(entries) > maxCacheClasses)
+			continue;
+		auto parsed = std::make_shared<VST3Scanner>();
+		for (size_t i = 0, count = obs_data_array_count(entries); i < count; ++i) {
+			if (vst3ScanCancelled.load(std::memory_order_acquire))
+				return false;
+			OBSDataAutoRelease obj = obs_data_array_item(entries, i);
+			VST3ClassInfo info;
+			info.name = obs_data_get_string(obj, "name");
+			info.id = obs_data_get_string(obj, "id");
+			info.path = obs_data_get_string(obj, "path");
+			info.pluginName = obs_data_get_string(obj, "pluginName");
+			info.discardable = obs_data_get_bool(obj, "discardable");
+			info.isFX = obs_data_get_bool(obj, "isFX");
+			if (info.path.empty())
+				continue;
+			try {
+				if (!std::filesystem::exists(std::filesystem::u8path(info.path)))
+					continue;
+			} catch (const std::filesystem::filesystem_error &error) {
+				blog(LOG_WARNING, "[VST3 Scanner] Cannot access %s: %s", info.path.c_str(), error.what());
 				continue;
 			}
-		} catch (const std::filesystem::filesystem_error &e) {
-			blog(LOG_ERROR, "[VST3 Scanner] Cannot access %s: %s", classInfo.path.c_str(), e.what());
-			continue;
+			++parsed->classCount[info.path];
+			parsed->pluginList.push_back(std::move(info));
 		}
-
-		++list->classCount[classInfo.path];
-		list->pluginList.push_back(std::move(classInfo));
+		parsed->sort();
+		if (vst3ScanCancelled.load(std::memory_order_acquire))
+			return false;
+		std::atomic_store(&vst3Catalog, std::shared_ptr<const VST3Scanner>(std::move(parsed)));
+		return true;
 	}
-	obs_data_array_release(jsonPluginList);
-	obs_data_release(root);
-
-	list->sort();
-
-	return true;
+	return false;
 }
 
-static void getScanResult(obs_source_t *src)
+static void getScanResult(obs_source_t *src, QString program, QString cachePath)
 {
-	char data[64];
-	char scanData[4096];
-	std::string status = "";
-	std::string scanInfo = "";
-	bool scanCompleted = false;
-	bool noVst3 = false;
-
-	for (;;) {
-		size_t len = os_process_pipe_read(vst3ScanPipe, reinterpret_cast<uint8_t *>(data), sizeof(data));
-		if (len == 0) {
-			blog(LOG_ERROR, "[VST3 Scanner] Pipe closed before result");
-			break;
-		}
-
-		status.append(data, len);
-
-		scanCompleted = status.find("VST3_SCAN_DONE\n") != std::string::npos ||
-				status.find("VST3_SCAN_DONE\r\n") != std::string::npos;
-
-		noVst3 = status.find("NO_VST3\n") != std::string::npos ||
-			 status.find("NO_VST3\r\n") != std::string::npos;
-
-		if (scanCompleted || noVst3) {
-			break;
-		}
+	const std::shared_ptr<obs_source_t> source(src, obs_source_release);
+	// Keep the prior catalog on failure; disk/metadata work stays off the UI.
+	vst3JSONLoad();
+	const auto result = RunStudioVst3ScanProcess(program, {cachePath}, vst3ScanCancelled);
+	if (result.status == StudioVst3ScanStatus::Cancelled) {
+		vst3ScanDone.store(true, std::memory_order_release);
+		return;
 	}
 
 	bool ready = false;
-	if (noVst3) {
-		list->pluginList.clear();
-		list->classCount.clear();
+	if (result.status == StudioVst3ScanStatus::Empty) {
+		std::atomic_store(&vst3Catalog, std::make_shared<const VST3Scanner>());
 		ready = true;
-	} else if (scanCompleted) {
+	} else if (result.status == StudioVst3ScanStatus::Complete) {
 		ready = vst3JSONLoad();
-		if (!ready) {
-			blog(LOG_ERROR, "[VST3 Scanner] Failed to load VST3 list");
-		}
 	}
-
-	if (ready) {
-		blog(LOG_INFO, "[VST3 Scanner] Available plugins:");
-		for (const auto &plugin : list->pluginList) {
-			if (!plugin.isFX) {
-				continue;
-			}
-			blog(LOG_INFO, "[VST3 Scanner]   %s", plugin.name.c_str());
-		}
+	if (!ready) {
+		blog(LOG_WARNING, "[VST3 Scanner] Scan failed; retaining prior available catalog: %s",
+		     result.error.isEmpty() ? "Invalid or oversized scanner catalog" : result.error.toUtf8().constData());
 	}
-
-	for (;;) {
-		size_t len =
-			os_process_pipe_read_err(vst3ScanPipe, reinterpret_cast<uint8_t *>(scanData), sizeof(scanData));
-		if (len == 0) {
-			break;
-		}
-		scanInfo.append(scanData, len);
-	}
-	blog(LOG_INFO, "%s", scanInfo.c_str());
-
-	os_process_pipe_destroy(vst3ScanPipe);
-	vst3ScanPipe = nullptr;
+	if (!result.diagnostics.isEmpty())
+		blog(LOG_INFO, "[VST3 Scanner] Final output (up to 64KiB): %s", result.diagnostics.constData());
 
 	vst3ScanDone.store(true, std::memory_order_release);
-	obs_queue_task(OBS_TASK_UI, [](void *) {
-		obs_enum_sources([](void *, obs_source_t *source) {
-			obs_source_enum_filters(source, [](obs_source_t *, obs_source_t *filter, void *) {
-				if (strcmp(obs_source_get_id(filter), "vst3_filter") != 0) return;
-				obs_data_t *settings = obs_source_get_settings(filter);
-				obs_source_update(filter, settings); obs_data_release(settings);
-				obs_source_update_properties(filter);
+	if (vst3ScanNotifications) {
+		QMetaObject::invokeMethod(vst3ScanNotifications, [source]() {
+			obs_enum_sources([](void *, obs_source_t *item) {
+				obs_source_enum_filters(item, [](obs_source_t *, obs_source_t *filter, void *) {
+					if (strcmp(obs_source_get_id(filter), "vst3_filter") != 0)
+						return;
+					obs_data_t *settings = obs_source_get_settings(filter);
+					obs_source_update(filter, settings);
+					obs_data_release(settings);
+					obs_source_update_properties(filter);
+				}, nullptr);
+				return true;
 			}, nullptr);
-			return true;
-		}, nullptr);
-	}, nullptr, false);
-	if (src) {
-		obs_source_update_properties(src);
-		obs_source_release(src);
+			if (source)
+				obs_source_update_properties(source.get());
+		}, Qt::QueuedConnection);
 	}
 }
 
 bool retrieveVst3List(obs_source_t *src)
 {
 	vst3ScanDone.store(false, std::memory_order_relaxed);
-	list = new VST3Scanner();
-	if (!list->hasVST3()) {
+	vst3ScanCancelled.store(false, std::memory_order_release);
+	VST3Scanner locator;
+	if (!locator.hasVST3()) {
 		vst3ScanDone.store(true, std::memory_order_release);
 		blog(LOG_INFO, "OBS-VST3: install VST3s before using this plugin.");
 		return false;
@@ -345,27 +301,26 @@ bool retrieveVst3List(obs_source_t *src)
 	bfree(path);
 
 	char *filepath = obs_module_config_path("vst3list.json");
-
-	vst3ScanPipe = start_pipe(filepath);
+	const QString cachePath = QString::fromUtf8(filepath);
 	bfree(filepath);
-	if (!vst3ScanPipe) {
-		blog(LOG_ERROR, "[VST3 Scanner] Could not start scanner");
-		vst3ScanDone.store(true, std::memory_order_release);
-		return false;
-	}
-
-	vst3ScanThread = std::thread(getScanResult, obs_source_get_ref(src));
+	char *exe = os_get_executable_path_ptr(VST3_SCANNER);
+	const QString program = QString::fromUtf8(exe);
+	bfree(exe);
+	vst3ScanNotifications = new QObject(qApp);
+	vst3ScanThread = std::thread(getScanResult, obs_source_get_ref(src), program, cachePath);
 
 	return true;
 }
 
 void freeVst3List()
 {
+	vst3ScanCancelled.store(true, std::memory_order_release);
 	if (vst3ScanThread.joinable()) {
 		vst3ScanThread.join();
 	}
-	delete list;
-	list = nullptr;
+	delete vst3ScanNotifications;
+	vst3ScanNotifications = nullptr;
+	std::atomic_store(&vst3Catalog, std::shared_ptr<const VST3Scanner>{});
 }
 
 static bool isValidHex(const std::string &hex)
@@ -760,9 +715,10 @@ static void vst3Update(void *data, obs_data_t *settings)
 		filterData->vst3Id = vst3PluginId;
 		filterData->lastInitFailed = false;
 
-		if (vst3ScanDone.load(std::memory_order_acquire) && !list->getPathById(vst3PluginId).empty()) {
-			filterData->vst3Path = list->getPathById(vst3PluginId);
-			filterData->vst3Name = list->getNameById(vst3PluginId);
+		const auto catalog = std::atomic_load(&vst3Catalog);
+		if (vst3ScanDone.load(std::memory_order_acquire) && catalog && !catalog->getPathById(vst3PluginId).empty()) {
+			filterData->vst3Path = catalog->getPathById(vst3PluginId);
+			filterData->vst3Name = catalog->getNameById(vst3PluginId);
 		} else {
 			filterData->vst3Path = obs_data_get_string(settings, "vst3_path");
 			filterData->vst3Name = obs_data_get_string(settings, "vst3_name");
@@ -1307,12 +1263,13 @@ static obs_properties_t *vst3Properties(void *data)
 
 	const bool scanDone = vst3ScanDone.load(std::memory_order_acquire);
 
-	if (scanDone) {
-		for (const auto &plugin : list->pluginList) {
+	const auto catalog = std::atomic_load(&vst3Catalog);
+	if (scanDone && catalog) {
+		for (const auto &plugin : catalog->pluginList) {
 			if (!plugin.isFX) {
 				continue;
 			}
-			const bool multi = list->moduleHasMultipleClasses(plugin.path);
+			const bool multi = catalog->moduleHasMultipleClasses(plugin.path);
 			std::string display = multi ? plugin.name + " (" + plugin.pluginName + ")" : plugin.name;
 			std::string value = plugin.id;
 			obs_property_list_add_string(vst3list, display.c_str(), value.c_str());

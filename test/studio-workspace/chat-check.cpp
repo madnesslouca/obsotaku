@@ -5,6 +5,9 @@
 #include <chat/ChatEventSocket.hpp>
 #include <chat/TwitchEventSub.hpp>
 #include <QBuffer>
+#include <QElapsedTimer>
+#include <QTextBlock>
+#include <QTextFrame>
 #include <QCryptographicHash>
 #include <QPainter>
 #include <chat/KickChatConnection.hpp>
@@ -21,9 +24,11 @@
 #include <QNetworkReply>
 #include <QScrollBar>
 #include <QSignalSpy>
+#include <QSignalBlocker>
 #include <QTemporaryDir>
 #include <QTest>
 #include <cstring>
+#include <algorithm>
 
 static ChatTestApp application;
 ChatTestApp *App()
@@ -152,19 +157,25 @@ public:
 	using ChatConnection::ChatConnection;
 	QStringList sent;
 	bool ready = true;
+	bool suspended = false;
+	int starts = 0;
+	int stops = 0;
 	void Start() override
 	{
+		++starts;
+		suspended = false;
 		BeginSession();
 		connected = ready;
 		EmitStatus(ready ? ChatConnectionState::Connected : ChatConnectionState::MissingCredential);
 	}
 	void Stop() override
 	{
+		++stops;
 		EndSession();
 		connected = false;
 		EmitStatus(ChatConnectionState::Disconnected);
 	}
-	bool CanSend() const override { return ready && !stopped; }
+	bool CanSend() const override { return ready && !stopped && !suspended; }
 	bool SendText(const QString &, const QString &id, QString &error) override
 	{
 		if (!CanSend()) {
@@ -614,6 +625,527 @@ private slots:
 		view->setTextCursor(cursor);
 		QVERIFY(!control<QCheckBox>(dock, "unifiedChatAutoScroll")->isChecked());
 		QVERIFY(view->textCursor().hasSelection());
+	}
+	// Exercise the same real render timer without including its 50ms batching delay.
+	void dockIncrementalWorkload_data()
+	{
+		QTest::addColumn<bool>("compact");
+		QTest::newRow("compact") << true;
+		QTest::newRow("expanded") << false;
+	}
+	void dockIncrementalWorkload()
+	{
+		QFETCH(bool, compact);
+		setupChannels();
+		FakeConnection *connection = nullptr;
+		UnifiedChatDock dock(nullptr,
+			[&](const ChatChannelRef &ref, QNetworkAccessManager *net, QObject *parent) {
+				auto c = std::make_unique<FakeConnection>(ref, net, parent);
+				if (!connection) connection = c.get();
+				return c;
+			});
+		dock.resize(480, 750);
+		dock.AutoConnectAccounts();
+		control<QAction>(dock, "Compact")->setChecked(compact);
+		auto *view = control<QTextBrowser>(dock, "unifiedChatView");
+		auto *activity = control<QTextBrowser>(dock, "unifiedChatActivity");
+		QList<qint64> durations;
+		qint64 removedCharacters = 0;
+		for (auto *feed : {view, activity}) {
+			connect(feed->document(), &QTextDocument::contentsChange, this,
+				[&](int, int removed, int) { removedCharacters += removed; });
+		}
+		QElapsedTimer timer;
+		for (int batch = 0; batch < 80; ++batch) {
+			for (int item = 0; item < 10; ++item) {
+				const int i = batch * 10 + item;
+				ChatMessage m;
+				m.id = QString::number(i);
+				m.senderName = "Alice";
+				m.messageText = QStringLiteral("row-%1: <b>escaped</b> longer line with emoji 🙂 and unicode 日本語\nsecond line").arg(i);
+				m.roleBadges = {"MOD", "CUSTOM"};
+				if (i % 5 == 0) { m.kind = ChatMessageKind::SuperChat; m.paidAmount = "5"; }
+				connection->Receive(m);
+			}
+			QTimer *render = nullptr;
+			for (auto *candidate : dock.findChildren<QTimer *>(QString(), Qt::FindDirectChildrenOnly))
+				if (candidate->isSingleShot() && candidate->interval() == 50) render = candidate;
+			QVERIFY(render);
+			render->stop();
+			timer.start();
+			QVERIFY(QMetaObject::invokeMethod(render, "timeout", Qt::DirectConnection));
+			durations.append(timer.nsecsElapsed());
+			QVERIFY(view->toPlainText().contains(QStringLiteral("row-%1:").arg(batch * 10 + 9)));
+		}
+		const QString text = view->toPlainText() + activity->toPlainText();
+		QCOMPARE(text.count("<b>escaped</b>"), 300);
+		QVERIFY(!text.contains("row-499:"));
+		QVERIFY(text.contains("row-500:"));
+		QVERIFY(!view->toHtml().contains("<b>escaped</b>"));
+		qint64 total = 0;
+		for (auto duration : durations) total += duration;
+		std::sort(durations.begin(), durations.end());
+		qInfo("CHAT_RENDER_WORKLOAD compact=%d batches=80 messages=800 total_ms=%.3f median_ms=%.3f p95_ms=%.3f removed_chars=%lld blocks=%d",
+			compact, total / 1e6, durations[40] / 1e6, durations[76] / 1e6,
+			static_cast<long long>(removedCharacters), view->document()->blockCount() + activity->document()->blockCount());
+	}
+	void dockAppendRetainsDocument()
+	{
+		setupChannels();
+		FakeConnection *connection = nullptr;
+		UnifiedChatDock dock(nullptr,
+			[&](const ChatChannelRef &ref, QNetworkAccessManager *net, QObject *parent) {
+				auto c = std::make_unique<FakeConnection>(ref, net, parent);
+				if (!connection) connection = c.get();
+				return c;
+			});
+		dock.AutoConnectAccounts();
+		auto *view = control<QTextBrowser>(dock, "unifiedChatView");
+		ChatMessage m;
+		m.id = "first";
+		m.senderName = "Alice";
+		m.messageText = "retained-first";
+		connection->Receive(m);
+		QTRY_VERIFY(view->toPlainText().contains(m.messageText));
+		QSignalSpy changes(view->document(), &QTextDocument::contentsChange);
+		m.id = "second";
+		m.messageText = "appended-second";
+		connection->Receive(m);
+		QTRY_VERIFY(view->toPlainText().contains(m.messageText));
+		QVERIFY(view->toPlainText().contains("retained-first"));
+		for (const auto &change : changes) QCOMPARE(change[1].toInt(), 0);
+	}
+	void dockPruneKeepsRichRows_data()
+	{
+		QTest::addColumn<bool>("compact");
+		QTest::newRow("compact") << true;
+		QTest::newRow("expanded") << false;
+	}
+	void dockPruneKeepsRichRows()
+	{
+		QFETCH(bool, compact);
+		setupChannels();
+		FakeNetwork net;
+		net.responses.append({emotePng(), 200, 5});
+		FakeConnection *connection = nullptr;
+		UnifiedChatDock dock(nullptr,
+			[&](const ChatChannelRef &ref, QNetworkAccessManager *network, QObject *parent) {
+				auto c = std::make_unique<FakeConnection>(ref, network, parent);
+				if (!connection) connection = c.get();
+				return c;
+			}, &net);
+		dock.AutoConnectAccounts();
+		control<QAction>(dock, "Compact")->setChecked(compact);
+		auto *view = control<QTextBrowser>(dock, "unifiedChatView");
+		auto *activity = control<QTextBrowser>(dock, "unifiedChatActivity");
+		auto receive = [&](int i, ChatMessageKind kind = ChatMessageKind::Normal) {
+			ChatMessage m;
+			// Exercise internal identity: neither empty nor repeated IDs may key render rows.
+			m.id = i % 2 ? QString() : QStringLiteral("repeat");
+			m.channelId = QString::fromStdString(storedChannels[0].id);
+			m.platform = StreamPlatform::Twitch;
+			m.senderName = "Alice";
+			m.messageText = QStringLiteral("Kappa rich-%1: 日本語🙂 <table><tr><td>escaped</td></tr></table>\nnext line").arg(i);
+			m.roleBadges = {"MOD", "CUSTOM"};
+			m.kind = kind;
+			m.emotes = {{0, 5, StreamPlatform::Twitch, "25"}};
+			// Call the dock slot directly to isolate its identity from provider deduplication.
+			QVERIFY(QMetaObject::invokeMethod(&dock, "OnChatMessage", Qt::DirectConnection,
+				Q_ARG(ChatMessage, m)));
+		};
+		for (int i = 0; i < 300; ++i) receive(i);
+		QTRY_COMPARE(net.requests.size(), 1);
+		// Wait for the actual async image refresh, not a fixed wall-clock delay.
+		QTRY_VERIFY(view->toHtml().contains("chatemote:"));
+		QVERIFY(view->document()->resource(QTextDocument::ImageResource,
+			QUrl(ChatEmotes::ResourceName({0, 5, StreamPlatform::Twitch, "25"}))).isValid());
+		const auto before = view->document()->find("rich-1:").blockFormat();
+		const int beforeFrames = view->document()->rootFrame()->childFrames().size();
+		QVERIFY(before.background().style() != Qt::NoBrush);
+		receive(300);
+		QTRY_VERIFY(view->toPlainText().contains("rich-300:"));
+		QVERIFY(!view->toPlainText().contains("rich-0:"));
+		QCOMPARE(view->document()->find("rich-1:").blockFormat(), before);
+		QCOMPARE(view->toPlainText().count("<table>"), 300);
+		// Qt exposes inline images as child frames too; their count must stay bounded.
+		QCOMPARE(view->document()->rootFrame()->childFrames().size(), beforeFrames);
+		QCOMPARE(view->document()->blockCount(), compact ? 300 : 600);
+		// Selecting text pauses updates even while bounded history discards its prefix.
+		auto selected = view->document()->find("rich-1:");
+		view->setTextCursor(selected);
+		QVERIFY(!control<QCheckBox>(dock, "unifiedChatAutoScroll")->isChecked());
+		const QString frozen = view->toHtml();
+		for (int i = 301; i < 620; ++i) receive(i, ChatMessageKind::Membership);
+		QTest::qWait(70);
+		QCOMPARE(view->toHtml(), frozen);
+		QCOMPARE(view->textCursor().selectedText(), QStringLiteral("rich-1:"));
+		control<QPushButton>(dock, "unifiedChatResume")->click();
+		QVERIFY(view->toPlainText().isEmpty());
+		QCOMPARE(activity->toPlainText().count("<table>"), 300);
+		QCOMPARE(activity->document()->blockCount(), compact ? 300 : 600);
+		// A single batch can expire every rendered row in either feed.
+		for (int i = 620; i < 930; ++i) receive(i);
+		QTRY_VERIFY(view->toPlainText().contains("rich-929:"));
+		QCOMPARE(view->toPlainText().count("<table>"), 300);
+		QVERIFY(activity->toPlainText().isEmpty());
+		QCOMPARE(view->document()->blockCount(), compact ? 300 : 600);
+		// Search and presentation actions invalidate the incremental cache immediately.
+		auto *search = control<QLineEdit>(dock, "unifiedChatSearch");
+		search->setText("rich-929:");
+		QCOMPARE(view->toPlainText().count("<table>"), 1);
+		receive(930);
+		QTest::qWait(70);
+		QCOMPARE(view->toPlainText().count("<table>"), 1);
+		search->clear();
+		QCOMPARE(view->toPlainText().count("<table>"), 300);
+		control<QAction>(dock, "ShowEmotes")->setChecked(false);
+		QVERIFY(!view->toHtml().contains("chatemote:"));
+		control<QAction>(dock, "Compact")->setChecked(!compact);
+		QCOMPARE(view->document()->blockCount(), compact ? 600 : 300);
+		control<QAction>(dock, "SplitActivity")->setChecked(false);
+		receive(931, ChatMessageKind::Membership);
+		QTRY_VERIFY(view->toPlainText().contains("rich-931:"));
+		QCOMPARE(view->toPlainText().count("<table>"), 300);
+		control<QPushButton>(dock, "unifiedChatClearButton")->click();
+		QVERIFY(view->toPlainText().isEmpty());
+		receive(932);
+		QTRY_VERIFY(view->toPlainText().contains("rich-932:"));
+		QCOMPARE(view->toPlainText().count("<table>"), 1);
+	}
+	void dockMutationInvalidatesIncrementalRows()
+	{
+		setupChannels();
+		FakeConnection *connection = nullptr;
+		UnifiedChatDock dock(nullptr,
+			[&](const ChatChannelRef &ref, QNetworkAccessManager *net, QObject *parent) {
+				auto c = std::make_unique<FakeConnection>(ref, net, parent);
+				if (!connection) connection = c.get();
+				return c;
+			});
+		dock.AutoConnectAccounts();
+		auto *view = control<QTextBrowser>(dock, "unifiedChatView");
+		auto receive = [&](int i) {
+			ChatMessage m;
+			m.id = QString::number(i);
+			m.senderName = "Alice";
+			m.senderId = i < 5 ? "sender-one" : "sender-two";
+			m.messageText = QStringLiteral("mutation-%1:").arg(i);
+			connection->Receive(m);
+		};
+		for (int i = 0; i < 10; ++i) receive(i);
+		QTRY_COMPARE(view->toPlainText().count("mutation-"), 10);
+		ChatMessage update;
+		update.channelId = QString::fromStdString(storedChannels[0].id);
+		update.id = "0";
+		update.senderName = "Alice";
+		update.senderId = "sender-one";
+		update.messageText = "mutation-updated:";
+		dock.Aggregator()->messageUpdated(update);
+		QTRY_VERIFY(view->toPlainText().contains("mutation-updated:"));
+		QVERIFY(!view->toPlainText().contains("mutation-0:"));
+		receive(10);
+		QTRY_COMPARE(view->toPlainText().count("mutation-"), 11);
+		dock.Aggregator()->messageRemoved(update.channelId, "0", {});
+		QCOMPARE(view->toPlainText().count("mutation-"), 10);
+		dock.Aggregator()->messageRemoved(update.channelId, {}, "sender-one");
+		QCOMPARE(view->toPlainText().count("mutation-"), 6);
+		receive(11);
+		QTRY_COMPARE(view->toPlainText().count("mutation-"), 7);
+		QToolButton *filter = nullptr;
+		for (auto *candidate : dock.findChildren<QToolButton *>("unifiedChatFilter")) {
+			if (candidate->property("channelId").toString() == update.channelId) filter = candidate;
+		}
+		QVERIFY(filter);
+		filter->setChecked(false);
+		QVERIFY(view->toPlainText().isEmpty());
+		receive(12);
+		QTest::qWait(70);
+		QVERIFY(view->toPlainText().isEmpty());
+		filter->setChecked(true);
+		QCOMPARE(view->toPlainText().count("mutation-"), 8);
+		QVERIFY(view->toPlainText().contains("mutation-12:"));
+	}
+	void dockResourceBudgetAndPause()
+	{
+		setupChannels();
+		FakeNetwork net;
+		const auto png = emotePng(256);
+		for (int i = 0; i < 200; ++i) net.responses.append({png, 200, 0});
+		UnifiedChatDock dock(nullptr, [](const ChatChannelRef &ref, QNetworkAccessManager *network, QObject *parent) {
+			return std::make_unique<FakeConnection>(ref, network, parent);
+		}, &net);
+		dock.AutoConnectAccounts();
+		auto *view = control<QTextBrowser>(dock, "unifiedChatView");
+		auto *activity = control<QTextBrowser>(dock, "unifiedChatActivity");
+		auto *cache = dock.findChild<ChatEmoteCache *>();
+		QVERIFY(cache);
+		// Isolate the document guard with a prepared image cache. Normal imageReady
+		// already requests full render; block only that signal inside this stress fixture.
+		QSignalBlocker preparedImages(cache);
+		auto flush = [&] {
+			for (auto *timer : dock.findChildren<QTimer *>(QString(), Qt::FindDirectChildrenOnly)) {
+				if (timer->isSingleShot() && timer->interval() == 50) {
+					timer->stop();
+					QVERIFY(QMetaObject::invokeMethod(timer, "timeout", Qt::DirectConnection));
+					return;
+				}
+			}
+			QFAIL("No render timer scheduled");
+		};
+		QStringList names;
+		for (int i = 0; i < 200; ++i) {
+			ChatMessage m;
+			m.channelId = QString::fromStdString(storedChannels[0].id);
+			m.platform = StreamPlatform::Twitch;
+			m.senderName = "Alice";
+			m.messageText = QStringLiteral("E budget-%1:").arg(i);
+			m.kind = i % 2 ? ChatMessageKind::Membership : ChatMessageKind::Normal;
+			m.emotes = {{0, 1, StreamPlatform::Twitch, QString::number(i)}};
+			QTextDocument warm;
+			QTRY_VERIFY(cache->Html(m, &warm, 24).contains("chatemote:"));
+			names.append(ChatEmotes::ResourceName(m.emotes.first()));
+			QVERIFY(QMetaObject::invokeMethod(&dock, "OnChatMessage", Qt::DirectConnection, Q_ARG(ChatMessage, m)));
+			flush();
+			if (i == 20) {
+				QVERIFY(view->document()->resource(QTextDocument::ImageResource, QUrl(names.first())).isValid());
+				QVERIFY(activity->document()->resource(QTextDocument::ImageResource, QUrl(names[1])).isValid());
+			}
+		}
+		QCOMPARE(net.requests.size(), 200);
+		QVERIFY(!view->document()->resource(QTextDocument::ImageResource, QUrl(names.first())).isValid());
+		QVERIFY(!activity->document()->resource(QTextDocument::ImageResource, QUrl(names[1])).isValid());
+		for (auto *feed : {view, activity}) {
+			qint64 bytes = 0;
+			int resources = 0;
+			for (const auto &name : names) {
+				const auto image = qvariant_cast<QImage>(feed->document()->resource(QTextDocument::ImageResource, QUrl(name)));
+				if (!image.isNull()) { bytes += image.sizeInBytes(); ++resources; }
+			}
+			QVERIFY(bytes <= 8 * 1024 * 1024);
+			qInfo("CHAT_RESOURCE_BUDGET feed=%s resources=%d bytes=%lld", feed == view ? "chat" : "activity", resources, static_cast<long long>(bytes));
+		}
+		QVERIFY(activity->document()->resource(QTextDocument::ImageResource, QUrl(names.last())).isValid());
+		const auto selection = view->document()->find("budget-198:");
+		view->setTextCursor(selection);
+		QVERIFY(!control<QCheckBox>(dock, "unifiedChatAutoScroll")->isChecked());
+		const QString frozen = view->toHtml(), frozenActivity = activity->toHtml();
+		for (int i = 0; i < 400; ++i) {
+			ChatMessage m;
+			m.senderName = "Alice";
+			m.messageText = QStringLiteral("paused-resource-%1:").arg(i);
+			QVERIFY(QMetaObject::invokeMethod(&dock, "OnChatMessage", Qt::DirectConnection, Q_ARG(ChatMessage, m)));
+		}
+		QTest::qWait(70);
+		QCOMPARE(view->toHtml(), frozen);
+		QCOMPARE(activity->toHtml(), frozenActivity);
+		QCOMPARE(view->textCursor().selectedText(), QStringLiteral("budget-198:"));
+		control<QPushButton>(dock, "unifiedChatResume")->click();
+		QCOMPARE(view->toPlainText().count("paused-resource-"), 300);
+		QVERIFY(activity->toPlainText().isEmpty());
+		QVERIFY(!activity->document()->resource(QTextDocument::ImageResource, QUrl(names.last())).isValid());
+	}
+	void dockExpiredFormatsAreReclaimed()
+	{
+		setupChannels();
+		UnifiedChatDock dock(nullptr, [](const ChatChannelRef &ref, QNetworkAccessManager *network, QObject *parent) {
+			return std::make_unique<FakeConnection>(ref, network, parent);
+		});
+		dock.AutoConnectAccounts();
+		auto *view = control<QTextBrowser>(dock, "unifiedChatView");
+		int maximumFormats = 0;
+		for (int batch = 0; batch < 100; ++batch) {
+			for (int item = 0; item < 30; ++item) {
+				const int i = batch * 30 + item;
+				ChatMessage m;
+				m.platform = StreamPlatform::Twitch;
+				m.senderName = "Alice";
+				m.userColor = QStringLiteral("#%1").arg(0x102030 + i * 7, 6, 16, QLatin1Char('0'));
+				m.messageText = QStringLiteral("format-%1:").arg(i);
+				QVERIFY(QMetaObject::invokeMethod(&dock, "OnChatMessage", Qt::DirectConnection, Q_ARG(ChatMessage, m)));
+			}
+			for (auto *timer : dock.findChildren<QTimer *>(QString(), Qt::FindDirectChildrenOnly)) {
+				if (timer->isSingleShot() && timer->interval() == 50) {
+					timer->stop();
+					QVERIFY(QMetaObject::invokeMethod(timer, "timeout", Qt::DirectConnection));
+				}
+			}
+			maximumFormats = std::max(maximumFormats, int(view->document()->allFormats().size()));
+			QVERIFY(maximumFormats < 1800);
+		}
+		QCOMPARE(view->toPlainText().count("format-"), 300);
+		QCOMPARE(view->document()->blockCount(), 300);
+		qInfo("CHAT_FORMAT_BUDGET messages=3000 peak_formats=%d final_formats=%lld", maximumFormats,
+			static_cast<long long>(view->document()->allFormats().size()));
+	}
+	void reconnectChannelIsolationAndStopGuard()
+	{
+		QHash<QString, FakeConnection *> connections;
+		MultiStreamChatAggregator aggregator(nullptr, [&](const ChatChannelRef &ref, QNetworkAccessManager *net, QObject *parent) {
+			auto c = std::make_unique<FakeConnection>(ref, net, parent);
+			connections[ref.channelId] = c.get();
+			return c;
+		});
+		QVERIFY(!aggregator.ReconnectChannel("missing"));
+		const std::vector<ChatChannelRef> channels{channel(StreamPlatform::Twitch, "a"), channel(StreamPlatform::YouTube, "b")};
+		aggregator.SetChannels(channels);
+		auto *a = connections["a"], *b = connections["b"];
+		QCOMPARE(a->starts, 1);
+		QCOMPARE(b->starts, 1);
+		const auto activity = aggregator.findChildren<TwitchEventSub *>();
+		QCOMPARE(activity.size(), 1);
+		QSignalSpy activityStatus(&aggregator, &MultiStreamChatAggregator::activityStatusChanged);
+		QString error;
+		QVERIFY(aggregator.SendText("a", "pending a", "pending-a", error));
+		QVERIFY(aggregator.SendText("b", "pending b", "pending-b", error));
+		QSignalSpy sends(&aggregator, &MultiStreamChatAggregator::sendFinished);
+		a->suspended = true;
+		QVERIFY(!aggregator.CanSend("a"));
+		QVERIFY(aggregator.ReconnectChannel("a"));
+		QVERIFY(aggregator.CanSend("a"));
+		QCOMPARE(a->starts, 2);
+		QCOMPARE(a->stops, 1);
+		QCOMPARE(b->starts, 1);
+		QCOMPARE(b->stops, 0);
+		QCOMPARE(activityStatus.count(), 0);
+		QCOMPARE(sends.count(), 1);
+		const auto cancelled = qvariant_cast<ChatSendResult>(sends.first()[0]);
+		QCOMPARE(cancelled.channelId, QStringLiteral("a"));
+		QCOMPARE(cancelled.state, ChatSendState::Unknown);
+		QCOMPARE(cancelled.detail, QStringLiteral("cancelled"));
+		QCOMPARE(a->sent.size(), 1);
+		QCOMPARE(b->sent.size(), 1);
+		b->Complete(ChatSendState::Delivered); // Other conversation's in-flight send survives.
+		QCOMPARE(sends.count(), 2);
+		QCOMPARE(qvariant_cast<ChatSendResult>(sends.last()[0]).channelId, QStringLiteral("b"));
+		QCOMPARE(qvariant_cast<ChatSendResult>(sends.last()[0]).state, ChatSendState::Delivered);
+		QCOMPARE(aggregator.findChildren<TwitchEventSub *>(), activity);
+		QVERIFY(!aggregator.ReconnectChannel("missing"));
+		bool stoppedDuringSignal = false;
+		connect(&aggregator, &MultiStreamChatAggregator::statusChanged, this,
+			[&](const QString &id, StreamPlatform, ChatConnectionState state, const QString &) {
+				if (id == "a" && state == ChatConnectionState::Disconnected && !stoppedDuringSignal) {
+					stoppedDuringSignal = true;
+					QVERIFY(!aggregator.ReconnectChannel("a")); // Reentrant same-channel action is refused.
+					aggregator.StopAll();
+				}
+			});
+		QVERIFY(!aggregator.ReconnectChannel("a"));
+		QVERIFY(stoppedDuringSignal);
+		QCOMPARE(a->starts, 2); // StopAll during Stop must not be followed by Start.
+		QCOMPARE(b->starts, 1);
+		QCOMPARE(b->stops, 1);
+		QVERIFY(!aggregator.ReconnectChannel("b"));
+		aggregator.DisconnectAll();
+		QVERIFY(!aggregator.ReconnectChannel("a"));
+	}
+	void dockReconnectMenuPreservesReadingAndPendingResult()
+	{
+		setupChannels();
+		storedChannels.pop_back(); // Exactly two destinations; third provider is irrelevant here.
+		const auto originalChannels = storedChannels;
+		QHash<QString, FakeConnection *> connections;
+		UnifiedChatDock dock(nullptr, [&](const ChatChannelRef &ref, QNetworkAccessManager *net, QObject *parent) {
+			auto c = std::make_unique<FakeConnection>(ref, net, parent);
+			connections[ref.channelId] = c.get();
+			return c;
+		});
+		dock.resize(600, 850);
+		dock.show();
+		dock.AutoConnectAccounts();
+		const QString id = QString::fromStdString(storedChannels[0].id);
+		const QString otherId = QString::fromStdString(storedChannels[1].id);
+		auto *a = connections[id], *b = connections[otherId];
+		QToolButton *filter = nullptr;
+		for (auto *candidate : dock.findChildren<QToolButton *>("unifiedChatFilter")) {
+			if (candidate->property("channelId").toString() == id) filter = candidate;
+		}
+		QVERIFY(filter);
+		QVERIFY(filter->menu());
+		auto *action = filter->menu()->findChild<QAction *>("unifiedChatReconnectChannel");
+		QVERIFY(action);
+		QCOMPARE(action->text(), application.translations.value("Multistream.Chat.Reconnect"));
+		ChatMessage m;
+		m.id = "local-history";
+		m.senderName = "Alice";
+		m.messageText = "hidden-channel-line";
+		a->Receive(m);
+		for (int i = 0; i < 60; ++i) {
+			m.id = QStringLiteral("other-history-%1").arg(i);
+			m.messageText = QStringLiteral("other-channel-line-%1:").arg(i);
+			b->Receive(m);
+		}
+		auto *view = control<QTextBrowser>(dock, "unifiedChatView");
+		QTRY_VERIFY(view->toPlainText().contains("other-channel-line-59:"));
+		QVERIFY(view->toPlainText().contains("hidden-channel-line"));
+		// Main button still toggles visibility; only its arrow opens the new menu.
+		QTest::mouseClick(filter, Qt::LeftButton, Qt::NoModifier, QPoint(5, filter->height() / 2));
+		QVERIFY(!filter->isChecked());
+		QVERIFY(!view->toPlainText().contains("hidden-channel-line"));
+		view->setTextCursor(view->document()->find("other-channel-line-40:"));
+		QVERIFY(view->verticalScrollBar()->maximum() > 0);
+		view->verticalScrollBar()->setValue(view->verticalScrollBar()->maximum() / 2);
+		QVERIFY(!control<QCheckBox>(dock, "unifiedChatAutoScroll")->isChecked());
+		const auto frozen = view->toHtml();
+		const int scroll = view->verticalScrollBar()->value();
+		auto *targets = control<QComboBox>(dock, "unifiedChatSendPlatform");
+		targets->setCurrentIndex(targets->findData(id));
+		auto *input = control<QLineEdit>(dock, "unifiedChatSendInput");
+		auto *send = control<QPushButton>(dock, "unifiedChatSendButton");
+		input->setText("pending-reconnect");
+		send->click();
+		QCOMPARE(a->sent.size(), 1);
+		QCOMPARE(b->sent.size(), 0);
+		a->suspended = true;
+		QVERIFY(!dock.Aggregator()->CanSend(id));
+		QVERIFY(action->isEnabled()); // Retry remains reachable even if quota/auth suspended sending.
+		QSignalSpy result(dock.Aggregator(), &MultiStreamChatAggregator::sendFinished);
+		QSignalSpy activity(dock.Aggregator(), &MultiStreamChatAggregator::activityStatusChanged);
+		bool menuShown = false;
+		// QToolButton enters the menu's local event loop from mousePressEvent.
+		// Queue the real menu click so it can run inside that loop.
+		QTimer::singleShot(0, filter->menu(), [&] {
+			menuShown = filter->menu()->isVisible();
+			if (menuShown) {
+				QTest::mouseClick(filter->menu(), Qt::LeftButton, Qt::NoModifier,
+					filter->menu()->actionGeometry(action).center());
+			}
+		});
+		QTest::mouseClick(filter, Qt::LeftButton, Qt::NoModifier, QPoint(filter->width() - 4, filter->height() / 2));
+		QTRY_VERIFY(menuShown);
+		QCOMPARE(a->starts, 2);
+		QCOMPARE(a->stops, 1);
+		QCOMPARE(b->starts, 1);
+		QCOMPARE(b->stops, 0);
+		QCOMPARE(a->sent.size(), 1);
+		QCOMPARE(b->sent.size(), 0);
+		QCOMPARE(result.count(), 1);
+		const auto delivered = qvariant_cast<ChatSendResult>(result.first()[0]);
+		QCOMPARE(delivered.channelId, id);
+		QCOMPARE(delivered.state, ChatSendState::Unknown);
+		QCOMPARE(delivered.detail, QStringLiteral("cancelled"));
+		QVERIFY(control<QLabel>(dock, "unifiedChatDelivery")->text().contains("entrega incerta"));
+		QCOMPARE(input->text(), QStringLiteral("pending-reconnect"));
+		QVERIFY(!send->isEnabled());
+		a->Complete(ChatSendState::Delivered); // Late completion cannot overwrite the cancellation result.
+		QCOMPARE(result.count(), 1);
+		QCOMPARE(activity.count(), 0);
+		QCOMPARE(view->toHtml(), frozen);
+		QCOMPARE(view->textCursor().selectedText(), QStringLiteral("other-channel-line-40:"));
+		QCOMPARE(view->verticalScrollBar()->value(), scroll);
+		QVERIFY(!filter->isChecked());
+		QCOMPARE(storedChannels.size(), originalChannels.size());
+		for (size_t i = 0; i < storedChannels.size(); ++i) {
+			QCOMPARE(storedChannels[i].id, originalChannels[i].id);
+			QCOMPARE(storedChannels[i].enabled, originalChannels[i].enabled);
+			QCOMPARE(storedChannels[i].accountId, originalChannels[i].accountId);
+		}
+		dock.Aggregator()->DisconnectAll(); // The visible action may outlive its removed channel.
+		action->trigger();
+		QVERIFY(control<QLabel>(dock, "unifiedChatStatus")->text().contains("Não foi possível reconectar"));
+		QCOMPARE(view->toHtml(), frozen);
+		dock.Shutdown();
+		action->trigger();
+		QVERIFY(!dock.Aggregator()->ReconnectChannel(id));
 	}
 	void dockWithoutAccounts()
 	{

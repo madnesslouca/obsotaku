@@ -39,10 +39,21 @@ void YouTubeChatConnection::Start()
 		pollTimer->setSingleShot(true);
 		connect(pollTimer, &QTimer::timeout, this, &YouTubeChatConnection::Poll);
 	}
-	if (!stopped) {
+	if (!stopped && !pollingSuspended) {
 		return;
 	}
 	BeginSession();
+	++readGeneration;
+	pollingSuspended = false;
+	resolving = false;
+	requestInFlight = false;
+	connected = false;
+	primed = false;
+	lastPollIntervalMs = MIN_POLL_MS;
+	liveChatId.clear();
+	nextPageToken.clear();
+	broadcasts.clear();
+	pollTimer->stop();
 	EmitStatus(ChatConnectionState::Connecting);
 	ResolveLiveChat();
 }
@@ -50,6 +61,8 @@ void YouTubeChatConnection::Start()
 void YouTubeChatConnection::Stop()
 {
 	EndSession();
+	++readGeneration;
+	pollingSuspended = false;
 	resolving = false;
 	broadcasts.clear();
 	if (pollTimer) {
@@ -66,22 +79,92 @@ void YouTubeChatConnection::Stop()
 
 void YouTubeChatConnection::ScheduleRetry(int milliseconds)
 {
-	if (!pollTimer) {
+	if (!pollTimer || stopped || pollingSuspended) {
 		return;
 	}
 	pollTimer->start(milliseconds);
 }
 
+void YouTubeChatConnection::SuspendPolling(ChatConnectionState state, const QString &detail)
+{
+	pollingSuspended = true;
+	++readGeneration;
+	connected = false;
+	resolving = false;
+	requestInFlight = false;
+	if (pollTimer) {
+		pollTimer->stop();
+	}
+	// Suspend reads only. An already accepted send retains its own result;
+	// an ambiguous send must never be automatically retried or cancelled here.
+	EmitStatus(state, detail);
+}
+
+bool YouTubeChatConnection::HandleApiError(QNetworkReply *reply)
+{
+	const auto serial = readGeneration;
+	const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+	if (reply->error() == QNetworkReply::NoError && status < 400) {
+		return false;
+	}
+	QStringList reasons;
+	const auto error = QJsonDocument::fromJson(reply->readAll()).object()[QStringLiteral("error")].toObject();
+	for (const auto &value : error[QStringLiteral("errors")].toArray()) {
+		reasons.append(value.toObject()[QStringLiteral("reason")].toString().toLower());
+	}
+	connected = false;
+	if (reasons.contains(QStringLiteral("quotaexceeded")) ||
+	    reasons.contains(QStringLiteral("dailylimitexceeded"))) {
+		SuspendPolling(ChatConnectionState::Failed,
+			       QStringLiteral("YouTube API quota exhausted. Chat polling paused; reconnect to retry."));
+	} else if (status == 401) {
+		SuspendPolling(ChatConnectionState::MissingCredential,
+			       QStringLiteral("YouTube authentication required. Reconnect after signing in."));
+	} else if (reasons.contains(QStringLiteral("livechatdisabled"))) {
+		SuspendPolling(ChatConnectionState::Failed,
+			       QStringLiteral("YouTube live chat is disabled. Reconnect after enabling it."));
+	} else if (status == 404 || reasons.contains(QStringLiteral("livechatended")) ||
+		   reasons.contains(QStringLiteral("livechatnotfound")) || reasons.contains(QStringLiteral("notfound"))) {
+		liveChatId.clear();
+		nextPageToken.clear();
+		primed = false;
+		EmitStatus(ChatConnectionState::WaitingForBroadcast,
+			   QStringLiteral("YouTube live chat is not available. Waiting for a broadcast."));
+		if (serial == readGeneration) {
+			ScheduleRetry(BROADCAST_RETRY_MS);
+		}
+	} else if (status == 429 || reasons.contains(QStringLiteral("ratelimitexceeded"))) {
+		EmitStatus(ChatConnectionState::Failed,
+			   QStringLiteral("YouTube chat requests are too frequent. Retrying shortly."));
+		if (serial == readGeneration) {
+			ScheduleRetry(std::max(BROADCAST_RETRY_MS, lastPollIntervalMs));
+		}
+	} else if (status == 403) {
+		SuspendPolling(ChatConnectionState::Failed,
+			       QStringLiteral("YouTube chat access denied. Check account permissions, then reconnect."));
+	} else {
+		EmitStatus(ChatConnectionState::Failed, QStringLiteral("YouTube chat request failed. Retrying shortly."));
+		if (serial == readGeneration) {
+			ScheduleRetry(BROADCAST_RETRY_MS);
+		}
+	}
+	return true;
+}
+
 void YouTubeChatConnection::ResolveLiveChat(const QString &pageToken)
 {
-	if (stopped || resolving) {
+	if (stopped || pollingSuspended || resolving) {
 		return;
 	}
 	resolving = true;
 	if (pageToken.isEmpty()) {
 		broadcasts.clear();
 	}
-	WithAccessToken([this, pageToken](const ChatAccessToken &access) {
+	const auto serial = readGeneration;
+	WithAccessToken([this, pageToken, serial](const ChatAccessToken &access) {
+		if (stopped || pollingSuspended || serial != readGeneration) {
+			return;
+		}
 		if (access.token.isEmpty()) {
 			resolving = false;
 			connected = false;
@@ -103,13 +186,13 @@ void YouTubeChatConnection::ResolveLiveChat(const QString &pageToken)
 		request.setRawHeader("Authorization", QStringLiteral("Bearer %1").arg(access.token).toUtf8());
 		auto *reply = netManager->get(request);
 		TrackReply(reply);
-		connect(reply, &QNetworkReply::finished, this, [this, reply, pageToken] {
+		connect(reply, &QNetworkReply::finished, this, [this, reply, pageToken, serial] {
 			reply->deleteLater();
+			if (stopped || pollingSuspended || serial != readGeneration) {
+				return;
+			}
 			resolving = false;
-			if (reply->error() != QNetworkReply::NoError) {
-				connected = false;
-				EmitStatus(ChatConnectionState::Failed, reply->errorString());
-				ScheduleRetry(BROADCAST_RETRY_MS);
+			if (HandleApiError(reply)) {
 				return;
 			}
 			const auto root = QJsonDocument::fromJson(reply->readAll()).object();
@@ -135,6 +218,9 @@ void YouTubeChatConnection::ResolveLiveChat(const QString &pageToken)
 				return;
 			}
 			emit broadcastsAvailable(channel.channelId, broadcasts);
+			if (stopped || pollingSuspended || serial != readGeneration) {
+				return;
+			}
 			liveChatId.clear();
 			for (const auto &broadcast : broadcasts) {
 				if (broadcast.id == channel.broadcastId ||
@@ -163,7 +249,7 @@ void YouTubeChatConnection::ResolveLiveChat(const QString &pageToken)
 
 void YouTubeChatConnection::Poll()
 {
-	if (stopped) {
+	if (stopped || pollingSuspended) {
 		return;
 	}
 	if (liveChatId.isEmpty()) {
@@ -175,7 +261,11 @@ void YouTubeChatConnection::Poll()
 	}
 
 	requestInFlight = true;
-	WithAccessToken([this](const ChatAccessToken &access) {
+	const auto serial = readGeneration;
+	WithAccessToken([this, serial](const ChatAccessToken &access) {
+		if (stopped || pollingSuspended || serial != readGeneration) {
+			return;
+		}
 		const auto &token = access.token;
 		if (liveChatId.isEmpty()) {
 			return;
@@ -202,28 +292,29 @@ void YouTubeChatConnection::Poll()
 		requestInFlight = true;
 		QNetworkReply *reply = netManager->get(request);
 		TrackReply(reply);
-		connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+		connect(reply, &QNetworkReply::finished, this, [this, reply, serial]() {
 			reply->deleteLater();
+			if (stopped || pollingSuspended || serial != readGeneration) {
+				return;
+			}
 			requestInFlight = false;
 			if (liveChatId.isEmpty()) {
 				return;
 			}
 
-			if (reply->error() != QNetworkReply::NoError) {
-				const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-				if (status == 403 || status == 404) {
-					liveChatId.clear();
-					connected = false;
-					EmitStatus(ChatConnectionState::WaitingForBroadcast);
-				} else {
-					EmitStatus(ChatConnectionState::Failed, reply->errorString());
-				}
-				ScheduleRetry(BROADCAST_RETRY_MS);
+			if (HandleApiError(reply)) {
 				return;
 			}
 
 			const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
 			const QJsonObject obj = doc.object();
+			if (!connected) {
+				connected = true;
+				EmitStatus(ChatConnectionState::Connected, DisplayName());
+				if (stopped || pollingSuspended || serial != readGeneration) {
+					return;
+				}
+			}
 			nextPageToken = obj[QStringLiteral("nextPageToken")].toString();
 
 			const bool emitMessages = primed;
@@ -231,6 +322,9 @@ void YouTubeChatConnection::Poll()
 
 			if (emitMessages) {
 				for (const QJsonValue &value : obj[QStringLiteral("items")].toArray()) {
+					if (stopped || pollingSuspended || serial != readGeneration) {
+						return;
+					}
 					const QJsonObject item = value.toObject();
 					const QJsonObject snippet = item[QStringLiteral("snippet")].toObject();
 					const QJsonObject author = item[QStringLiteral("authorDetails")].toObject();
@@ -334,8 +428,11 @@ void YouTubeChatConnection::Poll()
 				}
 			}
 
-			const int suggested = obj[QStringLiteral("pollingIntervalMillis")].toInt(MIN_POLL_MS);
-			ScheduleRetry(std::max(suggested, MIN_POLL_MS));
+			if (!stopped && !pollingSuspended && serial == readGeneration) {
+				const int suggested = obj[QStringLiteral("pollingIntervalMillis")].toInt(MIN_POLL_MS);
+				lastPollIntervalMs = std::max(suggested, MIN_POLL_MS);
+				ScheduleRetry(lastPollIntervalMs);
+			}
 		});
 	});
 }

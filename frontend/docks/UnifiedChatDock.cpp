@@ -28,6 +28,7 @@
 #include <QEvent>
 #include <QFrame>
 #include <QIcon>
+#include <QImage>
 #include <QPalette>
 #include <QRegularExpression>
 #include <QScrollArea>
@@ -46,6 +47,8 @@
 namespace {
 
 constexpr int MAX_CHAT_MESSAGES = 300;
+constexpr qsizetype MAX_DOCUMENT_EMOTE_BYTES = 8 * 1024 * 1024;
+constexpr int MAX_DOCUMENT_EMOTE_RESOURCES = 512;
 constexpr int PLATFORM_ICON_SIZE = 14;
 
 constexpr int ROLE_BADGE_SIZE = 14;
@@ -281,6 +284,7 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent, MultiStreamChatAggregator::Con
 	aggregator = new MultiStreamChatAggregator(this, std::move(factory));
 	emoteCache = new ChatEmoteCache(this, emoteNetwork);
 	connect(emoteCache, &ChatEmoteCache::imageReady, this, [this] {
+		renderInvalidated = true;
 		if (autoScroll && autoScroll->isChecked() && !renderTimer->isActive()) {
 			renderTimer->start(50);
 		}
@@ -289,7 +293,7 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent, MultiStreamChatAggregator::Con
 	renderTimer->setSingleShot(true);
 	connect(renderTimer, &QTimer::timeout, this, [this] {
 		if (autoScroll->isChecked()) {
-			RenderMessages();
+			RenderPendingMessages();
 		}
 	});
 
@@ -517,6 +521,7 @@ UnifiedChatDock::UnifiedChatDock(QWidget *parent, MultiStreamChatAggregator::Con
 
 	connect(aggregator, &MultiStreamChatAggregator::messageReceived, this, &UnifiedChatDock::OnChatMessage);
 	connect(aggregator, &MultiStreamChatAggregator::messageUpdated, this, [this](const ChatMessage &update) {
+		renderInvalidated = true;
 		for (auto &message : messageHistory) {
 			if (message.channelId == update.channelId && message.id == update.id) {
 				message = update;
@@ -687,6 +692,23 @@ void UnifiedChatDock::RebuildFilters(const std::vector<ChatChannelRef> &channels
 						 .constData()));
 		box->setProperty("platform", StreamPlatformId(channel.platform));
 		box->setProperty("channelId", channel.channelId);
+		// The main button keeps its show/hide gesture; the arrow controls only
+		// this conversation, independently of the streaming destination.
+		auto *menu = new QMenu(box);
+		auto *reconnect = menu->addAction(QTStr("Multistream.Chat.Reconnect"));
+		reconnect->setObjectName(QStringLiteral("unifiedChatReconnectChannel"));
+		reconnect->setProperty("channelId", channel.channelId);
+		connect(reconnect, &QAction::triggered, this, [this, id = channel.channelId, label] {
+			if (shuttingDown) {
+				return;
+			}
+			if (!aggregator->ReconnectChannel(id)) {
+				statusLabel->setText(QTStr("Multistream.Chat.ReconnectUnavailable").arg(label));
+				statusLabel->setToolTip(statusLabel->text());
+			}
+		});
+		box->setMenu(menu);
+		box->setPopupMode(QToolButton::MenuButtonPopup);
 		box->setToolTip(QTStr("Multistream.Chat.FilterTip").arg(label, PlatformName(channel.platform)));
 		connect(box, &QToolButton::toggled, this, &UnifiedChatDock::OnFilterToggled);
 		filtersLayout->addWidget(box);
@@ -958,13 +980,8 @@ void UnifiedChatDock::ClearMessages()
 {
 	unread = 0;
 	UpdateUnread();
-	activityView->clear();
-	activityPanel->hide();
 	messageHistory.clear();
-	clearButton->setEnabled(false);
-	chatView->clear();
-	RegisterPlatformIcons();
-	UpdateEmptyState();
+	RenderMessages();
 }
 
 void UnifiedChatDock::UpdateSendButton()
@@ -1023,6 +1040,7 @@ void UnifiedChatDock::RegisterPlatformIcons()
 
 void UnifiedChatDock::OnChatMessage(const ChatMessage &msg)
 {
+	++nextMessageSequence; // Internal identity is independent of missing/reused provider IDs.
 	messageHistory.append(msg);
 	while (messageHistory.size() > MAX_CHAT_MESSAGES) {
 		messageHistory.removeFirst();
@@ -1178,6 +1196,16 @@ QString UnifiedChatDock::RowHtml(const ChatMessage &message, int index, QTextBro
 
 void UnifiedChatDock::RenderMessages()
 {
+	RenderMessagesImpl(true);
+}
+
+void UnifiedChatDock::RenderPendingMessages()
+{
+	RenderMessagesImpl(renderInvalidated);
+}
+
+void UnifiedChatDock::RenderMessagesImpl(bool rebuild, bool preserveStripes)
+{
 	if (!chatView || !compactAction) {
 		return;
 	}
@@ -1186,19 +1214,108 @@ void UnifiedChatDock::RenderMessages()
 	const int oldActivity = activityView->verticalScrollBar()->value();
 	chatView->setUpdatesEnabled(false);
 	activityView->setUpdatesEnabled(false);
-	chatView->clear();
-	activityView->clear();
-	RegisterPlatformIcons();
-	int rows = 0, events = 0;
+	const quint64 firstSequence = nextMessageSequence - messageHistory.size() + 1;
+	bool resourcesCleared = rebuild;
+	const int firstChatStripe = nextChatStripe ^ (renderedChatRows.size() % 2);
+	const int firstActivityStripe = nextActivityStripe ^ (renderedActivityRows.size() % 2);
+	if (rebuild) {
+		chatView->clear();
+		activityView->clear();
+		renderedChatRows.clear();
+		renderedActivityRows.clear();
+		nextChatStripe = preserveStripes ? firstChatStripe : 0;
+		nextActivityStripe = preserveStripes ? firstActivityStripe : 0;
+		chatImageResources.clear();
+		activityImageResources.clear();
+		chatImageBytes = activityImageBytes = 0;
+		retiredRowsSinceRebuild = 0;
+		renderedThrough = firstSequence - 1;
+	} else {
+		// Each append records its first block. Remove the complete expired prefix,
+		// including the inter-row paragraph, without reparsing retained rich text.
+		auto trim = [this, firstSequence, &resourcesCleared](QTextBrowser *view, QList<RenderedRow> &rows,
+							QSet<QString> &images, qsizetype &imageBytes) {
+			int expired = 0;
+			while (expired < rows.size() && rows[expired].sequence < firstSequence) {
+				++expired;
+			}
+			if (!expired) {
+				return;
+			}
+			retiredRowsSinceRebuild += expired;
+			if (expired == rows.size()) {
+				view->clear();
+				rows.clear();
+				images.clear();
+				imageBytes = 0;
+				resourcesCleared = true;
+				return;
+			}
+			const int removed = rows[expired].position;
+			QTextCursor cursor(view->document());
+			cursor.setPosition(removed, QTextCursor::KeepAnchor);
+			cursor.removeSelectedText();
+			rows.remove(0, expired);
+			for (auto &row : rows) {
+				row.position -= removed;
+			}
+		};
+		trim(chatView, renderedChatRows, chatImageResources, chatImageBytes);
+		trim(activityView, renderedActivityRows, activityImageResources, activityImageBytes);
+	}
+	// clear() can discard the image resources, including when one feed expires.
+	if (resourcesCleared) {
+		RegisterPlatformIcons();
+	}
+	quint64 sequence = firstSequence;
 	for (const auto &message : std::as_const(messageHistory)) {
-		if (!MessageVisible(message)) {
+		const quint64 current = sequence++;
+		if (current <= renderedThrough || !MessageVisible(message)) {
 			continue;
 		}
 		const bool activity = splitAction->isChecked() && message.kind != ChatMessageKind::Normal;
 		auto *view = activity ? activityView : chatView;
-		view->append(RowHtml(message, activity ? events++ : rows++, view));
+		auto &rows = activity ? renderedActivityRows : renderedChatRows;
+		int &stripe = activity ? nextActivityStripe : nextChatStripe;
+		const int position = rows.isEmpty() ? 0 : view->document()->characterCount();
+		const QString html = RowHtml(message, stripe, view);
+		view->append(html);
+		// QTextDocument keeps resources and formats after text is removed. Account
+		// the real images inserted by Html(), rather than counting fallback emotes.
+		auto &images = activity ? activityImageResources : chatImageResources;
+		auto &imageBytes = activity ? activityImageBytes : chatImageBytes;
+		static const QRegularExpression imagePattern(QStringLiteral("<img src=\"(chatemote:[^\"]+)\""));
+		auto matches = imagePattern.globalMatch(html);
+		while (matches.hasNext()) {
+			const QString name = matches.next().captured(1);
+			if (images.contains(name)) {
+				continue;
+			}
+			const auto image = qvariant_cast<QImage>(
+				view->document()->resource(QTextDocument::ImageResource, QUrl(name)));
+			if (!image.isNull()) {
+				images.insert(name);
+				imageBytes += image.sizeInBytes();
+			}
+		}
+		stripe ^= 1; // Keep retained row colors stable when the bounded history drops its prefix.
+		rows.append({current, position});
 	}
-	activityPanel->setVisible(splitAction->isChecked() && events > 0);
+	// Reclaim expired resources and Qt's internal format collection periodically.
+	// A clean document may legitimately contain >512 visible tiny images; rebuild
+	// once per batch in that case, never recurse while rebuilding. The shared
+	// emote cache bounds the live decoded image set; these thresholds bound stale
+	// resources between clean renders. Paused feeds never enter this timer path.
+	if (!rebuild && (retiredRowsSinceRebuild >= MAX_CHAT_MESSAGES ||
+			 chatImageBytes > MAX_DOCUMENT_EMOTE_BYTES || activityImageBytes > MAX_DOCUMENT_EMOTE_BYTES ||
+			 chatImageResources.size() > MAX_DOCUMENT_EMOTE_RESOURCES ||
+			 activityImageResources.size() > MAX_DOCUMENT_EMOTE_RESOURCES)) {
+		RenderMessagesImpl(true, true);
+		return;
+	}
+	renderedThrough = nextMessageSequence;
+	renderInvalidated = false;
+	activityPanel->setVisible(splitAction->isChecked() && !renderedActivityRows.isEmpty());
 	chatView->setUpdatesEnabled(true);
 	activityView->setUpdatesEnabled(true);
 	clearButton->setEnabled(!messageHistory.isEmpty());

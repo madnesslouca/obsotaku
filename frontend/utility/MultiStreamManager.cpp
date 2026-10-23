@@ -224,6 +224,7 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 		auto destination = make_shared<Destination>();
 		destination->owner = this;
 		destination->channel = channel;
+		destination->dynamicBitrateRequested = outputSettings.dynamicBitrate;
 
 		const string serviceName = "multistream_service_" + channel.id;
 		destination->service = obs_service_create("rtmp_custom", serviceName.c_str(), serviceSettings, nullptr);
@@ -264,7 +265,16 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 		OBSDataAutoRelease settings = obs_data_create();
 		obs_data_set_string(settings, "bind_ip", outputSettings.bindIp.c_str());
 		obs_data_set_string(settings, "ip_family", outputSettings.ipFamily.c_str());
-		obs_data_set_bool(settings, "dyn_bitrate", outputSettings.dynamicBitrate);
+		/* RTMP DBR updates the encoder itself, not only this connection. Main
+		 * is borrowed, and Portrait can also serve the primary/record/replay.
+		 * Even a single managed destination cannot prove exclusive ownership,
+		 * including consumers attached later. Leave adaptation to the primary
+		 * output; never create competing controllers or duplicate encoders. */
+		obs_data_set_bool(settings, "dyn_bitrate", false);
+		if (destination->dynamicBitrateRequested) {
+			blog(LOG_INFO, "[multistream] Additional output '%s': dynamic bitrate disabled; "
+				       "the primary output retains shared encoder authority.", channel.id.c_str());
+		}
 #ifdef _WIN32
 		obs_data_set_bool(settings, "new_socket_loop_enabled", outputSettings.newSocketLoop);
 		obs_data_set_bool(settings, "low_latency_mode_enabled", outputSettings.lowLatency);
@@ -279,31 +289,49 @@ bool MultiStreamManager::Start(obs_encoder_t *videoEncoder, obs_encoder_t *defau
 		prepared.emplace_back(std::move(destination));
 	}
 
-	vector<Destination *> toStart;
+	vector<shared_ptr<Destination>> toStart;
+	uint64_t generation;
 	RetireDestinations();
 	{
 		lock_guard lock(mutex);
 		destinations = std::move(prepared);
 		sessionRunning = true;
+		generation = ++sessionGeneration;
 		active = true;
 		for (const auto &destination : destinations) {
 			if (destination->channel.enabled) {
-				toStart.push_back(destination.get());
+				toStart.push_back(destination);
 			}
 		}
 	}
 
 	bool anyStarted = false;
-	for (Destination *destination : toStart) {
+	for (const auto &destination : toStart) {
+		if (!CanStartDestination(destination, generation)) {
+			continue;
+		}
 		UpdateState(*destination, MultiStreamChannelState::Starting);
+		if (!CanStartDestination(destination, generation)) {
+			continue;
+		}
 		if (obs_output_start(destination->output)) {
 			anyStarted = true;
 			continue;
 		}
 
+		if (!CanStartDestination(destination, generation)) {
+			continue;
+		}
 		const char *lastError = obs_output_get_last_error(destination->output);
 		UpdateState(*destination, MultiStreamChannelState::Failed,
 			    lastError && *lastError ? lastError : "The output could not be started.");
+	}
+	{
+		lock_guard lock(mutex);
+		if (!sessionRunning || sessionGeneration != generation) {
+			error = "Multistream start was cancelled.";
+			return false;
+		}
 	}
 
 	if (!anyStarted && !toStart.empty()) {
@@ -326,6 +354,7 @@ void MultiStreamManager::Stop(bool force)
 		lock_guard lock(mutex);
 		outputs = destinations;
 		sessionRunning = false;
+		++sessionGeneration;
 		for (const auto &destination : destinations) {
 			destination->restartPending = false;
 		}
@@ -470,10 +499,12 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 		return true;
 	}
 	bool stopping;
+	uint64_t generation;
 	MultiStreamChannelState state;
 	{
 		lock_guard lock(mutex);
 		stopping = destination->stopPending;
+		generation = sessionGeneration;
 		state = destination->state;
 		/* A quick off/on must wait for the same stop as manual reconnect. */
 		if (!enabled) {
@@ -495,6 +526,10 @@ bool MultiStreamManager::SetChannelEnabled(const string &channelId, bool enabled
 			return true;
 		}
 		UpdateState(*destination, MultiStreamChannelState::Starting);
+		if (!CanStartDestination(destination, generation)) {
+			error = "Starting this destination was cancelled.";
+			return false;
+		}
 		if (!obs_output_start(destination->output)) {
 			const char *lastError = obs_output_get_last_error(destination->output);
 			UpdateState(*destination, MultiStreamChannelState::Failed,
@@ -579,6 +614,7 @@ void MultiStreamManager::ResumeRestart(const weak_ptr<Destination> &pending)
 	if (!destination) {
 		return;
 	}
+	uint64_t generation;
 	{
 		lock_guard lock(mutex);
 		if (!sessionRunning || !destination->restartPending || !destination->channel.enabled ||
@@ -593,14 +629,25 @@ void MultiStreamManager::ResumeRestart(const weak_ptr<Destination> &pending)
 		destination->restartPending = false;
 		destination->restartQueued = false;
 		destination->stopPending = false;
+		generation = sessionGeneration;
 		++destination->reconnects;
 	}
 	UpdateState(*destination, MultiStreamChannelState::Starting);
+	if (!CanStartDestination(destination, generation)) {
+		return;
+	}
 	if (!obs_output_start(destination->output)) {
 		const char *error = obs_output_get_last_error(destination->output);
 		UpdateState(*destination, MultiStreamChannelState::Failed,
 			    error && *error ? error : "The output could not be restarted.");
 	}
+}
+
+bool MultiStreamManager::CanStartDestination(const shared_ptr<Destination> &destination, uint64_t generation) const
+{
+	lock_guard lock(mutex);
+	return sessionRunning && sessionGeneration == generation && destination->channel.enabled &&
+	       !destination->stopPending && find(destinations.begin(), destinations.end(), destination) != destinations.end();
 }
 
 void MultiStreamManager::SetPrimaryChannelId(const string &channelId)
@@ -894,7 +941,10 @@ vector<MultiStreamChannelSnapshot> MultiStreamManager::Snapshot() const
 	result.reserve(destinations.size());
 	for (const auto &destination : destinations) {
 		result.push_back({destination->channel.id, destination->channel.displayName, destination->state,
-				  destination->lastError, ReadHealth(*destination)});
+				  destination->lastError, ReadHealth(*destination), destination->dynamicBitrateRequested,
+				  false, destination->dynamicBitrateRequested
+						 ? MultiStreamDynamicBitrateReason::SharedEncoderAuthority
+						 : MultiStreamDynamicBitrateReason::NotRequested});
 	}
 	return result;
 }
@@ -961,6 +1011,7 @@ void MultiStreamManager::RetireDestinations()
 	{
 		lock_guard lock(mutex);
 		retired = std::move(destinations);
+		++sessionGeneration;
 		for (const auto &destination : retired) {
 			retiredDestinations.push_back(destination);
 			destination->restartPending = false;
@@ -1083,6 +1134,15 @@ void MultiStreamManager::UpdateState(Destination &destination, MultiStreamChanne
 	MultiStreamChannelSnapshot snapshot;
 	{
 		lock_guard lock(mutex);
+		/* Disconnected/retired outputs and late libobs start/reconnect signals
+		 * cannot publish a new Live/Starting card after cancellation. */
+		if (find_if(destinations.begin(), destinations.end(), [&](const auto &item) {
+			    return item.get() == &destination;
+		    }) == destinations.end() ||
+		    ((state == MultiStreamChannelState::Starting || state == MultiStreamChannelState::Live) &&
+		     (!sessionRunning || !destination.channel.enabled || destination.stopPending))) {
+			return;
+		}
 		if (countReconnect) {
 			++destination.reconnects;
 		}
@@ -1101,7 +1161,9 @@ void MultiStreamManager::UpdateState(Destination &destination, MultiStreamChanne
 			destination.liveSinceUnixTime = 0;
 		}
 		snapshot = {destination.channel.id, destination.channel.displayName, destination.state,
-			    destination.lastError, ReadHealth(destination)};
+			    destination.lastError, ReadHealth(destination), destination.dynamicBitrateRequested, false,
+			    destination.dynamicBitrateRequested ? MultiStreamDynamicBitrateReason::SharedEncoderAuthority
+						       : MultiStreamDynamicBitrateReason::NotRequested};
 		callback = stateCallback;
 		RecomputeActiveLocked();
 	}

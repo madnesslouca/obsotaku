@@ -31,6 +31,8 @@
 #include <QTimer>
 #include <QUuid>
 #include <array>
+#include <atomic>
+#include <thread>
 #include <cmath>
 #include <functional>
 #include <memory>
@@ -52,7 +54,12 @@ QJsonObject facts;
 QByteArray originalLayout;
 bool done = false, duplicated = false, ready = false, recordingStarted = false, studioMode = false;
 int stageIndex = 0;
-uint64_t sampleIndex = 0;
+std::atomic<bool> toneStop{false}, toneFailed{false};
+std::thread toneWorker;
+std::atomic<uint64_t> toneBlocks{0}, toneLateBlocks{0}, toneCatchups{0}, toneMaxLate{0}, toneContinuityErrors{0};
+struct ToneClockTrace { uint64_t sampleIndex, timestamp, dispatchStart, dispatchEnd; };
+std::array<ToneClockTrace, 8192> toneTrace{};
+size_t toneTraceCount = 0; // Worker-only until joined; report reads afterward.
 QTimer *toneTimer = nullptr;
 QProcess *captureProcess = nullptr;
 OBSSceneAutoRelease scene;
@@ -138,8 +145,84 @@ void capture(void *, size_t mix, audio_data *data)
 		frameCounts[mix] += data->frames;
 	}
 }
+void stopToneWorker()
+{
+ if (toneTimer) toneTimer->stop();
+ toneStop.store(true);
+ if (toneWorker.joinable()) toneWorker.join();
+}
+void startToneWorker(std::array<obs_source_t *, 3> inputs)
+{
+ toneStop.store(false);
+ toneWorker = std::thread([inputs] {
+  std::array<OBSSourceAutoRelease, 3> sources;
+  for (size_t i = 0; i < sources.size(); ++i) sources[i] = obs_source_get_ref(inputs[i]);
+  const uint64_t anchor = os_gettime_ns();
+  uint64_t sampleIndex = 0, previousTimestamp = 0;
+  unsigned consecutiveCatchups = 0;
+  while (!toneStop.load()) {
+   const uint64_t timestamp = anchor + sampleIndex * 1000000000ULL / 48000;
+   os_sleepto_ns_fast(timestamp);
+   if (toneStop.load()) break;
+   const uint64_t dispatch = os_gettime_ns();
+   const uint64_t late = dispatch > timestamp ? dispatch - timestamp : 0;
+   if (late > toneMaxLate.load()) toneMaxLate.store(late);
+   if (late > 1000000) toneLateBlocks.fetch_add(1);
+   if (late >= 20000000) { toneCatchups.fetch_add(1); ++consecutiveCatchups; }
+   else consecutiveCatchups = 0;
+   if (late > 100000000 || consecutiveCatchups > 3 || toneTraceCount >= toneTrace.size()) {
+    toneFailed.store(true); break; // Never drop, reanchor or fabricate silence.
+   }
+   if (previousTimestamp && timestamp - previousTimestamp != 20000000) toneContinuityErrors.fetch_add(1);
+   previousTimestamp = timestamp;
+   float a[960], b[960], r[960];
+   for (size_t i = 0; i < 960; ++i) {
+    double t = double(sampleIndex + i) / 48000.;
+    bool on = ((sampleIndex + i) % 48000) < 9600;
+    a[i] = on * .02 * std::sin(2 * 3.141592653589793 * 997 * t);
+    b[i] = .015 * std::sin(2 * 3.141592653589793 * 431 * t);
+    r[i] = on * .012 * std::sin(2 * 3.141592653589793 * 2003 * t);
+   }
+   obs_source_audio data{};
+   data.frames = 960; data.samples_per_sec = 48000; data.speakers = SPEAKERS_MONO;
+   data.format = AUDIO_FORMAT_FLOAT; data.timestamp = timestamp;
+   std::array<float *, 3> samples{a, b, r};
+   for (size_t i = 0; i < sources.size(); ++i) {
+    data.data[0] = reinterpret_cast<uint8_t *>(samples[i]);
+    obs_source_output_audio(sources[i], &data);
+   }
+   toneTrace[toneTraceCount++] = {sampleIndex, timestamp, dispatch, os_gettime_ns()};
+   sampleIndex += 960; toneBlocks.fetch_add(1);
+  }
+ });
+ toneTimer = new QTimer(qApp); toneTimer->setInterval(100);
+ QObject::connect(toneTimer, &QTimer::timeout, qApp, [] {
+  if (!done && toneFailed.load()) finish("synthetic source worker exceeded bounded sample-clock backlog");
+ });
+ toneTimer->start();
+}
+void writeToneClockTrace()
+{
+ // Called only after stop/join; no worker writes UI objects or files.
+ QJsonArray trace;
+ for (size_t i = 0; i < toneTraceCount; ++i) {
+  const auto &t = toneTrace[i];
+  trace.append(QJsonObject{{"sample_index", qint64(t.sampleIndex)}, {"timestamp_ns", qint64(t.timestamp)},
+                          {"dispatch_start_ns", qint64(t.dispatchStart)}, {"dispatch_end_ns", qint64(t.dispatchEnd)}});
+ }
+ QJsonObject clock{{"blocks", qint64(toneBlocks.load())}, {"maximum_lateness_ns", qint64(toneMaxLate.load())},
+                   {"late_blocks_gt_1ms", qint64(toneLateBlocks.load())}, {"catchup_blocks_ge_20ms", qint64(toneCatchups.load())},
+                   {"continuity_errors", qint64(toneContinuityErrors.load())}, {"backlog_failed", toneFailed.load()},
+                   {"worker_joined", !toneWorker.joinable()}, {"trace", trace}};
+ facts["source_clock"] = QJsonObject{{"blocks", qint64(toneBlocks.load())}, {"maximum_lateness_ns", qint64(toneMaxLate.load())},
+                                     {"continuity_errors", qint64(toneContinuityErrors.load())}, {"worker_joined", !toneWorker.joinable()},
+                                     {"backlog_failed", toneFailed.load()}};
+ QSaveFile f(root + "/source-clock.json");
+ if (f.open(QIODevice::WriteOnly)) { f.write(QJsonDocument(clock).toJson()); f.commit(); }
+}
 void writeReport(QString error)
 {
+	writeToneClockTrace();
 	QSaveFile f(root + "/runtime.json");
 	if (f.open(QIODevice::WriteOnly)) {
 		f.write(QJsonDocument(
@@ -222,6 +305,12 @@ void restore(QString error, std::shared_ptr<QElapsedTimer> clock)
 			error = QString::fromUtf8(e.what());
 		}
 	}
+	/* The frontend owns the restored objects now. Module globals must not
+	 * release stale libobs refs from process-exit destructors after shutdown. */
+	for (auto &saved : globalAudio)
+		saved = nullptr;
+	originalScene = nullptr;
+	originalService = nullptr;
 	writeReport(error);
 }
 void finish(QString error)
@@ -230,9 +319,9 @@ void finish(QString error)
 		return;
 	}
 	done = true;
-	if (toneTimer) {
-		toneTimer->stop();
-	}
+	stopToneWorker();
+	if (error.isEmpty() && (toneFailed.load() || toneContinuityErrors.load() != 0))
+		error = "synthetic source failed sample-clock continuity or bounded backlog";
 	if (captureProcess && captureProcess->state() != QProcess::NotRunning) {
 		captureProcess->kill();
 	}
@@ -618,32 +707,7 @@ void setup()
 	obs_scene_add(scene, voice);
 	obs_scene_add(scene, reference);
 	obs_frontend_set_current_scene(obs_scene_get_source(scene));
-	toneTimer = new QTimer(qApp);
-	toneTimer->setInterval(20);
-	toneTimer->setTimerType(Qt::PreciseTimer);
-	QObject::connect(toneTimer, &QTimer::timeout, qApp, [] {
-		float a[960], b[960], r[960];
-		for (size_t i = 0; i < 960; ++i) {
-			double t = double(sampleIndex + i) / 48000.;
-			bool on = ((sampleIndex + i) % 24000) < 9600;
-			a[i] = on * .02 * std::sin(2 * 3.141592653589793 * 997 * t);
-			b[i] = .015 * std::sin(2 * 3.141592653589793 * 431 * t);
-			r[i] = on * .012 * std::sin(2 * 3.141592653589793 * 2003 * t);
-		}
-		obs_source_audio d{};
-		d.frames = 960;
-		d.samples_per_sec = 48000;
-		d.speakers = SPEAKERS_MONO;
-		d.format = AUDIO_FORMAT_FLOAT;
-		d.timestamp = os_gettime_ns();
-		for (auto pair :
-		     {std::pair{music.Get(), a}, std::pair{voice.Get(), b}, std::pair{reference.Get(), r}}) {
-			d.data[0] = reinterpret_cast<uint8_t *>(pair.second);
-			obs_source_output_audio(pair.first, &d);
-		}
-		sampleIndex += 960;
-	});
-	toneTimer->start();
+	startToneWorker({music.Get(), voice.Get(), reference.Get()});
 	later(1200, [] {
 		for (auto *w : window->findChildren<QWidget *>()) {
 			if (QByteArray(w->metaObject()->className()) == "VolumeControl" &&
@@ -706,8 +770,18 @@ void run()
 }
 void event(obs_frontend_event e, void *)
 {
+	if (e == OBS_FRONTEND_EVENT_SCRIPTING_SHUTDOWN) {
+		stopToneWorker();
+		return;
+	}
 	if (e == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
 		later(1500, run);
+	} else if (e == OBS_FRONTEND_EVENT_EXIT) {
+		stopToneWorker();
+		for (auto &saved : globalAudio)
+			saved = nullptr;
+		originalScene = nullptr;
+		originalService = nullptr;
 	}
 }
 const char *name(void *)
@@ -750,5 +824,6 @@ bool obs_module_load()
 }
 void obs_module_unload()
 {
+	stopToneWorker();
 	obs_frontend_remove_event_callback(event, nullptr);
 }

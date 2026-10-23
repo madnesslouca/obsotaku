@@ -494,7 +494,12 @@ void MultistreamChannelBar::UpdateState(const MultiStreamChannelSnapshot &snapsh
 		return;
 
 	const QString lastError = QString::fromStdString(snapshot.lastError);
-	item->state->setText(StateText(snapshot.state));
+	const bool sharedBitrate = snapshot.dynamicBitrateRequested &&
+		snapshot.dynamicBitrateReason == MultiStreamDynamicBitrateReason::SharedEncoderAuthority;
+	QString stateText = StateText(snapshot.state);
+	if (sharedBitrate)
+		stateText += QStringLiteral(" · ") + QTStr("Multistream.Bitrate.Shared");
+	item->state->setText(stateText);
 	item->state->setProperty("channelState", StatePropertyValue(snapshot.state));
 	if (item->state->style()) {
 		item->state->style()->unpolish(item->state);
@@ -508,9 +513,14 @@ void MultistreamChannelBar::UpdateState(const MultiStreamChannelSnapshot &snapsh
 		item->health->style()->polish(item->health);
 	}
 
-	const QString tip = snapshot.state == MultiStreamChannelState::Live
+	QString tip = snapshot.state == MultiStreamChannelState::Live
 				    ? HealthToolTip(snapshot.health, lastError)
 				    : lastError;
+	if (sharedBitrate) {
+		if (!tip.isEmpty())
+			tip += QChar('\n');
+		tip += QTStr("Multistream.Bitrate.SharedTip");
+	}
 	item->state->setToolTip(tip);
 	item->health->setToolTip(tip);
 

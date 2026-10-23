@@ -4,6 +4,7 @@
 #include <OBSApp.hpp>
 #include <utility/DualCanvasController.hpp>
 #include <utility/StudioCanvasWorkspace.hpp>
+#include <utility/StudioCanvasCardStyle.hpp>
 #include <widgets/OBSBasic.hpp>
 #include <qt-wrappers.hpp>
 #include <QButtonGroup>
@@ -80,9 +81,7 @@ void OBSBasicSettings::InitStudioCanvasSettings()
 		buttons->addButton(button);
 		cards->addWidget(button);
 	}
-	group->setStyleSheet(
-		"QPushButton#studioCanvasSingle, QPushButton#studioCanvasMulti {text-align: left; padding: 12px; border: 1px solid palette(mid); border-radius: 6px;}"
-		"QPushButton#studioCanvasSingle:checked, QPushButton#studioCanvasMulti:checked {border: 2px solid palette(highlight); background: palette(alternate-base);}");
+	group->setStyleSheet(StudioCanvasCardStyleSheet());
 	layout->addWidget(modes);
 	auto *description = new QLabel(QTStr("Studio.Canvas.Description"), group);
 	description->setObjectName("studioCanvasDescription");

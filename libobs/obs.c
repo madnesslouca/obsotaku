@@ -802,6 +802,9 @@ static void obs_free_render_textures(struct obs_core_video_mix *video)
 
 void obs_free_video_mix(struct obs_core_video_mix *video)
 {
+	if (obs->data.valid && video->view && !video->encoder_only_mix)
+		obs_audio_view_remove(video->view);
+
 	if (video->video) {
 		video_output_close(video->video);
 		video->video = NULL;
@@ -842,6 +845,8 @@ static void obs_free_video(void)
 	if (num_views > 0)
 		blog(LOG_WARNING, "Number of remaining views: %ld", num_views);
 	pthread_mutex_unlock(&obs->video.mixes_mutex);
+	if (obs->data.valid)
+		obs_audio_roots_collect();
 
 	pthread_mutex_destroy(&obs->video.mixes_mutex);
 	pthread_mutex_init_value(&obs->video.mixes_mutex);
@@ -959,6 +964,7 @@ static void obs_free_audio(void)
 	deque_free(&audio->buffered_timestamps);
 	da_free(audio->render_order);
 	da_free(audio->root_nodes);
+	da_free(audio->enum_children);
 
 	da_free(audio->monitors);
 	bfree(audio->monitoring_device_name);
@@ -978,6 +984,15 @@ static bool obs_init_data(void)
 
 	pthread_mutex_init_value(&obs->data.displays_mutex);
 	pthread_mutex_init_value(&obs->data.draw_callbacks_mutex);
+
+	if (pthread_mutex_init(&data->audio_roots_update_mutex, NULL) != 0)
+		goto fail;
+	if (pthread_mutex_init(&data->audio_roots_mutex, NULL) != 0) {
+		pthread_mutex_destroy(&data->audio_roots_update_mutex);
+		pthread_mutex_init_value(&data->audio_roots_update_mutex);
+		goto fail;
+	}
+	data->audio_roots_initialized = true;
 
 	if (pthread_mutex_init_recursive(&data->sources_mutex) != 0)
 		goto fail;
@@ -1012,6 +1027,7 @@ void obs_main_view_free(struct obs_view *view)
 	if (!view)
 		return;
 
+	obs_audio_view_free(view);
 	for (size_t i = 0; i < MAX_CHANNELS; i++)
 		obs_source_release(view->channels[i]);
 
@@ -1050,6 +1066,11 @@ static void obs_free_data(void)
 
 	blog(LOG_INFO, "Freeing OBS context data");
 
+	/* Audio is stopped: release registry refs before forced source teardown. */
+	obs_audio_roots_free();
+	if (obs->destruction_task_thread)
+		os_task_queue_wait(obs->destruction_task_thread);
+
 	/* Free main canvas */
 	obs_canvas_release(data->main_canvas);
 
@@ -1065,6 +1086,11 @@ static void obs_free_data(void)
 
 	os_task_queue_wait(obs->destruction_task_thread);
 
+	if (data->audio_roots_initialized) {
+		pthread_mutex_destroy(&data->audio_roots_update_mutex);
+		pthread_mutex_destroy(&data->audio_roots_mutex);
+		data->audio_roots_initialized = false;
+	}
 	pthread_mutex_destroy(&data->sources_mutex);
 	pthread_mutex_destroy(&data->audio_sources_mutex);
 	pthread_mutex_destroy(&data->displays_mutex);
@@ -1231,6 +1257,9 @@ static bool obs_init(const char *locale, const char *module_config_path, profile
 {
 	obs = bzalloc(sizeof(struct obs_core));
 
+	pthread_mutex_init_value(&obs->data.audio_roots_update_mutex);
+	pthread_mutex_init_value(&obs->data.audio_roots_mutex);
+
 	pthread_mutex_init_value(&obs->audio.monitoring_mutex);
 	pthread_mutex_init_value(&obs->audio.task_mutex);
 	pthread_mutex_init_value(&obs->video.task_mutex);
@@ -1389,6 +1418,14 @@ void obs_shutdown(void)
 
 	obs_wait_for_destroy_queue();
 
+	/* Finish callbacks and registry-owned sources before plugin type/unload hooks. */
+	stop_video();
+	stop_audio();
+	stop_hotkeys();
+	obs_audio_roots_free();
+	if (obs->destruction_task_thread)
+		os_task_queue_wait(obs->destruction_task_thread);
+
 	for (size_t i = 0; i < obs->source_types.num; i++) {
 		struct obs_source_info *item = &obs->source_types.array[i];
 		if (item->type_data && item->free_type_data)
@@ -1417,10 +1454,6 @@ void obs_shutdown(void)
 	da_free(obs->input_types);
 	da_free(obs->filter_types);
 	da_free(obs->transition_types);
-
-	stop_video();
-	stop_audio();
-	stop_hotkeys();
 
 	module = obs->first_module;
 	while (module) {

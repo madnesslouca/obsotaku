@@ -66,3 +66,6 @@ build-aux/flatpak-github-action-modified-*
 /validation/
 **/__pycache__/
 *.pyc
+/docs/product/CHAT_PRISM_ANALISE.md
+/docs/RELATORIO_ALTERACOES.md
+/AGENTS.md

@@ -82,6 +82,40 @@ static void push_audio_tree2(obs_source_t *parent, obs_source_t *source, void *p
 	UNUSED_PARAMETER(parent);
 }
 
+
+static void collect_audio_child(obs_source_t *parent, obs_source_t *child, void *param)
+{
+	struct obs_core_audio *audio = param;
+	obs_source_t *ref = obs_source_get_ref(child);
+	if (ref)
+		da_push_back(audio->enum_children, &ref);
+	UNUSED_PARAMETER(parent);
+}
+
+static void enum_audio_tree(obs_source_t *source, struct obs_core_audio *audio)
+{
+	const size_t base = audio->enum_children.num;
+	obs_scene_t *scene = obs_scene_from_source(source);
+	if (!scene)
+		scene = obs_group_from_source(source);
+	if (scene)
+		obs_scene_enum_active_audio_sources(scene, collect_audio_child, audio);
+	else
+		obs_source_enum_active_sources(source, collect_audio_child, audio);
+
+	/* No source/scene/transition enumeration lock crosses this recursion.
+	 * Indices survive scratch growth while child snapshots hold strong refs. */
+	const size_t end = audio->enum_children.num;
+	for (size_t i = base; i < end; i++) {
+		obs_source_t *child = audio->enum_children.array[i];
+		enum_audio_tree(child, audio);
+		push_audio_tree2(source, child, audio);
+	}
+	for (size_t i = base; i < end; i++)
+		obs_source_release(audio->enum_children.array[i]);
+	da_resize(audio->enum_children, base);
+}
+
 static inline size_t convert_time_to_frames(size_t sample_rate, uint64_t t)
 {
 	return (size_t)util_mul_div64(t, sample_rate, 1000000000ULL);
@@ -580,37 +614,21 @@ bool audio_callback(void *param, uint64_t start_ts_in, uint64_t end_ts_in, uint6
 	/* ------------------------------------------------ */
 	/* build audio render order */
 
-	pthread_mutex_lock(&obs->video.mixes_mutex);
-	for (size_t j = 0; j < obs->video.mixes.num; j++) {
-		struct obs_view *view = obs->video.mixes.array[j]->view;
-		if (!view)
+	struct obs_audio_roots *roots = obs_audio_roots_acquire();
+	for (size_t j = 0; roots && j < roots->num; j++) {
+		obs_source_t *source = roots->roots[j].source;
+		if (!obs_source_active(source) || obs_source_removed(source))
 			continue;
 
-		pthread_mutex_lock(&view->channels_mutex);
+		if (roots->roots[j].mix_audio)
+			da_push_back(audio->root_nodes, &source);
 
-		/* NOTE: these are source channels, not audio channels */
-		for (uint32_t i = 0; i < MAX_CHANNELS; i++) {
-			obs_source_t *source = view->channels[i];
-			if (!source)
-				continue;
-			if (!obs_source_active(source))
-				continue;
-			if (obs_source_removed(source))
-				continue;
-
-			/* first, add top - level sources as root_nodes */
-			if (obs->video.mixes.array[j]->mix_audio)
-				da_push_back(audio->root_nodes, &source);
-
-			/* Build audio tree, tag duplicate individual sources */
-			obs_source_enum_active_tree(source, push_audio_tree2, audio);
-
-			/* add top - level sources to audio tree */
-			push_audio_tree(NULL, source, audio);
-		}
-		pthread_mutex_unlock(&view->channels_mutex);
+		/* Duplicate detection remains across distinct logical views. */
+		enum_audio_tree(source, audio);
+		push_audio_tree(NULL, source, audio);
 	}
-	pthread_mutex_unlock(&obs->video.mixes_mutex);
+	/* Tree entries now own refs through release_audio_sources(). */
+	obs_audio_roots_release(roots);
 
 	pthread_mutex_lock(&data->audio_sources_mutex);
 

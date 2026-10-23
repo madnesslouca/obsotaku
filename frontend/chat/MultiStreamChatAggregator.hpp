@@ -41,6 +41,9 @@ public:
 	void StopAll();
 	void DisconnectAll();
 
+	/* Explicit retry of this conversation only. Pending sends finish Unknown via
+	 * Stop(); they are never retried automatically. False after StopAll/removal. */
+	bool ReconnectChannel(const QString &channelId);
 	bool IsConnected(const QString &channelId) const;
 	bool CanSend(const QString &channelId) const;
 	/* False when the message could not be handed to the platform at all. */
@@ -73,5 +76,7 @@ private:
 	QSet<QString> seenIds;
 	QQueue<QString> seenOrder;
 	QNetworkAccessManager *netManager = nullptr;
+	bool reconnectEnabled = false;
+	QSet<QString> reconnectingChannels;
 	std::vector<std::unique_ptr<ChatConnection>> connections;
 };

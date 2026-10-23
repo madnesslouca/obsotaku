@@ -59,7 +59,7 @@ QJsonArray checks;
 QJsonObject facts;
 bool done = false, ready = false, duplicated = false, studioMode = false, globalsCaptured = false;
 OBSSceneAutoRelease scene;
-OBSSourceAutoRelease source, originalScene;
+OBSSourceAutoRelease source, originalScene, background;
 OBSService originalService;
 std::array<OBSSource, 5> globals;
 std::vector<MultiStreamChannel> originalChannels;
@@ -169,12 +169,16 @@ void restore(QString error, std::shared_ptr<QElapsedTimer> clock)
 			obs_set_output_source(unsigned(i + 1), globals[i]);
 		}
 	}
+	if (background) {
+		obs_source_remove(background);
+	}
 	if (source) {
 		obs_source_remove(source);
 	}
 	if (scene) {
 		obs_source_remove(obs_scene_get_source(scene));
 	}
+	background = nullptr;
 	source = nullptr;
 	scene = nullptr;
 	std::string e;
@@ -207,6 +211,12 @@ void restore(QString error, std::shared_ptr<QElapsedTimer> clock)
 			error = QString::fromUtf8(e2.what());
 		}
 	}
+	/* The frontend owns the restored objects now. Module globals must not
+	 * release stale libobs refs from process-exit destructors after shutdown. */
+	for (auto &saved : globals)
+		saved = nullptr;
+	originalScene = nullptr;
+	originalService = nullptr;
 	report(error);
 }
 void finish(QString error)
@@ -514,6 +524,16 @@ void setup()
 	scene = obs_scene_create("Audio active VOD QA");
 	source = obs_source_create("studio_audio_active_qa", "Audio active VOD QA source", nullptr, nullptr);
 	check(source && scene, "inert QA source and independent scene created");
+	/* A fresh private collection has no other video source. Satisfy the real
+	 * NoSources confirmation prerequisite without accepting a modal for it. */
+	OBSDataAutoRelease color = obs_data_create();
+	obs_data_set_int(color, "width", 640);
+	obs_data_set_int(color, "height", 360);
+	obs_data_set_int(color, "color", 0xff202020);
+	background = obs_source_create("color_source_v3", "Audio active VOD QA private video", color, nullptr);
+	check(background && (obs_source_get_output_flags(background) & OBS_SOURCE_VIDEO),
+	      "private synthetic640x360 video satisfies native no-video-source validation");
+	obs_scene_add(scene, background);
 	obs_source_set_audio_mixers(source, 7);
 	obs_scene_add(scene, source);
 	obs_frontend_set_current_scene(obs_scene_get_source(scene));
@@ -562,6 +582,11 @@ void event(obs_frontend_event e, void *)
 {
 	if (e == OBS_FRONTEND_EVENT_FINISHED_LOADING) {
 		later(1500, run);
+	} else if (e == OBS_FRONTEND_EVENT_EXIT) {
+		for (auto &saved : globals)
+			saved = nullptr;
+		originalScene = nullptr;
+		originalService = nullptr;
 	}
 }
 const char *name(void *)

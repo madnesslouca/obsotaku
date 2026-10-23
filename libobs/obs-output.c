@@ -1966,9 +1966,43 @@ static inline struct encoder_packet *find_last_packet_type(struct obs_output *ou
 	return (idx != -1) ? &output->interleaved_packets.array[idx] : NULL;
 }
 
+/* Startup alignment may discard the original IDR while retaining later
+ * predictive frames. Keep each video track decodable after that pruning.
+ * Called only during initialization, before any packet-array pointers escape.
+ */
+static void prune_initial_nonkeyframes(struct obs_output *output)
+{
+	bool seen_keyframe[MAX_OUTPUT_VIDEO_ENCODERS] = {false};
+	size_t kept = 0;
+	for (size_t i = 0; i < output->interleaved_packets.num; i++) {
+		struct encoder_packet packet = output->interleaved_packets.array[i];
+		bool discard = false;
+		if (packet.type == OBS_ENCODER_VIDEO && packet.track_idx < MAX_OUTPUT_VIDEO_ENCODERS) {
+			if (packet.keyframe)
+				seen_keyframe[packet.track_idx] = true;
+			else
+				discard = !seen_keyframe[packet.track_idx];
+		}
+		if (discard) {
+			size_t track = packet.track_idx;
+			for (size_t j = 0; j < output->encoder_packet_times[track].num; j++) {
+				if (output->encoder_packet_times[track].array[j].pts == packet.pts) {
+					da_erase(output->encoder_packet_times[track], j);
+					break;
+				}
+			}
+			obs_encoder_packet_release(&packet);
+		} else {
+			output->interleaved_packets.array[kept++] = packet;
+		}
+	}
+	output->interleaved_packets.num = kept;
+}
+
 static bool get_audio_and_video_packets(struct obs_output *output, struct encoder_packet **video,
 					struct encoder_packet **audio)
 {
+	prune_initial_nonkeyframes(output);
 	bool found_video = false;
 	for (size_t i = 0; i < MAX_OUTPUT_VIDEO_ENCODERS; i++) {
 		if (output->video_encoders[i]) {

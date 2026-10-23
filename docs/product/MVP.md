@@ -66,7 +66,7 @@ the operating-system credential store.
   multistream channel model.
 - **Tools > Streaming Accounts** now shows YouTube, Twitch, and Kick cards. Browser callbacks and Twitch Device Code
   polling run without blocking the main window, while normal configuration stores only account ids/display names.
-- A persistent top channel bar mirrors the useful PRISM channel-strip behavior with platform color, account name,
+- A persistent top channel bar shows destination delivery state with platform color, account name,
   offline/connecting/live/failed state, and a per-destination toggle.
 - Additional RTMP destinations reuse the active OBS video/audio encoders. A destination can be stopped or restarted
   while the other live outputs continue, and all additional outputs stop with the main stream.
@@ -76,7 +76,7 @@ the operating-system credential store.
   from `StreamPlatformConfigSection()`. Nothing may invent its own section.
 - `MultistreamChannelStore` owns the destination list: N channels of any platform, metadata in the configuration
   and stream keys in the credential vault. It migrates the old one-account-per-platform layout on first run.
-- The channel bar mirrors the PRISM channel strip: a card per destination with the platform accent, state and
+- The channel bar provides a card per destination with the platform accent, state and
   per-destination switch, a `+` that opens the platform picker, and a collapse control. Cards show the channel's
   own profile picture when the platform returns one, and the platform logo otherwise.
 - Platform logos live in `frontend/data/images/platforms/` and come from Simple Icons (CC0). `PlatformIconProvider`

@@ -279,7 +279,40 @@ struct obs_view {
 	pthread_mutex_t channels_mutex;
 	obs_source_t *channels[MAX_CHANNELS];
 	enum view_type type;
+
+	/* Audio registry mirrors: guarded by data.audio_roots_update_mutex. */
+	obs_source_t *audio_channels[MAX_CHANNELS];
+	struct obs_view *audio_next;
+	struct obs_view *audio_active_next;
+	bool audio_registered;
+	bool audio_mix;
 };
+
+struct obs_audio_root {
+	obs_source_t *source;
+	bool mix_audio;
+};
+
+struct obs_audio_roots {
+	size_t refs; /* Guarded by data.audio_roots_mutex. */
+	size_t num;
+	struct obs_audio_root *roots;
+	struct obs_audio_roots *next_retired;
+};
+
+/* Internal registry; callbacks never retain or dereference an obs_view. */
+extern void obs_audio_view_add(struct obs_view *view, bool mix_audio);
+extern void obs_audio_view_remove(struct obs_view *view);
+/* Returns the old mirror ref; caller releases it after unlocking channels. */
+extern obs_source_t *obs_audio_view_set_source(struct obs_view *view, uint32_t channel, obs_source_t *source);
+extern void obs_audio_view_free(struct obs_view *view);
+extern struct obs_audio_roots *obs_audio_roots_acquire(void);
+extern void obs_audio_roots_release(struct obs_audio_roots *roots);
+/* Caller must hold no video/view/registry lock. */
+extern void obs_audio_roots_collect(void);
+extern void obs_audio_roots_free(void);
+/* Audio collector only: callback retains child refs, never recurses under lock. */
+extern void obs_scene_enum_active_audio_sources(obs_scene_t *scene, obs_source_enum_proc_t collect, void *param);
 
 extern bool obs_view_init(struct obs_view *view, enum view_type type);
 extern void obs_view_free(struct obs_view *view);
@@ -446,6 +479,7 @@ struct obs_core_audio {
 
 	DARRAY(struct obs_source *) render_order;
 	DARRAY(struct obs_source *) root_nodes;
+	DARRAY(struct obs_source *) enum_children;
 
 	uint64_t buffered_ts;
 	struct deque buffered_timestamps;
@@ -489,6 +523,16 @@ struct obs_core_data {
 	pthread_mutex_t audio_sources_mutex;
 	pthread_mutex_t draw_callbacks_mutex;
 	pthread_mutex_t canvases_mutex;
+
+	/* Independent of video mixes/channels locks: no rendering under these. */
+	pthread_mutex_t audio_roots_update_mutex;
+	pthread_mutex_t audio_roots_mutex;
+	struct obs_view *audio_views;
+	struct obs_view *audio_active_views;
+	struct obs_audio_roots *audio_roots;
+	struct obs_audio_roots *audio_retired_roots;
+	bool audio_roots_shutting_down; /* Guarded by audio_roots_update_mutex. */
+	bool audio_roots_initialized; /* Init/shutdown lifecycle; before/after all users. */
 	DARRAY(struct draw_callback) draw_callbacks;
 	DARRAY(struct rendered_callback) rendered_callbacks;
 	DARRAY(struct tick_callback) tick_callbacks;

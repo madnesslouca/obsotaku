@@ -281,6 +281,23 @@ static void scene_enum_sources(void *data, obs_source_enum_proc_t enum_callback,
 	full_unlock(scene);
 }
 
+
+/* Internal audio collector: append/get_ref only under audio_mutex. The caller
+ * recurses after this returns; arbitrary plugin callbacks never run here. */
+void obs_scene_enum_active_audio_sources(obs_scene_t *scene, obs_source_enum_proc_t collect, void *param)
+{
+	audio_lock(scene);
+	for (struct obs_scene_item *item = scene->first_item; item; item = item->next) {
+		if (item->visible && transition_active(item->show_transition))
+			collect(scene->source, item->show_transition, param);
+		else if (!item->visible && transition_active(item->hide_transition))
+			collect(scene->source, item->hide_transition, param);
+		if (os_atomic_load_long(&item->active_refs) > 0)
+			collect(scene->source, item->source, param);
+	}
+	audio_unlock(scene);
+}
+
 static void scene_enum_active_sources(void *data, obs_source_enum_proc_t enum_callback, void *param)
 {
 	scene_enum_sources(data, enum_callback, param, true);
@@ -4037,10 +4054,16 @@ void obs_sceneitem_set_transition(obs_sceneitem_t *item, bool show, obs_source_t
 	if (!item)
 		return;
 
+	obs_source_t *ref = obs_source_get_ref(transition);
+	struct obs_scene *scene = item->parent;
+	if (scene)
+		full_lock(scene);
 	obs_source_t **target = show ? &item->show_transition : &item->hide_transition;
-	if (*target)
-		obs_source_release(*target);
-	*target = obs_source_get_ref(transition);
+	obs_source_t *prev = *target;
+	*target = ref;
+	if (scene)
+		full_unlock(scene);
+	obs_source_release(prev);
 }
 
 obs_source_t *obs_sceneitem_get_transition(obs_sceneitem_t *item, bool show)

@@ -4,6 +4,7 @@
 #include <components/VolumeMeter.hpp>
 #include <utility/StudioSceneAudio.hpp>
 #include <utility/StudioVodControls.hpp>
+#include <utility/StudioMonitoringDevices.hpp>
 #include <QAction>
 #include <widgets/OBSBasic.hpp>
 #include <obs.hpp>
@@ -25,6 +26,38 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+
+namespace {
+class MonitoringDeviceCombo final : public QComboBox {
+public:
+	explicit MonitoringDeviceCombo(QWidget *parent) : QComboBox(parent) {}
+	std::function<void()> refreshDevices;
+
+protected:
+	void showPopup() override
+	{
+		if (refreshDevices) {
+			refreshDevices();
+		}
+		QComboBox::showPopup();
+	}
+};
+
+std::vector<StudioMonitoringDevice> EnumerateMonitoringDevices()
+{
+	std::vector<StudioMonitoringDevice> devices;
+	obs_enum_audio_monitoring_devices(
+		[](void *opaque, const char *name, const char *id) {
+			if (name && id) {
+				static_cast<std::vector<StudioMonitoringDevice> *>(opaque)->push_back(
+					{QString::fromUtf8(name), QString::fromUtf8(id)});
+			}
+			return true;
+		},
+		&devices);
+	return devices;
+}
+} // namespace
 
 static bool AudioSource(obs_source_t *source)
 {
@@ -214,7 +247,9 @@ StudioAudioDock::StudioAudioDock(QWidget *parent) : OBSDock(parent)
 	layout->addWidget(advanced);
 	auto *deviceLabel = new QLabel(QTStr("Basic.Settings.Advanced.Audio.MonitoringDevice"), body);
 	layout->addWidget(deviceLabel);
-	monitorDevice = new QComboBox(body);
+	auto *deviceCombo = new MonitoringDeviceCombo(body);
+	deviceCombo->refreshDevices = [this]() { RefreshMonitoringDevices(); };
+	monitorDevice = deviceCombo;
 	monitorDevice->setObjectName(QStringLiteral("studioAudioMonitorDevice"));
 	monitorDevice->setToolTip(QTStr("Studio.AudioMonitorDeviceHint"));
 	layout->addWidget(monitorDevice);
@@ -229,17 +264,30 @@ StudioAudioDock::StudioAudioDock(QWidget *parent) : OBSDock(parent)
 	connect(refreshDevices, &QPushButton::clicked, this, &StudioAudioDock::RefreshMonitoringDevices);
 	connect(monitorDevice, &QComboBox::activated, this, [this]() {
 		const QString id = monitorDevice->currentData().toString();
-		const QString name = monitorDevice->currentText();
-		if (!obs_set_audio_monitoring_device(name.toUtf8().constData(), id.toUtf8().constData())) {
+		// The popup may have been open while an endpoint disappeared. The core
+		// setter accepts any nonempty ID, so resolve against a fresh inventory
+		// before changing the shared CUE destination or the profile.
+		if (!obs_audio_monitoring_available()) {
+			feedback->setText(QTStr("Studio.AudioMonitorDeviceError"));
+			RefreshMonitoringDevices();
+			return;
+		}
+		const auto device = ResolveStudioMonitoringDevice(
+			EnumerateMonitoringDevices(), id,
+			QTStr("Basic.Settings.Advanced.Audio.MonitoringDevice.Default"));
+		if (!device || !obs_set_audio_monitoring_device(device->name.toUtf8().constData(),
+							      device->id.toUtf8().constData())) {
 			feedback->setText(QTStr("Studio.AudioMonitorDeviceError"));
 			RefreshMonitoringDevices();
 			return;
 		}
 		auto *config = OBSBasic::Get()->Config();
-		config_set_string(config, "Audio", "MonitoringDeviceName", name.toUtf8().constData());
-		config_set_string(config, "Audio", "MonitoringDeviceId", id.toUtf8().constData());
-		config_save_safe(config, "tmp", nullptr);
-		feedback->setText(QTStr("Studio.AudioMonitorDeviceSaved"));
+		config_set_string(config, "Audio", "MonitoringDeviceName", device->name.toUtf8().constData());
+		config_set_string(config, "Audio", "MonitoringDeviceId", device->id.toUtf8().constData());
+		const bool saved = config_save_safe(config, "tmp", nullptr) == CONFIG_SUCCESS;
+		feedback->setText(QTStr(saved ? "Studio.AudioMonitorDeviceSaved"
+					    : "Studio.AudioMonitorDeviceNotSaved"));
+		RefreshMonitoringDevices();
 	});
 	auto *scroll = new QScrollArea(this);
 	scroll->setWidgetResizable(true);
@@ -616,22 +664,9 @@ void StudioAudioDock::RefreshMonitoringDevices()
 	// Enumeration may replace backend strings, so retain owned copies first.
 	const QString id = QString::fromUtf8(currentId ? currentId : "default");
 	const QString name = QString::fromUtf8(currentName ? currentName : "");
-	monitorDevice->addItem(QTStr("Basic.Settings.Advanced.Audio.MonitoringDevice.Default"), "default");
-	obs_enum_audio_monitoring_devices(
-		[](void *opaque, const char *name, const char *id) {
-			auto *combo = static_cast<QComboBox *>(opaque);
-			if (combo->findData(QString::fromUtf8(id)) < 0) {
-				combo->addItem(QString::fromUtf8(name), QString::fromUtf8(id));
-			}
-			return true;
-		},
-		monitorDevice);
-	int index = monitorDevice->findData(id);
-	if (index < 0) {
-		monitorDevice->addItem(QTStr("Studio.AudioMonitorDeviceMissing").arg(name), id);
-		index = monitorDevice->count() - 1;
-	}
-	monitorDevice->setCurrentIndex(index);
+	PopulateStudioMonitoringDevices(monitorDevice, EnumerateMonitoringDevices(), id, name,
+					QTStr("Basic.Settings.Advanced.Audio.MonitoringDevice.Default"),
+					QTStr("Studio.AudioMonitorDeviceMissing"));
 }
 
 void StudioAudioDock::SetSceneLinked(const QString &uuid, bool linked)

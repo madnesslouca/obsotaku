@@ -80,12 +80,25 @@ struct MultiStreamChannelHealth {
 	int reconnects = 0;
 };
 
+/* Additional outputs borrow a canvas encoder which may also serve the primary
+ * stream, recording or replay. Only the primary output may adapt that encoder;
+ * counting destinations here cannot establish exclusive ownership. */
+enum class MultiStreamDynamicBitrateReason {
+	NotRequested,
+	SharedEncoderAuthority,
+};
+
 struct MultiStreamChannelSnapshot {
 	std::string id;
 	std::string displayName;
 	MultiStreamChannelState state = MultiStreamChannelState::Idle;
 	std::string lastError;
 	MultiStreamChannelHealth health;
+	bool dynamicBitrateRequested = false;
+	/* This is the additional output's effective policy, not a promise that
+	 * another owner (e.g. the primary stream) cannot adapt the shared encoder. */
+	bool dynamicBitrateEffective = false;
+	MultiStreamDynamicBitrateReason dynamicBitrateReason = MultiStreamDynamicBitrateReason::NotRequested;
 };
 
 struct MultiStreamReconnectSettings {
@@ -103,6 +116,8 @@ struct MultiStreamOutputSettings {
 	std::string ipFamily;
 	int delaySeconds = 0;
 	bool preserveDelay = false;
+	/* Persisted user intent. Additional outputs report a restricted effective
+	 * policy without overwriting this preference or creating new encoders. */
 	bool dynamicBitrate = false;
 	bool newSocketLoop = false;
 	bool lowLatency = false;
@@ -197,6 +212,7 @@ private:
 		bool restartPending = false;
 		bool restartQueued = false;
 		bool stopPending = false;
+		bool dynamicBitrateRequested = false;
 	};
 
 	static MultiStreamChannelHealth ReadHealth(const Destination &destination);
@@ -225,6 +241,9 @@ private:
 	void CollectRetiredDestinations();
 	void QueueRestart(Destination &destination);
 	void ResumeRestart(const std::weak_ptr<Destination> &destination);
+	/* State notifications are reentrant: Stop/disable/Configure may run from
+	 * the Starting callback before control reaches obs_output_start(). */
+	bool CanStartDestination(const std::shared_ptr<Destination> &destination, uint64_t generation) const;
 	bool RecomputeActiveLocked();
 
 	mutable std::mutex mutex;
@@ -245,4 +264,5 @@ private:
 	bool mainChannelSignalConnected = false;
 	bool active = false;
 	bool sessionRunning = false;
+	uint64_t sessionGeneration = 0;
 };

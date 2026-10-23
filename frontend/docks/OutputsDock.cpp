@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSizePolicy>
 #include <QStyle>
 #include <QVBoxLayout>
 
@@ -66,6 +67,17 @@ void Repolish(QWidget *widget)
 	widget->style()->polish(widget);
 }
 
+void WrapToAvailableWidth(QLabel *label)
+{
+	label->setWordWrap(true);
+	label->setMinimumWidth(0);
+	/* Keep QLabel's height-for-width flag set by wordWrap. Its text must
+	 * increase card height instead of widening the scroll viewport. */
+	auto policy = label->sizePolicy();
+	policy.setHorizontalPolicy(QSizePolicy::Ignored);
+	label->setSizePolicy(policy);
+}
+
 QString CanvasName(MultiStreamVideoLayout layout)
 {
 	return layout == MultiStreamVideoLayout::Portrait ? QTStr("Outputs.Canvas.Portrait")
@@ -91,9 +103,10 @@ OutputsDock::OutputsDock(QWidget *parent) : OBSDock(parent)
 	headerLayout->setSpacing(3);
 	auto *title = new QLabel(QTStr("Outputs.HeaderTitle"), header);
 	title->setObjectName(QStringLiteral("outputsHeaderTitle"));
+	WrapToAvailableWidth(title);
 	summary = new QLabel(header);
 	summary->setObjectName(QStringLiteral("outputsHint"));
-	summary->setWordWrap(true);
+	WrapToAvailableWidth(summary);
 	headerLayout->addWidget(title);
 	headerLayout->addWidget(summary);
 	layout->addWidget(header);
@@ -109,7 +122,7 @@ OutputsDock::OutputsDock(QWidget *parent) : OBSDock(parent)
 	rowsLayout->setSpacing(6);
 	emptyLabel = new QLabel(QTStr("Outputs.Empty"), rowsHost);
 	emptyLabel->setObjectName(QStringLiteral("outputsHint"));
-	emptyLabel->setWordWrap(true);
+	WrapToAvailableWidth(emptyLabel);
 	emptyLabel->setAlignment(Qt::AlignCenter);
 	rowsLayout->addWidget(emptyLabel);
 	rowsLayout->addStretch();
@@ -165,19 +178,24 @@ void OutputsDock::SetChannels(const std::vector<MultiStreamChannel> &newChannels
 			QStringLiteral("%1 · %2").arg(name, StreamPlatformDisplayName(channel.platform)), card);
 		nameLabel->setObjectName(QStringLiteral("outputsRowName"));
 		nameLabel->setToolTip(nameLabel->text());
+		WrapToAvailableWidth(nameLabel);
 		row.status = new QLabel(
 			channel.enabled ? StateText(MultiStreamChannelState::Idle) : QTStr("Outputs.Disabled"), card);
 		row.status->setObjectName(QStringLiteral("outputsStatus"));
 		row.status->setProperty("state", channel.enabled ? "idle" : "disabled");
+		WrapToAvailableWidth(row.status);
 		top->addWidget(row.badge);
 		top->addWidget(nameLabel, 1);
-		top->addWidget(row.status);
 		cardLayout->addLayout(top);
+		cardLayout->addWidget(row.status);
 
 		auto *bottom = new QHBoxLayout();
 		bottom->setSpacing(6);
 		row.canvas = new QComboBox(card);
 		row.canvas->setObjectName(QStringLiteral("outputsCanvas"));
+		row.canvas->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+		row.canvas->setMinimumContentsLength(8);
+		row.canvas->setMinimumWidth(0);
 		row.canvas->setAccessibleName(QTStr("Outputs.CanvasFor").arg(name));
 		row.canvas->addItem(CanvasName(MultiStreamVideoLayout::Main),
 				    static_cast<int>(MultiStreamVideoLayout::Main));
@@ -188,6 +206,7 @@ void OutputsDock::SetChannels(const std::vector<MultiStreamChannel> &newChannels
 		row.layout = channel.videoLayout;
 		row.encoder = new QLabel(card);
 		row.encoder->setObjectName(QStringLiteral("outputsEncoder"));
+		WrapToAvailableWidth(row.encoder);
 		auto *edit = new QPushButton(QTStr("Outputs.Edit"), card);
 		edit->setObjectName(QStringLiteral("outputsEditButton"));
 		bottom->addWidget(row.canvas, 1);
@@ -237,7 +256,15 @@ void OutputsDock::UpdateState(const MultiStreamChannelSnapshot &snapshot)
 		row.status->setText(StateText(snapshot.state));
 		row.status->setProperty("state", StateValue(snapshot.state));
 	}
-	row.status->setToolTip(QString::fromStdString(snapshot.lastError));
+	QString tip = QString::fromStdString(snapshot.lastError);
+	if (snapshot.dynamicBitrateRequested &&
+	    snapshot.dynamicBitrateReason == MultiStreamDynamicBitrateReason::SharedEncoderAuthority) {
+		row.status->setText(row.status->text() + QStringLiteral(" · ") + QTStr("Multistream.Bitrate.Shared"));
+		if (!tip.isEmpty())
+			tip += QChar('\n');
+		tip += QTStr("Multistream.Bitrate.SharedTip");
+	}
+	row.status->setToolTip(tip);
 	Repolish(row.status);
 }
 

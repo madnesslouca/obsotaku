@@ -63,6 +63,8 @@ target_sources(
     utility/StudioVodRouting.hpp
     utility/StudioVodControls.cpp
     utility/StudioVodControls.hpp
+    utility/StudioMonitoringDevices.cpp
+    utility/StudioMonitoringDevices.hpp
     utility/MultistreamAudioRouting.cpp
     utility/MultistreamAudioRouting.hpp
     utility/MultistreamChannelPlan.cpp

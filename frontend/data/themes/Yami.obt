@@ -2807,7 +2807,7 @@ AlignmentSelector::indicator:checked:disabled {
     background: var(--grey3);
 }
 
-/* Multistream Accounts Dialog (PRISM Style) */
+/* Multistream Accounts Dialog */
 MultistreamAccountsDialog {
     background-color: var(--bg_window);
 }

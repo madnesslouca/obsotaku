@@ -22,6 +22,7 @@ target_sources(
   PRIVATE
     $<$<PLATFORM_ID:Linux>:RunLoopImpl.cpp;StudioX11Editor.cpp>
     StudioVst3Parameters.cpp
+    StudioVst3ScanProcess.cpp
     VST3ComponentHolder.cpp
     VST3ComponentHolder.h
     VST3EditorWindow.cpp

@@ -167,7 +167,7 @@ void startToneWorker(std::array<obs_source_t *, 4> inputs)
 			std::array<std::array<float, 960>, 4> samples;
 			for (size_t i = 0; i < 960; ++i) {
 				const double t = double(sampleIndex + i) / 48000.;
-				const bool on = ((sampleIndex + i) % 24000) < 9600;
+				const bool on = ((sampleIndex + i) % 48000) < 9600;
 				samples[0][i] = on * .010 * std::sin(2 * 3.141592653589793 * 997 * t);
 				samples[1][i] = .015 * std::sin(2 * 3.141592653589793 * 431 * t);
 				samples[2][i] = on * .006 * std::sin(2 * 3.141592653589793 * 2003 * t);

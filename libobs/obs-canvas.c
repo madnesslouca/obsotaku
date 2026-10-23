@@ -169,7 +169,10 @@ static obs_canvas_t *obs_canvas_create_internal(const char *name, const char *uu
 
 			pthread_mutex_lock(&obs->video.mixes_mutex);
 			da_push_back(obs->video.mixes, &canvas->mix);
+			if (!(canvas->flags & REMOVED))
+				obs_audio_view_add(&canvas->view, canvas->mix->mix_audio);
 			pthread_mutex_unlock(&obs->video.mixes_mutex);
+			obs_audio_roots_collect();
 		}
 	}
 
@@ -278,8 +281,8 @@ void obs_canvas_clear_mix(obs_canvas_t *canvas)
 		}
 	}
 	pthread_mutex_unlock(&obs->video.mixes_mutex);
-
 	canvas->mix = NULL;
+	obs_audio_roots_collect();
 }
 
 /* Clear mixes attached to canvases */
@@ -313,7 +316,10 @@ bool obs_canvas_reset_video_internal(obs_canvas_t *canvas, struct obs_video_info
 
 		pthread_mutex_lock(&obs->video.mixes_mutex);
 		da_push_back(obs->video.mixes, &canvas->mix);
+		if (!(canvas->flags & REMOVED))
+			obs_audio_view_add(&canvas->view, canvas->mix->mix_audio);
 		pthread_mutex_unlock(&obs->video.mixes_mutex);
+		obs_audio_roots_collect();
 	}
 
 	canvas_dosignal(canvas, "canvas_video_reset", "video_reset");
@@ -461,8 +467,12 @@ void obs_canvas_set_channel(obs_canvas_t *canvas, uint32_t channel, obs_source_t
 
 	/* For some reason the original implementation allows overriding the source from the callback,
 	 * so just in case support that here as well. This isn't used anywhere in OBS itself. */
+	obs_source_t *requested_source = source;
 	calldata_get_ptr(&params, "source", &source);
+	if (source != requested_source)
+		source = obs_source_get_ref(source);
 	view->channels[channel] = source;
+	obs_source_t *prev_audio_source = obs_audio_view_set_source(view, channel, source);
 
 	calldata_free(&params);
 	pthread_mutex_unlock(&view->channels_mutex);
@@ -474,6 +484,10 @@ void obs_canvas_set_channel(obs_canvas_t *canvas, uint32_t channel, obs_source_t
 		obs_source_deactivate(prev_source, view->type);
 		obs_source_release(prev_source);
 	}
+	if (source != requested_source)
+		obs_source_release(requested_source);
+	obs_source_release(prev_audio_source);
+	obs_audio_roots_collect();
 }
 
 obs_source_t *obs_canvas_get_channel(obs_canvas_t *canvas, uint32_t channel)
@@ -571,6 +585,8 @@ void obs_canvas_remove(obs_canvas_t *canvas)
 	obs_canvas_t *c = obs_canvas_get_ref(canvas);
 	if (c) {
 		c->flags |= REMOVED;
+		obs_audio_view_remove(&c->view);
+		obs_audio_roots_collect();
 		canvas_dosignal(c, "canvas_remove", "remove");
 		obs_canvas_release(c);
 	}
