@@ -9,9 +9,15 @@
 
 #include "ConnectedAccountManager.hpp"
 
+#include <util/base.h>
+
+#include <algorithm>
+#include <cassert>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <thread>
 
 using namespace std;
 
@@ -32,6 +38,133 @@ shared_ptr<mutex> MutexForAccount(StreamPlatform platform, const string &account
 	return result;
 }
 } // namespace
+
+struct ConnectedAccountManager::CredentialRemoval::Impl {
+	Impl(const ConnectedStreamAccount &account, shared_ptr<SecureTokenStore::RequestContext> request)
+		: platform(account.platform), accountId(account.accountId), request(std::move(request)),
+		  accountMutex(MutexForAccount(platform, accountId)), accountLock(*accountMutex, defer_lock),
+		  owner(this_thread::get_id())
+	{
+	}
+	~Impl()
+	{
+		assert(owner == this_thread::get_id());
+		ClearBackup();
+		if (accountLock.owns_lock())
+			accountLock.unlock();
+		/* Recovery is explicit: no credential I/O from a destructor, and no
+		 * remote text, account identifier or token in this diagnostic. */
+		if (attempted)
+			blog(LOG_ERROR, "OAuth credential removal ended without confirmed commit or rollback.");
+	}
+	void ClearBackup() noexcept
+	{
+		if (!backup)
+			return;
+		volatile char *bytes = backup->empty() ? nullptr : backup->data();
+		for (size_t index = 0; index < backup->size(); ++index)
+			bytes[index] = 0;
+		backup.reset();
+	}
+	bool MayContinue(string &error) const
+	{
+		if (request->IsCancelled()) {
+			error = "OAuth credential removal was cancelled.";
+			return false;
+		}
+		if (chrono::steady_clock::now() >= request->GetDeadline()) {
+			error = "OAuth credential removal timed out.";
+			return false;
+		}
+		return true;
+	}
+	const StreamPlatform platform;
+	const string accountId;
+	const shared_ptr<SecureTokenStore::RequestContext> request;
+	const shared_ptr<mutex> accountMutex;
+	unique_lock<mutex> accountLock;
+	const thread::id owner;
+	optional<string> backup;
+	bool attempted = false;
+	bool committed = false;
+};
+
+ConnectedAccountManager::CredentialRemoval::CredentialRemoval(unique_ptr<Impl> impl) : impl(std::move(impl)) {}
+
+ConnectedAccountManager::CredentialRemoval::~CredentialRemoval() = default;
+
+unique_ptr<ConnectedAccountManager::CredentialRemoval>
+ConnectedAccountManager::BeginCredentialRemoval(const ConnectedStreamAccount &account,
+						shared_ptr<SecureTokenStore::RequestContext> request, string &error)
+{
+	if (account.accountId.empty() || account.platform == StreamPlatform::CustomRtmp) {
+		error = "A connected OAuth account is required to remove credentials.";
+		return {};
+	}
+	if (!request)
+		request = make_shared<SecureTokenStore::RequestContext>();
+	auto state = make_unique<CredentialRemoval::Impl>(account, std::move(request));
+	while (state->MayContinue(error)) {
+		if (state->accountLock.try_lock()) {
+			if (!state->MayContinue(error))
+				return {};
+			SecureTokenStore::RequestScope scope(state->request);
+			state->backup = SecureTokenStore::Load(string(GetStreamPlatformInfo(account.platform).id),
+						     account.accountId, error);
+			if (!error.empty())
+				return {};
+			error.clear();
+			return unique_ptr<CredentialRemoval>(new CredentialRemoval(std::move(state)));
+		}
+		this_thread::sleep_until(min(state->request->GetDeadline(),
+					    chrono::steady_clock::now() + chrono::milliseconds(10)));
+	}
+	return {};
+}
+
+bool ConnectedAccountManager::CredentialRemoval::Remove(string &error)
+{
+	assert(impl->owner == this_thread::get_id());
+	if (impl->committed) {
+		error = "OAuth credential removal was already committed.";
+		return false;
+	}
+	if (!impl->MayContinue(error))
+		return false;
+	SecureTokenStore::RequestScope scope(impl->request);
+	/* Cancellation may arrive after the service commits but before its reply. */
+	impl->attempted = true;
+	return OAuthTokenSet::Remove(impl->platform, impl->accountId, error);
+}
+
+bool ConnectedAccountManager::CredentialRemoval::Rollback(string &error)
+{
+	assert(impl->owner == this_thread::get_id());
+	if (impl->committed) {
+		error = "A committed OAuth credential removal cannot be rolled back.";
+		return false;
+	}
+	if (!impl->attempted) {
+		error.clear();
+		return true;
+	}
+	/* Deliberately inherit the caller's fresh recovery RequestScope. Reusing
+	 * impl->request would make recovery impossible after cancellation/expiry. */
+	const string name = string(GetStreamPlatformInfo(impl->platform).id);
+	const bool restored = impl->backup ? SecureTokenStore::Save(name, impl->accountId, *impl->backup, error)
+					   : SecureTokenStore::Remove(name, impl->accountId, error);
+	if (restored)
+		impl->attempted = false;
+	return restored;
+}
+
+void ConnectedAccountManager::CredentialRemoval::Commit() noexcept
+{
+	assert(impl->owner == this_thread::get_id());
+	impl->attempted = false;
+	impl->committed = true;
+	impl->ClearBackup();
+}
 
 static MultiStreamChannel MakeChannel(const ConnectedStreamAccount &account, const ResolvedStreamIngest &ingest)
 {
@@ -191,11 +324,19 @@ void ConnectedAccountManager::PreserveUserSettings(const MultiStreamChannel &sto
 
 bool ConnectedAccountManager::Disconnect(const ConnectedStreamAccount &account, string &error)
 {
-	if (account.accountId.empty() || account.platform == StreamPlatform::CustomRtmp) {
-		error = "A connected OAuth account is required to remove credentials.";
+	auto lease = BeginCredentialRemoval(account, make_shared<SecureTokenStore::RequestContext>(), error);
+	if (!lease)
 		return false;
+	if (lease->Remove(error)) {
+		lease->Commit();
+		return true;
 	}
-	const auto accountMutex = MutexForAccount(account.platform, account.accountId);
-	lock_guard accountLock(*accountMutex);
-	return OAuthTokenSet::Remove(account.platform, account.accountId, error);
+	const string removalError = error;
+	SecureTokenStore::RequestScope recovery(make_shared<SecureTokenStore::RequestContext>());
+	string rollbackError;
+	const bool restored = lease->Rollback(rollbackError);
+	error = removalError;
+	if (!restored)
+		error += " Restoring the previous OAuth credential did not complete.";
+	return false;
 }

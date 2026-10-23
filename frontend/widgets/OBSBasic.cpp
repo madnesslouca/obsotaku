@@ -50,6 +50,7 @@
 #include <utility/QuickTransition.hpp>
 #include <utility/SceneRenameDelegate.hpp>
 #include <utility/MultistreamChannelStore.hpp>
+#include <utility/MultistreamTaskPool.hpp>
 #if defined(_WIN32) || defined(WHATSNEW_ENABLED)
 #include <utility/WhatsNewInfoThread.hpp>
 #endif
@@ -266,6 +267,12 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 	ui->setupUi(this);
 	ui->previewDisabledWidget->setVisible(false);
 	multistreamChannelBar = new MultistreamChannelBar(this);
+	connect(multistreamChannelBar, &MultistreamChannelBar::credentialStatusChanged, this,
+		[this](const QString &status) {
+			if (outputsDock) {
+				outputsDock->SetCredentialStatus(status);
+			}
+		});
 	ui->verticalLayout->insertWidget(0, multistreamChannelBar);
 	connect(multistreamChannelBar, &MultistreamChannelBar::manageAccountRequested, this,
 		&OBSBasic::ManageMultistreamAccount);
@@ -294,8 +301,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 				return;
 			if (StreamingActive() && channelId.toStdString() ==
 						 outputHandler->multiStreamManager->PrimaryChannelId()) {
-				multistreamChannelBar->SetChannels(
-					outputHandler->multiStreamManager->ConfiguredChannels());
+				BindMultistreamManager();
 				RefreshMultistreamPrimaryState();
 				QMessageBox::information(this, QTStr("Multistream.ChannelBar.ToggleFailed"),
 						 QTStr("Multistream.ChannelBar.PrimaryLocked"));
@@ -303,8 +309,7 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new 
 			}
 			std::string error;
 			if (!outputHandler->multiStreamManager->SetChannelEnabled(channelId.toStdString(), enabled, error)) {
-				multistreamChannelBar->SetChannels(
-					outputHandler->multiStreamManager->ConfiguredChannels());
+				BindMultistreamManager();
 				QMessageBox::warning(this, QTStr("Multistream.ChannelBar.ToggleFailed"),
 						     QString::fromStdString(error));
 			}
@@ -1545,10 +1550,15 @@ void OBSBasic::OnFirstLoad()
 	}
 }
 
-OBSBasic::~OBSBasic() {}
+OBSBasic::~OBSBasic()
+{
+	MultistreamChannelStore::Shutdown();
+}
 
 void OBSBasic::applicationShutdown() noexcept
 {
+	MultistreamChannelStore::Shutdown();
+	ShutdownMultistreamTasks();
 	/* clear out UI event queue */
 	QApplication::sendPostedEvents(nullptr);
 #ifndef __APPLE__

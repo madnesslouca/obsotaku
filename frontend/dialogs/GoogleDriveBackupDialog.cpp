@@ -44,6 +44,8 @@
 #include <QVBoxLayout>
 
 #include <memory>
+#include <condition_variable>
+#include <mutex>
 
 #include "moc_GoogleDriveBackupDialog.cpp"
 
@@ -51,6 +53,89 @@ using namespace std;
 
 namespace {
 constexpr const char *CONFIG_SECTION = "GoogleDriveBackup";
+
+// GUI-only scope/auth metadata snapshot; no config pointer or raw secret.
+function<bool()> CloudMetadataGuard()
+{
+	return GoogleDriveBackupClient::CaptureConfigurationGuard();
+}
+bool RequestActive(const shared_ptr<SecureTokenStore::RequestContext> &request,
+		   const shared_ptr<atomic_bool> &stop)
+{
+	return !stop->load() && !request->IsCancelled() && chrono::steady_clock::now() < request->GetDeadline();
+}
+struct CredentialDecision {
+	mutex lock;
+	condition_variable changed;
+	bool decided = false;
+	bool accepted = false;
+	function<bool()> committedMetadataCurrent;
+	QString error;
+};
+
+bool SaveCloudField(const char *key, const optional<string> &value)
+{
+	if (!App() || !App()->GetUserConfig()) return false;
+	config_t *config = App()->GetUserConfig();
+	const char *raw = config_get_string(config, CONFIG_SECTION, key);
+	const optional<string> previous = config_has_user_value(config, CONFIG_SECTION, key)
+		? optional<string>(raw ? raw : "") : nullopt;
+	if (value) config_set_string(config, CONFIG_SECTION, key, value->c_str());
+	else config_remove_value(config, CONFIG_SECTION, key);
+	if (config_save_safe(config, "tmp", nullptr) == CONFIG_SUCCESS) return true;
+	if (previous) config_set_string(config, CONFIG_SECTION, key, previous->c_str());
+	else config_remove_value(config, CONFIG_SECTION, key);
+	return false;
+}
+struct CredentialResult {
+	bool success = false;
+	QString error;
+	GoogleDriveBackupClient::SessionInfo session;
+	function<bool()> metadataCurrent;
+};
+CredentialResult FinishCredentialTransaction(unique_ptr<GoogleDriveBackupClient::CredentialTransaction> lease,
+	bool prepared, QString error, const shared_ptr<SecureTokenStore::RequestContext> &request,
+	const shared_ptr<atomic_bool> &stop, QObject *dispatcher, function<bool(QString &)> guiCommit)
+{
+	CredentialResult result;
+	result.error = std::move(error);
+	if (prepared && RequestActive(request, stop)) {
+		auto decision = make_shared<CredentialDecision>();
+		QMetaObject::invokeMethod(dispatcher, [decision, request, stop, guiCommit = std::move(guiCommit)] {
+			lock_guard lock(decision->lock);
+			if (decision->decided) return;
+			if (RequestActive(request, stop)) {
+				// Local linearization is the durable save inside guiCommit. An
+				// already-running save is not interrupted by cancellation.
+				decision->accepted = guiCommit(decision->error);
+				if (decision->accepted) decision->committedMetadataCurrent = CloudMetadataGuard();
+			} else decision->error = QObject::tr("A operação foi cancelada antes de salvar a configuração.");
+			decision->decided = true;
+			decision->changed.notify_one();
+		}, Qt::QueuedConnection);
+		unique_lock lock(decision->lock);
+		while (!decision->decided && RequestActive(request, stop))
+			decision->changed.wait_for(lock, chrono::milliseconds(20));
+		if (!decision->decided) {
+			decision->decided = true;
+			decision->error = QObject::tr("A operação foi cancelada antes de salvar a configuração.");
+		}
+		result.success = decision->accepted;
+		result.metadataCurrent = std::move(decision->committedMetadataCurrent);
+		result.error = decision->error;
+	}
+	if (lease) {
+		if (result.success) result.session = lease->Commit();
+		else {
+			if (result.error.isEmpty()) result.error = QObject::tr("Não foi possível confirmar a operação da credencial.");
+			lease->Rollback(result.error);
+		}
+		lease.reset(); // Same worker unlocks before the caller queues UI completion.
+	}
+	if (!result.success && result.error.isEmpty())
+		result.error = QObject::tr("A operação foi cancelada antes de confirmar a credencial.");
+	return result;
+}
 
 QString HumanSize(qint64 bytes)
 {
@@ -154,12 +239,15 @@ GoogleDriveBackupDialog::GoogleDriveBackupDialog(QWidget *parent) : QDialog(pare
 	BuildUi();
 	LoadSettings();
 	UpdateConnectionUi();
-	if (GoogleDriveBackupClient::HasConnection())
-		RefreshHistory();
+	CheckConnection(true);
 }
 
 GoogleDriveBackupDialog::~GoogleDriveBackupDialog()
 {
+	alive->store(false);
+	httpCancelled->store(true);
+	if (connectionRequest)
+		connectionRequest->Cancel();
 	ClearLoopback();
 }
 
@@ -196,7 +284,12 @@ void GoogleDriveBackupDialog::BuildUi()
 	accountLayout->addWidget(connectButton);
 	connect(configureButton, &QPushButton::clicked, this, &GoogleDriveBackupDialog::ConfigureClientId);
 	connect(connectButton, &QPushButton::clicked, this, [this]() {
-		GoogleDriveBackupClient::HasConnection() ? DisconnectGoogle() : ConnectGoogle();
+		if (!connectionChecked || !connectionError.isEmpty())
+			CheckConnection(false);
+		else if (connected)
+			DisconnectGoogle();
+		else
+			ConnectGoogle();
 	});
 	root->addWidget(account);
 
@@ -310,11 +403,22 @@ void GoogleDriveBackupDialog::LoadSettings()
 	intervalCombo->setCurrentIndex(max(0, intervalCombo->findData(days > 0 ? days : 7)));
 	const int retain = static_cast<int>(config_get_int(config, CONFIG_SECTION, "Retention"));
 	retentionCombo->setCurrentIndex(max(0, retentionCombo->findData(retain > 0 ? retain : 10)));
+	settingsCurrent = GoogleDriveBackupClient::CaptureConfigurationGuard(GoogleDriveBackupClient::ConfigurationPart::Settings);
 }
 
-void GoogleDriveBackupDialog::SaveSettings()
+bool GoogleDriveBackupDialog::SaveSettings()
 {
+	if (!settingsCurrent || !settingsCurrent()) {
+		activityStatus->setText(tr("As configurações mudaram. Reabra a janela antes de salvar este rascunho."));
+		return false;
+	}
 	config_t *config = App()->GetUserConfig();
+	vector<pair<string, optional<string>>> previous;
+	for (const char *key : {"IncludeGeneral", "IncludeProfiles", "IncludeScenes", "IncludePlugins", "AutoEnabled", "IntervalDays", "Retention"}) {
+		const char *raw = config_get_string(config, CONFIG_SECTION, key);
+		previous.emplace_back(key, config_has_user_value(config, CONFIG_SECTION, key)
+			? optional<string>(raw ? raw : "") : nullopt);
+	}
 	config_set_bool(config, CONFIG_SECTION, "IncludeGeneral", generalCheck->isChecked());
 	config_set_bool(config, CONFIG_SECTION, "IncludeProfiles", profilesCheck->isChecked());
 	config_set_bool(config, CONFIG_SECTION, "IncludeScenes", scenesCheck->isChecked());
@@ -322,26 +426,100 @@ void GoogleDriveBackupDialog::SaveSettings()
 	config_set_bool(config, CONFIG_SECTION, "AutoEnabled", autoBackupCheck->isChecked());
 	config_set_int(config, CONFIG_SECTION, "IntervalDays", intervalCombo->currentData().toInt());
 	config_set_int(config, CONFIG_SECTION, "Retention", retentionCombo->currentData().toInt());
-	config_save_safe(config, "tmp", nullptr);
+	if (config_save_safe(config, "tmp", nullptr) != CONFIG_SUCCESS) {
+		for (const auto &[key, value] : previous) {
+			if (value) config_set_string(config, CONFIG_SECTION, key.c_str(), value->c_str());
+			else config_remove_value(config, CONFIG_SECTION, key.c_str());
+		}
+		activityStatus->setText(tr("Não foi possível salvar as configurações. O rascunho não foi aplicado."));
+		return false;
+	}
+	settingsCurrent = GoogleDriveBackupClient::CaptureConfigurationGuard(GoogleDriveBackupClient::ConfigurationPart::Settings);
+	return true;
 }
 
 void GoogleDriveBackupDialog::UpdateConnectionUi()
 {
-	const bool connected = GoogleDriveBackupClient::HasConnection();
-	const char *stored = config_get_string(App()->GetUserConfig(), CONFIG_SECTION, "AccountName");
+	config_t *config = App() ? App()->GetUserConfig() : nullptr;
+	const char *stored = config ? config_get_string(config, CONFIG_SECTION, "AccountName") : nullptr;
 	accountStatus->setText(connected ? QTStr("CloudBackup.ConnectedAs").arg(stored && *stored ? QString::fromUtf8(stored)
 											 : QTStr("CloudBackup.GoogleAccount"))
 					 : QTStr("CloudBackup.Disconnected"));
+	if (!connectionChecked)
+		accountStatus->setText(QTStr("CloudBackup.Loading"));
+	else if (!connectionError.isEmpty())
+		accountStatus->setText(connectionError);
 	connectButton->setText(connected ? QTStr("CloudBackup.Disconnect") : QTStr("CloudBackup.Connect"));
-	connectButton->setEnabled(!busy);
+	if (!connectionError.isEmpty())
+		connectButton->setText(QTStr("CloudBackup.Refresh"));
+	connectButton->setEnabled(connectionChecked && !busy);
 	configureButton->setEnabled(!busy);
-	backupButton->setEnabled(connected && !busy);
-	refreshButton->setEnabled(connected && !busy);
-	const bool selected = connected && history->currentItem();
+	const bool usable = connectionChecked && connectionError.isEmpty() && connected;
+	backupButton->setEnabled(usable && !busy);
+	refreshButton->setEnabled(usable && !busy);
+	const bool selected = usable && history->currentItem();
 	restoreButton->setEnabled(selected && !busy);
 	deleteButton->setEnabled(selected && !busy);
 	exportButton->setEnabled(selected && !busy);
 	importButton->setEnabled(!busy);
+}
+
+void GoogleDriveBackupDialog::StartTask(function<void()> task)
+{
+	if (!MultistreamTaskPool().start(std::move(task))) {
+		if (connectionRequest)
+			connectionRequest->Cancel();
+		connectionChecked = true;
+		connectionError = tr("O encerramento já começou; a operação não foi iniciada.");
+		SetBusy(false, connectionError);
+	}
+}
+
+void GoogleDriveBackupDialog::CheckConnection(bool loadHistory, const QString &message)
+{
+	if (!App() || !App()->GetUserConfig()) {
+		connectionChecked = true; connected = false; connectionSession = {}; connectionMetadataCurrent = {};
+		connectionError = tr("A configuração não está disponível. Reabra a janela quando o perfil estiver pronto.");
+		SetBusy(false, connectionError); return;
+	}
+	if (busy)
+		return;
+	if (connectionRequest)
+		connectionRequest->Cancel();
+	auto request = make_shared<SecureTokenStore::RequestContext>();
+	connectionRequest = request;
+	const auto generation = ++connectionGeneration;
+	const auto metadataCurrent = CloudMetadataGuard();
+	connectionChecked = false;
+	connectionError.clear();
+	SetBusy(true, QTStr("CloudBackup.Loading"));
+	QPointer<GoogleDriveBackupDialog> guard(this);
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	StartTask([guard, dispatcher, request, generation, loadHistory, message, metadataCurrent]() {
+		QString error;
+		GoogleDriveBackupClient::SessionInfo session;
+		const bool found = GoogleDriveBackupClient::HasConnection(error, request, &session);
+		QMetaObject::invokeMethod(dispatcher, [guard, request, generation, found, error, loadHistory, message, session, metadataCurrent]() {
+			if (!guard || guard->connectionGeneration != generation)
+				return;
+			guard->connectionRequest.reset();
+			if (!metadataCurrent() || (error.isEmpty() && !GoogleDriveBackupClient::SessionCurrent(session))) {
+				guard->history->clear();
+				guard->SetBusy(false);
+				guard->CheckConnection(loadHistory);
+				return;
+			}
+			if (guard->connectionSession.epoch != session.epoch) guard->history->clear();
+			guard->connectionChecked = true;
+			guard->connected = found;
+			guard->connectionSession = session;
+			guard->connectionMetadataCurrent = error.isEmpty() ? metadataCurrent : function<bool()>{};
+			guard->connectionError = error;
+			guard->SetBusy(false, !error.isEmpty() ? error : (!message.isEmpty() ? message : QTStr("CloudBackup.Ready")));
+			if (found && error.isEmpty() && loadHistory)
+				guard->RefreshHistory();
+		}, Qt::QueuedConnection);
+	});
 }
 
 void GoogleDriveBackupDialog::SetBusy(bool value, const QString &message)
@@ -358,6 +536,8 @@ void GoogleDriveBackupDialog::SetBusy(bool value, const QString &message)
 
 void GoogleDriveBackupDialog::ConfigureClientId()
 {
+	const auto metadataCurrent = CloudMetadataGuard();
+	if (!metadataCurrent()) { activityStatus->setText(tr("A configuração não está disponível.")); return; }
 	bool ok = false;
 	const QString current = QString::fromStdString(GoogleDriveBackupClient::Registration().clientId);
 	const QString clientId = QInputDialog::getText(this, QTStr("CloudBackup.ConfigureClient"),
@@ -366,9 +546,23 @@ void GoogleDriveBackupDialog::ConfigureClientId()
 				 .trimmed();
 	if (!ok || clientId.isEmpty())
 		return;
-	config_set_string(App()->GetUserConfig(), CONFIG_SECTION, "ClientId", clientId.toUtf8().constData());
-	config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
+	if (!metadataCurrent()) {
+		activityStatus->setText(tr("A configuração mudou enquanto a janela estava aberta. Abra a edição novamente."));
+		return;
+	}
+	config_t *config = App()->GetUserConfig();
+	const char *raw = config_get_string(config, CONFIG_SECTION, "ClientId");
+	const optional<string> previous = config_has_user_value(config, CONFIG_SECTION, "ClientId")
+		? optional<string>(raw ? raw : "") : nullopt;
+	config_set_string(config, CONFIG_SECTION, "ClientId", clientId.toUtf8().constData());
+	if (config_save_safe(config, "tmp", nullptr) != CONFIG_SUCCESS) {
+		if (previous) config_set_string(config, CONFIG_SECTION, "ClientId", previous->c_str());
+		else config_remove_value(config, CONFIG_SECTION, "ClientId");
+		activityStatus->setText(tr("Não foi possível salvar o Client ID. A configuração anterior foi mantida."));
+		return;
+	}
 	activityStatus->setText(QTStr("CloudBackup.ClientId.Saved"));
+	CheckConnection(false, QTStr("CloudBackup.ClientId.Saved"));
 }
 
 void GoogleDriveBackupDialog::ConnectGoogle()
@@ -378,6 +572,11 @@ void GoogleDriveBackupDialog::ConnectGoogle()
 		ConfigureClientId();
 		if (!GoogleDriveBackupClient::RegistrationReady())
 			return;
+	}
+	const auto metadataCurrent = connectionMetadataCurrent;
+	const auto previousSession = connectionSession;
+	if (!metadataCurrent || !metadataCurrent() || !GoogleDriveBackupClient::SessionCurrent(previousSession)) {
+		CheckConnection(false, tr("A conexão mudou. Confira a conta antes de autorizar.")); return;
 	}
 	ClearLoopback();
 	loopback = new AuthListener(this, 0);
@@ -390,6 +589,7 @@ void GoogleDriveBackupDialog::ConnectGoogle()
 	OAuthAuthorizationSession session;
 	string nativeError;
 	const auto registration = GoogleDriveBackupClient::Registration();
+	const OAuthHttpClient::Cancellation cancel{httpCancelled, MultistreamTaskPool().StopToken()};
 	if (!PlatformOAuthClient::CreateAuthorizationSessionWithScopes(
 		    StreamPlatform::YouTube, registration, redirect, {GoogleDriveBackupClient::Scope}, false, session,
 		    nativeError)) {
@@ -403,31 +603,54 @@ void GoogleDriveBackupDialog::ConnectGoogle()
 		ClearLoopback();
 		SetBusy(false, reason.isEmpty() ? QTStr("CloudBackup.AuthorizationFailed") : reason);
 	});
-	connect(loopback, &AuthListener::ok, this, [this, registration, session](const QString &code) mutable {
+	connect(loopback, &AuthListener::ok, this, [this, registration, session, cancel, metadataCurrent, previousSession](const QString &code) mutable {
 		ClearLoopback();
+		if (!metadataCurrent || !metadataCurrent() || !GoogleDriveBackupClient::SessionCurrent(previousSession)) {
+			SetBusy(false); CheckConnection(false, tr("A conexão mudou durante a autorização.")); return;
+		}
+		auto request = make_shared<SecureTokenStore::RequestContext>();
+		connectionRequest = request;
+		const auto generation = ++connectionGeneration;
 		QPointer<GoogleDriveBackupDialog> guard(this);
-		MultistreamTaskPool().start([guard, registration, session, code = code.toStdString()]() mutable {
+		QObject *dispatcher = MultistreamGuiDispatcher();
+		const auto stop = MultistreamTaskPool().StopToken();
+		StartTask([guard, dispatcher, request, generation, cancel, stop, registration, session, metadataCurrent, previousSession, code = code.toStdString()]() mutable {
 			OAuthTokenSet tokens;
 			string nativeError;
-			QString error;
-			QString account;
-			bool success = PlatformOAuthClient::ExchangeAuthorizationCode(registration, session, code, tokens,
-									       nativeError);
-			if (success)
-				success = GoogleDriveBackupClient::StoreTokens(tokens, error);
-			if (success)
-				success = GoogleDriveBackupClient::AccountName(account, error);
-			if (!success && error.isEmpty())
-				error = QString::fromStdString(nativeError);
-			if (!guard)
-				return;
-			QMetaObject::invokeMethod(guard.data(), [guard, success, error]() {
-				if (!guard)
-					return;
-				guard->SetBusy(false, success ? QTStr("CloudBackup.Connected") : error);
-				guard->UpdateConnectionUi();
-				if (success)
-					guard->RefreshHistory();
+			QString error, account;
+			bool success = false;
+			if (RequestActive(request, stop) && !cancel.IsCancelled()) {
+				// Do not start a noncancellable exchange after the intent expired.
+				// An exchange already in flight keeps its existing completion rule.
+				success = PlatformOAuthClient::ExchangeAuthorizationCode(registration, session, code, tokens, nativeError);
+				if (!success) error = QString::fromStdString(nativeError);
+			} else error = QObject::tr("A autorização foi cancelada antes de iniciar a troca do código.");
+			if (success) success = GoogleDriveBackupClient::AuthorizedAccountName(tokens, account, error, cancel);
+			unique_ptr<GoogleDriveBackupClient::CredentialTransaction> lease;
+			if (success && RequestActive(request, stop) && !cancel.IsCancelled())
+				lease = GoogleDriveBackupClient::BeginCredentialTransaction(previousSession, error, request);
+			const bool stored = lease && RequestActive(request, stop) && !cancel.IsCancelled() && lease->Store(tokens, error);
+			auto result = FinishCredentialTransaction(std::move(lease), stored, error, request, stop, dispatcher,
+				[guard, request, generation, stop, metadataCurrent, previousSession, account](QString &error) {
+					if (!guard || guard->connectionGeneration != generation || !RequestActive(request, stop) ||
+					    !metadataCurrent() || !GoogleDriveBackupClient::SessionCurrent(previousSession)) {
+						error = QObject::tr("A configuração mudou antes de salvar a autorização."); return false;
+					}
+					if (!SaveCloudField("AccountName", account.toStdString())) {
+						error = QObject::tr("Não foi possível salvar a conta. A credencial anterior será mantida."); return false;
+					}
+					return true;
+				});
+			QMetaObject::invokeMethod(dispatcher, [guard, generation, result = std::move(result)]() mutable {
+				if (!guard || guard->connectionGeneration != generation) return;
+				guard->connectionRequest.reset();
+				if (!result.success || !GoogleDriveBackupClient::SessionCurrent(result.session) ||
+				    !result.metadataCurrent || !result.metadataCurrent()) {
+					guard->SetBusy(false, result.error); guard->CheckConnection(false, result.error); return;
+				}
+				guard->connected = true; guard->connectionChecked = true;
+				guard->connectionSession = result.session; guard->connectionMetadataCurrent = result.metadataCurrent; guard->connectionError.clear();
+				guard->SetBusy(false, QTStr("CloudBackup.Connected")); guard->RefreshHistory();
 			}, Qt::QueuedConnection);
 		});
 	});
@@ -439,35 +662,88 @@ void GoogleDriveBackupDialog::ConnectGoogle()
 
 void GoogleDriveBackupDialog::DisconnectGoogle()
 {
+	const auto metadataCurrent = connectionMetadataCurrent;
+	const auto session = connectionSession;
 	if (QMessageBox::question(this, QTStr("CloudBackup.Disconnect"),
-				  QTStr("CloudBackup.DisconnectConfirm")) != QMessageBox::Yes)
-		return;
-	QString error;
-	if (!GoogleDriveBackupClient::Disconnect(error)) {
-		QMessageBox::critical(this, QTStr("CloudBackup.Title"), error);
+				  QTStr("CloudBackup.DisconnectConfirm")) != QMessageBox::Yes) return;
+	if (!metadataCurrent || !metadataCurrent() || !GoogleDriveBackupClient::SessionCurrent(session)) {
+		CheckConnection(false, tr("A conexão mudou. Confira a conta antes de desconectar."));
 		return;
 	}
+	auto request = make_shared<SecureTokenStore::RequestContext>();
+	connectionRequest = request;
+	const auto generation = ++connectionGeneration;
+	SetBusy(true, QTStr("CloudBackup.Loading"));
+	QPointer<GoogleDriveBackupDialog> guard(this);
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	const auto stop = MultistreamTaskPool().StopToken();
+	StartTask([guard, dispatcher, request, generation, metadataCurrent, session, stop]() {
+		QString error;
+		unique_ptr<GoogleDriveBackupClient::CredentialTransaction> lease;
+		if (RequestActive(request, stop)) lease = GoogleDriveBackupClient::BeginCredentialTransaction(session, error, request);
+		const bool removed = lease && RequestActive(request, stop) && lease->Remove(error);
+		auto result = FinishCredentialTransaction(std::move(lease), removed, error, request, stop, dispatcher,
+			[guard, request, generation, metadataCurrent, session, stop](QString &error) {
+				if (!guard || guard->connectionGeneration != generation || !RequestActive(request, stop) ||
+				    !metadataCurrent() || !GoogleDriveBackupClient::SessionCurrent(session)) {
+					error = QObject::tr("A conexão mudou antes de confirmar a desconexão."); return false;
+				}
+				if (!SaveCloudField("AccountName", nullopt)) {
+					error = QObject::tr("Não foi possível salvar a desconexão. A credencial será restaurada."); return false;
+				}
+				return true;
+			});
+		QMetaObject::invokeMethod(dispatcher, [guard, generation, result = std::move(result)]() mutable {
+			if (!guard || guard->connectionGeneration != generation) return;
+			guard->connectionRequest.reset();
+			if (result.success && (!GoogleDriveBackupClient::SessionCurrent(result.session) ||
+				!result.metadataCurrent || !result.metadataCurrent())) {
+				guard->SetBusy(false); guard->CheckConnection(false); return;
+			}
+			if (result.success) {
+				guard->connected = false; guard->connectionChecked = true;
+				guard->connectionSession = result.session;
+				guard->connectionMetadataCurrent = result.metadataCurrent;
+				guard->connectionError.clear(); guard->history->clear();
+				guard->SetBusy(false, QTStr("CloudBackup.Disconnected"));
+			} else { guard->SetBusy(false, result.error); guard->CheckConnection(false, result.error); }
+		}, Qt::QueuedConnection);
+	});
+}
+
+bool GoogleDriveBackupDialog::CurrentContext(const function<bool()> &metadataCurrent,
+	GoogleDriveBackupClient::SessionInfo session, bool loadHistory)
+{
+	if (metadataCurrent && metadataCurrent() && connectionMetadataCurrent && connectionMetadataCurrent() &&
+	    GoogleDriveBackupClient::SessionCurrent(session)) return true;
 	history->clear();
-	UpdateConnectionUi();
-	activityStatus->setText(QTStr("CloudBackup.Disconnected"));
+	SetBusy(false, tr("A configuração ou a conta mudou. O resultado antigo não foi aplicado à interface atual."));
+	CheckConnection(loadHistory);
+	return false;
 }
 
 void GoogleDriveBackupDialog::RefreshHistory()
 {
-	if (busy || !GoogleDriveBackupClient::HasConnection())
+	if (busy || !connectionChecked || !connectionError.isEmpty() || !connected)
 		return;
+	const auto metadataCurrent = connectionMetadataCurrent;
+	const auto session = connectionSession;
+	if (!CurrentContext(metadataCurrent, session)) return;
 	SetBusy(true, QTStr("CloudBackup.Loading"));
+	const auto registration = GoogleDriveBackupClient::Registration();
+	const OAuthHttpClient::Cancellation cancel{httpCancelled, MultistreamTaskPool().StopToken()};
 	QPointer<GoogleDriveBackupDialog> guard(this);
-	MultistreamTaskPool().start([guard]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	StartTask([cancel, guard, dispatcher, registration, metadataCurrent, session]() {
 		vector<GoogleDriveBackupItem> items;
 		QString error;
-		const bool success = GoogleDriveBackupClient::List(items, error);
-		if (!guard)
-			return;
-		QMetaObject::invokeMethod(guard.data(), [guard, success, items = std::move(items), error]() mutable {
-			if (!guard)
-				return;
+		const bool success = GoogleDriveBackupClient::List(items, error, registration, cancel, session);
+		QMetaObject::invokeMethod(dispatcher, [guard, success, items = std::move(items), error, metadataCurrent, session]() mutable {
+			if (!guard) return;
+			if (!guard->CurrentContext(metadataCurrent, session, true)) return;
 			guard->history->clear();
+			guard->historySession = session;
+			guard->historyMetadataCurrent = metadataCurrent;
 			if (success) {
 				for (const auto &item : items) {
 					auto *row = new QTreeWidgetItem(guard->history);
@@ -491,7 +767,10 @@ void GoogleDriveBackupDialog::BackupNow()
 {
 	if (busy)
 		return;
-	SaveSettings();
+	const auto session = connectionSession;
+	if (!CurrentContext(connectionMetadataCurrent, session)) return;
+	if (!SaveSettings()) return;
+	const auto metadataCurrent = GoogleDriveBackupClient::CaptureConfigurationGuard(GoogleDriveBackupClient::ConfigurationPart::All);
 	CloudBackupOptions options;
 	options.generalSettings = generalCheck->isChecked();
 	options.profiles = profilesCheck->isChecked();
@@ -501,31 +780,36 @@ void GoogleDriveBackupDialog::BackupNow()
 	options.passphrase = passphraseEdit->text();
 	const int retention = retentionCombo->currentData().toInt();
 	SetBusy(true, QTStr("CloudBackup.Creating"));
+	const auto registration = GoogleDriveBackupClient::Registration();
+	const OAuthHttpClient::Cancellation cancel{httpCancelled, MultistreamTaskPool().StopToken()};
+	auto request = make_shared<SecureTokenStore::RequestContext>();
+	connectionRequest = request;
 	QPointer<GoogleDriveBackupDialog> guard(this);
-	MultistreamTaskPool().start([guard, options, retention]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	StartTask([cancel, guard, dispatcher, registration, options, retention, request, metadataCurrent, session]() {
 		QByteArray archive;
 		CloudBackupSummary summary;
 		GoogleDriveBackupItem uploaded;
 		QString error;
-		bool success = CloudBackupArchive::Create(options, archive, summary, error);
+		bool success = !cancel.IsCancelled() && GoogleDriveBackupClient::ValidateSession(session, error, request);
+		// Archive root selection remains a separately documented isolation gap.
+		if (success) success = CloudBackupArchive::Create(options, archive, summary, error);
 		if (success)
 			success = GoogleDriveBackupClient::Upload(archive, summary.computerName, summary.obsVersion,
-							  summary.createdUtc, summary.encrypted, uploaded, error);
+							  summary.createdUtc, summary.encrypted, uploaded, error, registration, cancel, session);
 		if (success) {
 			QString pruneError;
-			if (!GoogleDriveBackupClient::Prune(retention, pruneError))
-				blog(LOG_WARNING, "Google Drive backup retention failed: %s",
-				     pruneError.toUtf8().constData());
+			if (!GoogleDriveBackupClient::Prune(retention, pruneError, registration, cancel, session))
+				blog(LOG_WARNING, "Google Drive backup retention failed.");
 		}
-		if (!guard)
-			return;
-		QMetaObject::invokeMethod(guard.data(), [guard, success, error]() {
-			if (!guard)
-				return;
+		QMetaObject::invokeMethod(dispatcher, [guard, success, error, metadataCurrent, session]() {
+			if (!guard) return;
+			guard->connectionRequest.reset();
+			if (!guard->CurrentContext(metadataCurrent, session)) return;
 			if (success) {
-				config_set_int(App()->GetUserConfig(), CONFIG_SECTION, "LastBackupUnix",
-					       QDateTime::currentSecsSinceEpoch());
-				config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
+				if (!SaveCloudField("LastBackupUnix", to_string(QDateTime::currentSecsSinceEpoch()))) {
+					guard->SetBusy(false, tr("O upload terminou, mas não foi possível salvar a data do backup.")); return;
+				}
 			}
 			guard->SetBusy(false, success ? QTStr("CloudBackup.UploadComplete") : error);
 			if (success)
@@ -547,37 +831,44 @@ GoogleDriveBackupItem GoogleDriveBackupDialog::SelectedItem() const
 
 void GoogleDriveBackupDialog::RestoreSelected()
 {
+	if (busy) return; // Also covers the history itemDoubleClicked gesture.
+	const auto metadataCurrent = historyMetadataCurrent;
+	const auto session = historySession;
+	const auto registration = GoogleDriveBackupClient::Registration();
 	const GoogleDriveBackupItem item = SelectedItem();
 	if (item.id.isEmpty()) {
 		QMessageBox::information(this, QTStr("CloudBackup.Restore"), QTStr("CloudBackup.SelectBackup"));
 		return;
 	}
+	if (!CurrentContext(metadataCurrent, session)) return;
 	SetBusy(true, QTStr("CloudBackup.Downloading"));
+	const OAuthHttpClient::Cancellation cancel{httpCancelled, MultistreamTaskPool().StopToken()};
 	QPointer<GoogleDriveBackupDialog> guard(this);
-	MultistreamTaskPool().start([guard, item]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	StartTask([cancel, guard, dispatcher, registration, item, metadataCurrent, session]() {
 		QByteArray archive;
 		QString error;
-		const bool success = GoogleDriveBackupClient::Download(item.id, archive, error);
-		if (!guard)
-			return;
-		QMetaObject::invokeMethod(guard.data(), [guard, success, archive = std::move(archive), item, error]() mutable {
-			if (!guard)
-				return;
+		const bool success = GoogleDriveBackupClient::Download(item.id, archive, error, registration, cancel, session);
+		QMetaObject::invokeMethod(dispatcher, [guard, success, archive = std::move(archive), item, error, metadataCurrent, session]() mutable {
+			if (!guard || !guard->CurrentContext(metadataCurrent, session)) return;
 			guard->SetBusy(false, success ? QTStr("CloudBackup.DownloadComplete") : error);
 			if (success)
-				guard->HandleRestoreArchive(std::move(archive), item.encrypted);
+				guard->HandleRestoreArchive(std::move(archive), item.encrypted, [metadataCurrent, session] { return metadataCurrent && metadataCurrent() && GoogleDriveBackupClient::SessionCurrent(session); });
 		}, Qt::QueuedConnection);
 	});
 }
 
-void GoogleDriveBackupDialog::HandleRestoreArchive(QByteArray archive, bool encryptedHint)
+void GoogleDriveBackupDialog::HandleRestoreArchive(QByteArray archive, bool encryptedHint, function<bool()> contextCurrent)
 {
+	if (!contextCurrent) contextCurrent = CloudMetadataGuard();
+	if (!contextCurrent()) { activityStatus->setText(tr("A configuração mudou antes de restaurar.")); return; }
 	const QByteArray magic("OBSCLOUD2");
 	const bool encryptedArchive = archive.size() > magic.size() && archive.startsWith(magic) &&
 				      archive.at(magic.size()) != 0;
 	RestoreOptionsDialog dialog(this, encryptedArchive || encryptedHint);
 	if (dialog.exec() != QDialog::Accepted)
 		return;
+	if (!contextCurrent()) { activityStatus->setText(tr("A configuração mudou durante a escolha da restauração.")); return; }
 	const CloudBackupOptions options = dialog.Options();
 	if (!options.generalSettings && !options.profiles && !options.scenes && !options.pluginSettings &&
 	    !options.restoreCredentials) {
@@ -587,13 +878,12 @@ void GoogleDriveBackupDialog::HandleRestoreArchive(QByteArray archive, bool encr
 	}
 	SetBusy(true, QTStr("CloudBackup.PreparingRestore"));
 	QPointer<GoogleDriveBackupDialog> guard(this);
-	MultistreamTaskPool().start([guard, archive = std::move(archive), options]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	StartTask([guard, dispatcher, archive = std::move(archive), options]() {
 		QString safety;
 		QString error;
 		const bool success = CloudBackupArchive::StageRestore(archive, options, safety, error);
-		if (!guard)
-			return;
-		QMetaObject::invokeMethod(guard.data(), [guard, success, safety, error]() {
+		QMetaObject::invokeMethod(dispatcher, [guard, success, safety, error]() {
 			if (!guard)
 				return;
 			guard->SetBusy(false, success ? QTStr("CloudBackup.RestoreReady") : error);
@@ -609,22 +899,25 @@ void GoogleDriveBackupDialog::HandleRestoreArchive(QByteArray archive, bool encr
 
 void GoogleDriveBackupDialog::DeleteSelected()
 {
+	const auto metadataCurrent = historyMetadataCurrent;
+	const auto session = historySession;
+	const auto registration = GoogleDriveBackupClient::Registration();
 	const GoogleDriveBackupItem item = SelectedItem();
 	if (item.id.isEmpty())
 		return;
 	if (QMessageBox::question(this, QTStr("CloudBackup.Delete"), QTStr("CloudBackup.DeleteConfirm")) !=
 	    QMessageBox::Yes)
 		return;
+	if (!CurrentContext(metadataCurrent, session)) return;
 	SetBusy(true, QTStr("CloudBackup.Deleting"));
+	const OAuthHttpClient::Cancellation cancel{httpCancelled, MultistreamTaskPool().StopToken()};
 	QPointer<GoogleDriveBackupDialog> guard(this);
-	MultistreamTaskPool().start([guard, item]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	StartTask([cancel, guard, dispatcher, registration, item, metadataCurrent, session]() {
 		QString error;
-		const bool success = GoogleDriveBackupClient::Remove(item.id, error);
-		if (!guard)
-			return;
-		QMetaObject::invokeMethod(guard.data(), [guard, success, error]() {
-			if (!guard)
-				return;
+		const bool success = GoogleDriveBackupClient::Remove(item.id, error, registration, cancel, session);
+		QMetaObject::invokeMethod(dispatcher, [guard, success, error, metadataCurrent, session]() {
+			if (!guard || !guard->CurrentContext(metadataCurrent, session)) return;
 			guard->SetBusy(false, success ? QTStr("CloudBackup.Deleted") : error);
 			if (success)
 				guard->RefreshHistory();
@@ -634,6 +927,9 @@ void GoogleDriveBackupDialog::DeleteSelected()
 
 void GoogleDriveBackupDialog::ExportSelected()
 {
+	const auto metadataCurrent = historyMetadataCurrent;
+	const auto session = historySession;
+	const auto registration = GoogleDriveBackupClient::Registration();
 	const GoogleDriveBackupItem item = SelectedItem();
 	if (item.id.isEmpty())
 		return;
@@ -641,22 +937,23 @@ void GoogleDriveBackupDialog::ExportSelected()
 							 QTStr("CloudBackup.FileFilter"));
 	if (path.isEmpty())
 		return;
+	if (!CurrentContext(metadataCurrent, session)) return;
 	SetBusy(true, QTStr("CloudBackup.Downloading"));
+	const OAuthHttpClient::Cancellation cancel{httpCancelled, MultistreamTaskPool().StopToken()};
 	QPointer<GoogleDriveBackupDialog> guard(this);
-	MultistreamTaskPool().start([guard, item, path]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	StartTask([cancel, guard, dispatcher, registration, item, path, metadataCurrent, session]() {
 		QByteArray archive;
 		QString error;
-		bool success = GoogleDriveBackupClient::Download(item.id, archive, error);
+		bool success = GoogleDriveBackupClient::Download(item.id, archive, error, registration, cancel, session);
 		if (success) {
 			QSaveFile file(path);
 			success = file.open(QIODevice::WriteOnly) && file.write(archive) == archive.size() && file.commit();
 			if (!success)
 				error = QObject::tr("Não foi possível salvar o backup em %1.").arg(path);
 		}
-		if (!guard)
-			return;
-		QMetaObject::invokeMethod(guard.data(), [guard, success, path, error]() {
-			if (guard)
+		QMetaObject::invokeMethod(dispatcher, [guard, success, path, error, metadataCurrent, session]() {
+			if (guard && guard->CurrentContext(metadataCurrent, session))
 				guard->SetBusy(false, success ? QTStr("CloudBackup.Exported").arg(path) : error);
 		}, Qt::QueuedConnection);
 	});
@@ -664,10 +961,11 @@ void GoogleDriveBackupDialog::ExportSelected()
 
 void GoogleDriveBackupDialog::ImportLocal()
 {
+	const auto contextCurrent = CloudMetadataGuard();
 	const QString path = QFileDialog::getOpenFileName(this, QTStr("CloudBackup.Import"), {},
 							 QTStr("CloudBackup.FileFilter"));
-	if (path.isEmpty())
-		return;
+	if (path.isEmpty()) return;
+	if (!contextCurrent()) { activityStatus->setText(tr("A configuração mudou durante a escolha do arquivo.")); return; }
 	QFile file(path);
 	if (!file.open(QIODevice::ReadOnly)) {
 		QMessageBox::critical(this, QTStr("CloudBackup.Import"), file.errorString());
@@ -675,7 +973,7 @@ void GoogleDriveBackupDialog::ImportLocal()
 	}
 	const QByteArray archive = file.readAll();
 	const bool encrypted = archive.size() > 9 && archive.at(9) != 0;
-	HandleRestoreArchive(archive, encrypted);
+	HandleRestoreArchive(archive, encrypted, contextCurrent);
 }
 
 void GoogleDriveBackupDialog::ClearLoopback()

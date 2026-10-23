@@ -36,12 +36,18 @@ public:
 	void ApplySnapshots(const std::vector<MultiStreamChannelSnapshot> &snapshots);
 	void ShowRestoringAccounts();
 	void ShowRestoreFailure(const QString &details);
+	void ShowCredentialPending();
+	void ShowCredentialFailure(const QString &details);
+	void ShowCredentialWarning(const QString &details);
+	void ClearCredentialStatus();
+	QString CredentialStatusText() const;
 	void ShowRestoreWarning(const QString &details);
 	void UpdateState(const MultiStreamChannelSnapshot &snapshot);
 	void ShowPreflightFindings(const std::vector<PreflightFinding> &findings);
 	void SetPrimaryChannel(const QString &channelId, bool live);
 
 signals:
+	void credentialStatusChanged(const QString &status);
 	void channelEnabledChanged(const QString &channelId, bool enabled);
 	void addChannelRequested();
 	/* Carries the channel so the account dialog can open on that one alone. */
@@ -78,6 +84,7 @@ private:
 	QLabel *summaryTitle = nullptr;
 	QLabel *summarySubtitle = nullptr;
 	QLabel *warningIcon = nullptr;
+	QLabel *credentialStatus = nullptr;
 	QLabel *warningText = nullptr;
 	QWidget *warningRow = nullptr;
 	QPointer<QLabel> emptyState;

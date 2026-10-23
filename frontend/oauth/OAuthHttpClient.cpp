@@ -144,9 +144,47 @@ bool Configure(CURL *curl, const string &url, const OAuthHttpClient::Headers &he
 	return true;
 }
 
-bool Perform(CURL *curl, OAuthHttpResponse &response, string &error)
+bool CheckCancellation(const OAuthHttpClient::Cancellation &cancel, string &error)
 {
+	if (!cancel.IsCancelled())
+		return true;
+	error = "The HTTP operation was cancelled; the remote result is unconfirmed.";
+	return false;
+}
+
+int TransferProgress(void *data, curl_off_t, curl_off_t, curl_off_t, curl_off_t)
+{
+	return static_cast<const OAuthHttpClient::Cancellation *>(data)->IsCancelled() ? 1 : 0;
+}
+
+bool RetryWait(int seconds, const OAuthHttpClient::Cancellation &cancel, string &error)
+{
+	if (!cancel.Enabled()) {
+		this_thread::sleep_for(chrono::seconds(seconds));
+		return true;
+	}
+	const auto end = chrono::steady_clock::now() + chrono::seconds(seconds);
+	while (chrono::steady_clock::now() < end) {
+		if (!CheckCancellation(cancel, error))
+			return false;
+		this_thread::sleep_for(chrono::milliseconds(20));
+	}
+	return CheckCancellation(cancel, error);
+}
+
+bool Perform(CURL *curl, OAuthHttpResponse &response, string &error,
+	     const OAuthHttpClient::Cancellation &cancel = {})
+{
+	if (!CheckCancellation(cancel, error))
+		return false;
+	if (cancel.Enabled()) {
+		curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+		curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, TransferProgress);
+		curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &cancel);
+	}
 	const CURLcode result = curl_easy_perform(curl);
+	if (!CheckCancellation(cancel, error))
+		return false;
 	if (result != CURLE_OK) {
 		error = string("OAuth HTTP request failed: ") + curl_easy_strerror(result) + ".";
 		return false;
@@ -157,8 +195,11 @@ bool Perform(CURL *curl, OAuthHttpResponse &response, string &error)
 }
 } // namespace
 
-bool OAuthHttpClient::Get(const string &url, const Headers &headers, OAuthHttpResponse &response, string &error)
+bool OAuthHttpClient::Get(const string &url, const Headers &headers, OAuthHttpResponse &response, string &error,
+			  const Cancellation &cancel)
 {
+	if (!CheckCancellation(cancel, error))
+		return false;
 	/* Platforms answer 429 and transient 5xx under load. Failing on the first
 	 * one would mark a healthy account as permanently broken. */
 	for (int attempt = 1;; ++attempt) {
@@ -172,11 +213,12 @@ bool OAuthHttpClient::Get(const string &url, const Headers &headers, OAuthHttpRe
 		CurlHeaders nativeHeaders;
 		if (!Configure(curl.get(), url, headers, response, nativeHeaders, error))
 			return false;
-		if (!Perform(curl.get(), response, error))
+		if (!Perform(curl.get(), response, error, cancel))
 			return false;
 		if (attempt >= MAX_ATTEMPTS || !ShouldRetry(response))
 			return true;
-		this_thread::sleep_for(chrono::seconds(attempt));
+		if (!RetryWait(attempt, cancel, error))
+			return false;
 	}
 }
 
@@ -230,8 +272,10 @@ bool OAuthHttpClient::PostForm(const string &url, const Fields &fields, const He
 }
 
 bool OAuthHttpClient::SendJson(const string &method, const string &url, const string &json, const Headers &headers,
-			       OAuthHttpResponse &response, string &error)
+			       OAuthHttpResponse &response, string &error, const Cancellation &cancel)
 {
+	if (!CheckCancellation(cancel, error))
+		return false;
 	CurlHandle curl(curl_easy_init());
 	if (!curl) {
 		error = "Could not initialize the OAuth HTTP client.";
@@ -249,18 +293,21 @@ bool OAuthHttpClient::SendJson(const string &method, const string &url, const st
 		curl_easy_setopt(curl.get(), CURLOPT_CUSTOMREQUEST, method.c_str());
 		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, json.c_str());
 		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE, static_cast<long>(json.size()));
-		if (!Perform(curl.get(), response, error))
+		if (!Perform(curl.get(), response, error, cancel))
 			return false;
 		if (attempt >= MAX_ATTEMPTS || !ShouldRetry(response))
 			return true;
-		this_thread::sleep_for(chrono::seconds(attempt));
+		if (!RetryWait(attempt, cancel, error))
+			return false;
 	}
 }
 
 bool OAuthHttpClient::SendBytes(const string &method, const string &url, const string &body,
 				const string &contentType, const Headers &headers, OAuthHttpResponse &response,
-				string &error)
+				string &error, const Cancellation &cancel)
 {
+	if (!CheckCancellation(cancel, error))
+		return false;
 	CurlHandle curl(curl_easy_init());
 	if (!curl) {
 		error = "Could not initialize the OAuth HTTP client.";
@@ -280,11 +327,12 @@ bool OAuthHttpClient::SendBytes(const string &method, const string &url, const s
 		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDS, body.empty() ? "" : body.data());
 		curl_easy_setopt(curl.get(), CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body.size()));
 		curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, 300L);
-		if (!Perform(curl.get(), response, error))
+		if (!Perform(curl.get(), response, error, cancel))
 			return false;
 		if (attempt >= MAX_ATTEMPTS || !ShouldRetry(response))
 			return true;
-		this_thread::sleep_for(chrono::seconds(attempt));
+		if (!RetryWait(attempt, cancel, error))
+			return false;
 	}
 }
 

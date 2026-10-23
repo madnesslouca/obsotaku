@@ -22,6 +22,7 @@ target_sources(
     "${PRODUCT_FRONTEND_DIR}/oauth/PlatformOAuthClient.cpp"
     "${PRODUCT_FRONTEND_DIR}/oauth/PlatformOAuthClient.hpp"
     "${PRODUCT_FRONTEND_DIR}/utility/SecureTokenStore.hpp"
+    "${PRODUCT_FRONTEND_DIR}/utility/SecureTokenStore.cpp"
     "${PRODUCT_FRONTEND_DIR}/utility/SecureTokenStore_Windows.cpp"
     "${PRODUCT_FRONTEND_DIR}/utility/MultistreamChannelPlan.cpp"
     "${PRODUCT_FRONTEND_DIR}/utility/MultistreamChannelPlan.hpp"

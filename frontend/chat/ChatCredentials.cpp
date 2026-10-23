@@ -17,24 +17,26 @@ void LoadChatAccessToken(StreamPlatform platform, const QString &accountId, QObj
 			 ChatTokenCallback callback)
 {
 	QPointer<QObject> guard(context);
-	MultistreamTaskPool().start([guard, platform, accountId, callback = std::move(callback)] {
+	auto registration = MultistreamAccountsDialog::RegistrationForPlatform(platform);
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	MultistreamTaskPool().start([dispatcher, guard, platform, accountId, registration,
+				     callback = std::move(callback)]() mutable {
 		std::string error;
 		OAuthTokenSet tokens;
-		const auto registration = MultistreamAccountsDialog::RegistrationForPlatform(platform);
-		const bool loaded = ConnectedAccountManager::LoadUsableTokens(platform, accountId.toStdString(),
-									      registration, {}, tokens, error);
+		const bool loaded =
+			MultistreamAccountsDialog::LoadRegistrationCredential(platform, registration, error) &&
+			ConnectedAccountManager::LoadUsableTokens(platform, accountId.toStdString(), registration, {},
+								  tokens, error);
 		const ChatAccessToken result{loaded ? QString::fromStdString(tokens.accessToken) : QString(),
 					     QString::fromStdString(registration.clientId),
 					     QString::fromStdString(tokens.scope).split(' ', Qt::SkipEmptyParts)};
-		if (guard) {
-			QMetaObject::invokeMethod(
-				guard,
-				[guard, result, callback] {
-					if (guard) {
-						callback(result);
-					}
-				},
-				Qt::QueuedConnection);
-		}
+		QMetaObject::invokeMethod(
+			dispatcher,
+			[guard, result, callback = std::move(callback)] {
+				if (guard) {
+					callback(result);
+				}
+			},
+			Qt::QueuedConnection);
 	});
 }

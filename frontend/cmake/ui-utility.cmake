@@ -1,6 +1,8 @@
 target_sources(
   obs-studio
   PRIVATE
+    utility/SecureTokenStore.hpp
+    utility/SecureTokenStore.cpp
     utility/StudioSceneEdit.cpp
     utility/StudioSceneEdit.hpp
     utility/PortraitGroupEdit.cpp
@@ -134,8 +136,13 @@ target_sources(
     utility/undo_stack.hpp
 )
 
-# The Windows credential-store backend is added by os-windows.cmake. Every other
-# platform still needs a definition, otherwise OAuthTokenSet fails to link.
-if(NOT OS_WINDOWS)
-  target_sources(obs-studio PRIVATE utility/SecureTokenStore.hpp utility/SecureTokenStore_Stub.cpp)
+# Windows Credential Manager is selected by os-windows.cmake. Linux uses only
+# the desktop Secret Service; other platforms continue to fail closed.
+if(OS_LINUX)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(Libsecret REQUIRED IMPORTED_TARGET libsecret-1>=0.18)
+  target_sources(obs-studio PRIVATE utility/SecureTokenStore_Linux.cpp)
+  target_link_libraries(obs-studio PRIVATE PkgConfig::Libsecret)
+elseif(NOT OS_WINDOWS)
+  target_sources(obs-studio PRIVATE utility/SecureTokenStore_Stub.cpp)
 endif()

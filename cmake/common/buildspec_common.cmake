@@ -4,12 +4,12 @@ include_guard(GLOBAL)
 
 # _check_deps_version: Checks for obs-deps VERSION file in prefix paths
 function(_check_deps_version version)
-  set(found FALSE PARENT_SCOPE)
+  set(found FALSE)
 
   foreach(path IN LISTS CMAKE_PREFIX_PATH)
     if(EXISTS "${path}/share/obs-deps/VERSION")
       if(dependency STREQUAL qt6 AND NOT EXISTS "${path}/lib/cmake/Qt6/Qt6Config.cmake")
-        set(found FALSE PARENT_SCOPE)
+        set(found FALSE)
         continue()
       endif()
 
@@ -19,7 +19,7 @@ function(_check_deps_version version)
       string(REPLACE "-" "." version "${version}")
 
       if(_check_version VERSION_EQUAL version)
-        set(found TRUE PARENT_SCOPE)
+        set(found TRUE)
         break()
       elseif(_check_version VERSION_LESS version)
         message(
@@ -37,7 +37,7 @@ function(_check_deps_version version)
           "Newer ${label} version detected in ${path}: \n"
           "Found ${_check_version}, require ${version}"
         )
-        set(found TRUE PARENT_SCOPE)
+        set(found TRUE)
         break()
       endif()
     endif()

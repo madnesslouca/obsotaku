@@ -32,6 +32,7 @@
 
 #include <QDir>
 #include <QPointer>
+#include <map>
 
 #include <sstream>
 
@@ -143,11 +144,29 @@ void OBSBasic::RefreshMultistreamPrimaryState()
 	}
 }
 
+static std::vector<MultiStreamChannel> PresentationChannels(std::vector<MultiStreamChannel> runtime)
+{
+	// Read only scoped metadata/cache on GUI. Runtime availability never replaces
+	// the user's persisted enabled choice in the destination controls.
+	const auto stored = MultistreamChannelStore::Load();
+	for (auto &channel : runtime) {
+		auto it = std::find_if(stored.begin(), stored.end(), [&](const auto &item) {
+			return item.id == channel.id && item.platform == channel.platform &&
+			       item.accountId == channel.accountId;
+		});
+		if (it != stored.end()) {
+			channel.enabled = it->enabled;
+		}
+	}
+	return runtime;
+}
+
 void OBSBasic::BindMultistreamManager()
 {
 	if (!outputHandler || !multistreamChannelBar)
 		return;
-	multistreamChannelBar->SetChannels(outputHandler->multiStreamManager->ConfiguredChannels());
+	multistreamChannelBar->SetChannels(
+		PresentationChannels(outputHandler->multiStreamManager->ConfiguredChannels()));
 	/* Rebuilding the cards resets them to offline, so repaint the live state
 	 * right away: this also runs while a stream is already running. */
 	multistreamChannelBar->ApplySnapshots(outputHandler->multiStreamManager->Snapshot());
@@ -156,18 +175,20 @@ void OBSBasic::BindMultistreamManager()
 	RefreshOutputsDock();
 	QPointer<MultistreamChannelBar> bar(multistreamChannelBar);
 	QPointer<OutputsDock> outputs(outputsDock);
-	outputHandler->multiStreamManager->SetStateCallback([bar, outputs](const MultiStreamChannelSnapshot &snapshot) {
-		if (!bar)
-			return;
-		QMetaObject::invokeMethod(
-			bar.data(), [bar, outputs, snapshot]() {
-				if (bar)
-					bar->UpdateState(snapshot);
-				if (outputs)
-					outputs->UpdateState(snapshot);
-			},
-			Qt::QueuedConnection);
-	});
+	outputHandler->multiStreamManager->SetStateCallback(
+		[dispatcher = MultistreamGuiDispatcher(), bar, outputs](const MultiStreamChannelSnapshot &snapshot) {
+			QMetaObject::invokeMethod(
+				dispatcher,
+				[bar, outputs, snapshot]() {
+					if (bar) {
+						bar->UpdateState(snapshot);
+					}
+					if (outputs) {
+						outputs->UpdateState(snapshot);
+					}
+				},
+				Qt::QueuedConnection);
+		});
 }
 
 void OBSBasic::RefreshOutputsDock()
@@ -176,10 +197,11 @@ void OBSBasic::RefreshOutputsDock()
 		return;
 	}
 	auto &manager = outputHandler->multiStreamManager;
-	outputsDock->SetChannels(manager->ConfiguredChannels(), manager->PrimaryChannelId());
+	outputsDock->SetChannels(PresentationChannels(manager->ConfiguredChannels()), manager->PrimaryChannelId());
 	outputsDock->ApplySnapshots(manager->Snapshot());
 	outputsDock->SetEncoderGroups(manager->EncoderGroups());
 	outputsDock->SetLocked(StreamingActive() || manager->IsActive());
+	outputsDock->SetCredentialStatus(multistreamChannelBar->CredentialStatusText());
 }
 
 void OBSBasic::ChangeMultistreamCanvas(const QString &channelId, MultiStreamVideoLayout layout)
@@ -266,8 +288,9 @@ void OBSBasic::PrepareMultistreamPrimaryService()
 
 void OBSBasic::RestoreMultistreamAccounts()
 {
-	if (!outputHandler || !multistreamChannelBar)
+	if (!outputHandler || !multistreamChannelBar || MultistreamChannelStore::IsBusy()) {
 		return;
+	}
 	const uint64_t generation = ++multistreamRestoreGeneration;
 
 	/* Ingest keys and access tokens go stale during a long session, and the
@@ -283,9 +306,64 @@ void OBSBasic::RestoreMultistreamAccounts()
 		multistreamCredentialTimer.start();
 	}
 
-	/* Manual destinations already carry their stream key, so they go live
-	 * immediately; only the OAuth ones need a network round trip. */
-	std::vector<MultiStreamChannel> storedChannels = MultistreamChannelStore::Load();
+	/* Preserve metadata and enabled intent while credential reads are pending.
+     * Only the runtime copies without keys are temporarily unavailable. */
+	if (outputHandler->multiStreamManager->ConfiguredChannels().empty()) {
+		auto pending = MultistreamChannelStore::Load();
+		for (auto &channel : pending) {
+			if (channel.server.empty() || channel.streamKey.empty()) {
+				channel.enabled = false;
+			}
+		}
+		std::string error;
+		if (!outputHandler->multiStreamManager->Configure(std::move(pending), error)) {
+			multistreamChannelBar->ShowCredentialFailure(QString::fromStdString(error));
+			return;
+		}
+		BindMultistreamManager();
+	}
+	multistreamChannelBar->ShowCredentialPending();
+	QPointer<OBSBasic> guard(this);
+	MultistreamChannelStore::LoadAsync(
+		this,
+		[guard, generation](MultistreamChannelStore::Result result) mutable {
+			if (!guard || !guard->outputHandler || generation != guard->multistreamRestoreGeneration) {
+				return;
+			}
+			if (!result.success) {
+				guard->multistreamChannelBar->ShowCredentialFailure(
+					QString::fromStdString(result.error));
+				return;
+			}
+			if (!result.deliveryCurrent) {
+				guard->multistreamChannelBar->ShowCredentialWarning(
+					QString::fromStdString(result.warning));
+				return;
+			}
+			guard->RestoreMultistreamAccountsLoaded(std::move(result.channels), generation,
+								QString::fromStdString(result.warning));
+		},
+		[guard, generation] {
+			return guard && guard->outputHandler && !guard->isClosing() &&
+			       generation == guard->multistreamRestoreGeneration && !guard->StreamingActive() &&
+			       !guard->outputHandler->multiStreamManager->IsActive();
+		});
+}
+
+void OBSBasic::RestoreMultistreamAccountsLoaded(std::vector<MultiStreamChannel> storedChannels, uint64_t generation,
+						QString credentialWarning)
+{
+	if (!outputHandler || generation != multistreamRestoreGeneration || StreamingActive() ||
+	    outputHandler->multiStreamManager->IsActive()) {
+		return;
+	}
+	/* Stored enabled preference is untouched when a key is missing. */
+	for (auto &channel : storedChannels) {
+		if (GetStreamPlatformInfo(channel.platform).ingestMode == StreamIngestMode::ManualStreamKey &&
+		    channel.streamKey.empty()) {
+			channel.enabled = false;
+		}
+	}
 	std::vector<MultiStreamChannel> readyChannels;
 	/* The stored channel travels with the account: resolving credentials must
 	 * not reset the track selection or the broadcast metadata the user set. */
@@ -298,63 +376,102 @@ void OBSBasic::RestoreMultistreamAccounts()
 	}
 
 	if (!readyChannels.empty()) {
+		auto runtimePending = readyChannels;
+		for (auto channel : oauthChannels) {
+			channel.enabled = false;
+			channel.server.clear();
+			channel.streamKey.clear();
+			runtimePending.push_back(std::move(channel));
+		}
 		std::string configureError;
-		if (!outputHandler->multiStreamManager->Configure(readyChannels, configureError))
+		if (!outputHandler->multiStreamManager->Configure(std::move(runtimePending), configureError)) {
 			blog(LOG_WARNING, "Could not restore manual multistream channels: %s", configureError.c_str());
+		}
 		BindMultistreamManager();
 	}
 
-	if (oauthChannels.empty())
+	if (oauthChannels.empty()) {
+		if (!credentialWarning.isEmpty()) {
+			multistreamChannelBar->ShowCredentialWarning(credentialWarning);
+		} else {
+			multistreamChannelBar->ClearCredentialStatus();
+		}
 		return;
+	}
 
 	if (readyChannels.empty())
-		multistreamChannelBar->ShowRestoringAccounts();
+		multistreamChannelBar->ShowCredentialPending();
 	QPointer<OBSBasic> guard(this);
 	const QString incompleteRegistration = QTStr("Multistream.Accounts.IntegrationPending");
-	MultistreamTaskPool().start([guard, generation, incompleteRegistration, readyChannels = std::move(readyChannels),
-				     oauthChannels = std::move(oauthChannels)]() mutable {
+	auto metadataCurrent = MultistreamChannelStore::CaptureMetadataGuard();
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	std::map<StreamPlatform, OAuthClientRegistration> registrations;
+	for (const auto &channel : oauthChannels) {
+		registrations[channel.platform] = MultistreamAccountsDialog::RegistrationForPlatform(channel.platform);
+	}
+	const quint16 kickPort = MultistreamAccountsDialog::KickCallbackPortForPlatform();
+	MultistreamTaskPool().start([dispatcher, guard, metadataCurrent, registrations = std::move(registrations),
+				     kickPort, generation, incompleteRegistration,
+				     readyChannels = std::move(readyChannels), oauthChannels = std::move(oauthChannels),
+				     credentialWarning]() mutable {
 		std::vector<MultiStreamChannel> channels = std::move(readyChannels);
 		std::ostringstream failures;
+		if (!credentialWarning.isEmpty()) {
+			failures << credentialWarning.toStdString() << '\n';
+		}
 		for (const auto &stored : oauthChannels) {
-			const auto registration = MultistreamAccountsDialog::RegistrationForPlatform(stored.platform);
-			if (!MultistreamAccountsDialog::RegistrationReadyForPlatform(stored.platform)) {
+			auto registration = registrations.at(stored.platform);
+			if (registration.clientId.empty()) {
 				failures << GetStreamPlatformInfo(stored.platform).displayName << ": "
 					 << QT_TO_UTF8(incompleteRegistration) << '\n';
+				auto unavailable = stored;
+				unavailable.enabled = false;
+				unavailable.server.clear();
+				unavailable.streamKey.clear();
+				channels.push_back(std::move(unavailable));
 				continue;
 			}
 
 			const std::string redirectUri =
 				stored.platform == StreamPlatform::Kick
-					? QStringLiteral("http://127.0.0.1:%1/")
-						  .arg(MultistreamAccountsDialog::KickCallbackPortForPlatform())
-						  .toStdString()
+					? QStringLiteral("http://127.0.0.1:%1/").arg(kickPort).toStdString()
 					: std::string{};
 			const ConnectedStreamAccount account{stored.platform, stored.accountId, stored.displayName,
 							     stored.enabled};
 			MultiStreamChannel channel;
 			std::string error;
-			if (ConnectedAccountManager::ResolveChannel(account, registration, redirectUri, channel,
-							    error)) {
+			if (MultistreamAccountsDialog::LoadRegistrationCredential(stored.platform, registration,
+										  error) &&
+			    ConnectedAccountManager::ResolveChannel(account, registration, redirectUri, channel,
+								    error)) {
 				ConnectedAccountManager::PreserveUserSettings(stored, channel);
 				channels.emplace_back(std::move(channel));
 			} else {
 				failures << GetStreamPlatformInfo(stored.platform).displayName << ": " << error << '\n';
+				auto unavailable = stored;
+				unavailable.enabled = false;
+				unavailable.server.clear();
+				unavailable.streamKey.clear();
+				channels.push_back(std::move(unavailable));
 			}
 		}
 
-		if (!guard)
-			return;
 		const QString failureText = QString::fromStdString(failures.str()).trimmed();
 		QMetaObject::invokeMethod(
-			guard.data(),
-			[guard, generation, channels = std::move(channels), failureText]() mutable {
+			dispatcher,
+			[guard, generation, metadataCurrent, channels = std::move(channels), failureText]() mutable {
 				if (!guard || !guard->outputHandler ||
 				    generation != guard->multistreamRestoreGeneration || guard->StreamingActive() ||
 				    guard->outputHandler->multiStreamManager->IsActive())
 					return;
+				if (!metadataCurrent()) {
+					guard->multistreamChannelBar->ShowCredentialWarning(
+						QTStr("Multistream.Credentials.StateChanged"));
+					return;
+				}
 				std::string error;
 				if (!guard->outputHandler->multiStreamManager->Configure(std::move(channels), error)) {
-					guard->multistreamChannelBar->ShowRestoreFailure(
+					guard->multistreamChannelBar->ShowCredentialFailure(
 						QString::fromStdString(error));
 					return;
 				}
@@ -362,24 +479,29 @@ void OBSBasic::RestoreMultistreamAccounts()
 				/* The resolve is the only place the platform handle
 				 * and avatar are learned, and chat reads them back
 				 * from the store, so they have to be written down. */
+				QString finalWarning = failureText;
 				std::string identityError;
 				if (!MultistreamChannelStore::UpdateIdentity(
 					    guard->outputHandler->multiStreamManager->ConfiguredChannels(),
-					    identityError))
+					    identityError)) {
+					finalWarning += "\n" + QString::fromStdString(identityError);
 					blog(LOG_WARNING, "Could not store the resolved channel identities: %s",
 					     identityError.c_str());
+				}
 				/* Chat may have already connected using whatever the
 				 * store held before the resolve; point it at the
 				 * handle the platform just confirmed. */
 				if (guard->unifiedChatDock && guard->unifiedChatDock->isVisible())
 					guard->unifiedChatDock->AutoConnectAccounts();
 				if (guard->outputHandler->multiStreamManager->ConfiguredChannels().empty() &&
-				    !failureText.isEmpty())
-					guard->multistreamChannelBar->ShowRestoreFailure(failureText);
-				else if (!failureText.isEmpty()) {
-					guard->multistreamChannelBar->ShowRestoreWarning(failureText);
+				    !finalWarning.isEmpty()) {
+					guard->multistreamChannelBar->ShowCredentialFailure(finalWarning);
+				} else if (!finalWarning.isEmpty()) {
+					guard->multistreamChannelBar->ShowCredentialWarning(finalWarning);
 					blog(LOG_WARNING, "Some multistream accounts could not be restored: %s",
 					     QT_TO_UTF8(failureText));
+				} else {
+					guard->multistreamChannelBar->ClearCredentialStatus();
 				}
 			},
 			Qt::QueuedConnection);

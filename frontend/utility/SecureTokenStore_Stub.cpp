@@ -21,18 +21,21 @@ static const char *UNSUPPORTED =
 
 bool SecureTokenStore::Save(const string &, const string &, const string &, string &error)
 {
+	RequestForCurrentThread()->status.store(Status::Unavailable, memory_order_relaxed);
 	error = UNSUPPORTED;
 	return false;
 }
 
 optional<string> SecureTokenStore::Load(const string &, const string &, string &error)
 {
+	RequestForCurrentThread()->status.store(Status::Unavailable, memory_order_relaxed);
 	error = UNSUPPORTED;
 	return nullopt;
 }
 
 bool SecureTokenStore::Remove(const string &, const string &, string &error)
 {
+	RequestForCurrentThread()->status.store(Status::Unavailable, memory_order_relaxed);
 	error = UNSUPPORTED;
 	return false;
 }

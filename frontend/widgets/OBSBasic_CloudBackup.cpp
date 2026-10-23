@@ -39,7 +39,7 @@ void OBSBasic::RunAutomaticGoogleDriveBackup()
 {
 	config_t *config = App()->GetUserConfig();
 	if (googleDriveBackupRunning || !config_get_bool(config, CONFIG_SECTION, "AutoEnabled") ||
-	    !GoogleDriveBackupClient::HasConnection() || StreamingActive() || RecordingActive())
+	    StreamingActive() || RecordingActive())
 		return;
 	const int intervalDays = std::max(1, static_cast<int>(config_get_int(config, CONFIG_SECTION, "IntervalDays")));
 	const int64_t lastBackup = config_get_int(config, CONFIG_SECTION, "LastBackupUnix");
@@ -64,35 +64,57 @@ void OBSBasic::RunAutomaticGoogleDriveBackup()
 	options.includeSecrets = false;
 	const int retention = std::max(1, static_cast<int>(config_get_int(config, CONFIG_SECTION, "Retention")));
 	googleDriveBackupRunning = true;
+	const auto registration = GoogleDriveBackupClient::Registration();
+	const auto metadataCurrent = GoogleDriveBackupClient::CaptureConfigurationGuard(GoogleDriveBackupClient::ConfigurationPart::All);
+	const auto sessionRevision = GoogleDriveBackupClient::SessionRevision();
+	const OAuthHttpClient::Cancellation cancel{{}, MultistreamTaskPool().StopToken()};
+	auto request = std::make_shared<SecureTokenStore::RequestContext>();
 	QPointer<OBSBasic> guard(this);
-	MultistreamTaskPool().start([guard, options, retention]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	const bool accepted = MultistreamTaskPool().start([guard, dispatcher, registration, request, options, retention, cancel, metadataCurrent, sessionRevision]() {
 		QByteArray archive;
 		CloudBackupSummary summary;
 		GoogleDriveBackupItem uploaded;
 		QString error;
-		bool success = CloudBackupArchive::Create(options, archive, summary, error);
+		GoogleDriveBackupClient::SessionInfo session;
+		const bool connected = GoogleDriveBackupClient::HasConnection(error, request, &session);
+		const bool skipped = !connected && error.isEmpty();
+		bool success = connected && session.epoch == sessionRevision && !cancel.IsCancelled();
+		if (connected && session.epoch != sessionRevision)
+			error = QObject::tr("A conta mudou antes de iniciar o backup automático.");
+		if (success) success = CloudBackupArchive::Create(options, archive, summary, error);
 		if (success)
 			success = GoogleDriveBackupClient::Upload(archive, summary.computerName, summary.obsVersion,
-							  summary.createdUtc, false, uploaded, error);
+							  summary.createdUtc, false, uploaded, error, registration, cancel, session);
 		if (success) {
 			QString pruneError;
-			if (!GoogleDriveBackupClient::Prune(retention, pruneError))
-				blog(LOG_WARNING, "Automatic cloud backup retention failed: %s", QT_TO_UTF8(pruneError));
+			if (!GoogleDriveBackupClient::Prune(retention, pruneError, registration, cancel, session))
+				blog(LOG_WARNING, "Automatic cloud backup retention failed.");
 		}
-		if (!guard)
-			return;
-		QMetaObject::invokeMethod(guard.data(), [guard, success, error]() {
+		QMetaObject::invokeMethod(dispatcher, [guard, success, skipped, metadataCurrent, session]() {
 			if (!guard)
 				return;
 			guard->googleDriveBackupRunning = false;
-			if (success) {
-				config_set_int(App()->GetUserConfig(), CONFIG_SECTION, "LastBackupUnix",
-					       QDateTime::currentSecsSinceEpoch());
-				config_save_safe(App()->GetUserConfig(), "tmp", nullptr);
-				blog(LOG_INFO, "Automatic Google Drive backup completed");
-			} else {
-				blog(LOG_WARNING, "Automatic Google Drive backup failed: %s", QT_TO_UTF8(error));
+			if (success && metadataCurrent() && GoogleDriveBackupClient::SessionCurrent(session)) {
+				config_t *config = App()->GetUserConfig();
+				const char *raw = config_get_string(config, CONFIG_SECTION, "LastBackupUnix");
+				const std::optional<std::string> previous = config_has_user_value(config, CONFIG_SECTION, "LastBackupUnix")
+					? std::optional<std::string>(raw ? raw : "") : std::nullopt;
+				config_set_int(config, CONFIG_SECTION, "LastBackupUnix", QDateTime::currentSecsSinceEpoch());
+				if (config_save_safe(config, "tmp", nullptr) == CONFIG_SUCCESS)
+					blog(LOG_INFO, "Automatic Google Drive backup completed");
+				else {
+					if (previous) config_set_string(config, CONFIG_SECTION, "LastBackupUnix", previous->c_str());
+					else config_remove_value(config, CONFIG_SECTION, "LastBackupUnix");
+					blog(LOG_WARNING, "Automatic cloud backup timestamp was not saved.");
+				}
+			} else if (success) {
+				blog(LOG_WARNING, "Automatic cloud backup completed for an earlier context; current timestamp unchanged.");
+			} else if (!skipped) {
+				blog(LOG_WARNING, "Automatic Google Drive backup failed.");
 			}
 		}, Qt::QueuedConnection);
 	});
+	if (!accepted)
+		googleDriveBackupRunning = false;
 }

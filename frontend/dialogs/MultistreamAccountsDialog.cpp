@@ -12,6 +12,7 @@
 
 #include <oauth/AuthListener.hpp>
 #include <utility/MultistreamTaskPool.hpp>
+#include <utility/MultistreamChannelStore.hpp>
 #include <utility/PlatformIconProvider.hpp>
 #include <utility/SecureTokenStore.hpp>
 #include <utility/StreamPlatformDisplay.hpp>
@@ -22,6 +23,7 @@
 #include <util/config-file.h>
 
 #include <QCheckBox>
+#include <QThread>
 #include <QComboBox>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
@@ -87,6 +89,7 @@ const char *ClientIdEnvironmentName(StreamPlatform platform)
 
 OAuthClientRegistration RegistrationFor(StreamPlatform platform)
 {
+	Q_ASSERT(QCoreApplication::instance() && QThread::currentThread() == QCoreApplication::instance()->thread());
 	OAuthClientRegistration registration;
 	registration.clientId = qEnvironmentVariable(ClientIdEnvironmentName(platform)).toStdString();
 	if (registration.clientId.empty()) {
@@ -117,25 +120,15 @@ OAuthClientRegistration RegistrationFor(StreamPlatform platform)
 	registration.tokenExchangeEndpoint = qEnvironmentVariable("OBS_MULTISTREAM_KICK_TOKEN_PROXY").toStdString();
 	if (registration.tokenExchangeEndpoint.empty())
 		registration.tokenExchangeEndpoint = PRODUCT_KICK_TOKEN_PROXY;
-	if (registration.tokenExchangeEndpoint.empty() && !registration.clientId.empty()) {
-		string credentialError;
-		auto clientSecret =
-			SecureTokenStore::Load(KICK_CLIENT_CREDENTIAL_PLATFORM, registration.clientId, credentialError);
-		if (clientSecret)
-			registration.clientSecret = std::move(*clientSecret);
-		else if (!credentialError.empty())
-			blog(LOG_WARNING, "Could not load the local Kick client credential: %s",
-			     credentialError.c_str());
-	}
+
 	return registration;
 }
 
 bool RegistrationReady(StreamPlatform platform)
 {
 	const auto registration = RegistrationFor(platform);
-	return !registration.clientId.empty() &&
-	       (platform != StreamPlatform::Kick || !registration.tokenExchangeEndpoint.empty() ||
-		!registration.clientSecret.empty());
+	// A local Kick secret is checked only after an explicit Connect gesture.
+	return !registration.clientId.empty();
 }
 
 QString RegistrationBlockedReason(StreamPlatform platform)
@@ -143,9 +136,7 @@ QString RegistrationBlockedReason(StreamPlatform platform)
 	const auto registration = RegistrationFor(platform);
 	if (registration.clientId.empty())
 		return QTStr("Multistream.Accounts.IntegrationPending");
-	if (platform == StreamPlatform::Kick && registration.tokenExchangeEndpoint.empty() &&
-	    registration.clientSecret.empty())
-		return QTStr("Multistream.Accounts.KickProxyPending");
+
 	return {};
 }
 
@@ -154,9 +145,9 @@ QString RegistrationToolTip(StreamPlatform platform)
 	const auto registration = RegistrationFor(platform);
 	if (registration.clientId.empty())
 		return QTStr("Multistream.Accounts.RegistrationHelp");
-	if (platform == StreamPlatform::Kick && registration.tokenExchangeEndpoint.empty() &&
-	    registration.clientSecret.empty())
-		return QTStr("Multistream.Accounts.MissingKickProxy");
+	if (platform == StreamPlatform::Kick && registration.tokenExchangeEndpoint.empty()) {
+		return QObject::tr("A saved local client credential will be checked when you connect.");
+	}
 	return {};
 }
 
@@ -200,6 +191,30 @@ QComboBox *MakeTrackCombo(QWidget *parent)
 OAuthClientRegistration MultistreamAccountsDialog::RegistrationForPlatform(StreamPlatform platform)
 {
 	return RegistrationFor(platform);
+}
+
+bool MultistreamAccountsDialog::LoadRegistrationCredential(StreamPlatform platform,
+							   OAuthClientRegistration &registration, std::string &error)
+{
+	if (platform != StreamPlatform::Kick || !registration.tokenExchangeEndpoint.empty() ||
+	    !registration.clientSecret.empty()) {
+		error.clear();
+		return true;
+	}
+	if (registration.clientId.empty()) {
+		error = "The Kick client registration is not configured.";
+		return false;
+	}
+	SecureTokenStore::RequestScope scope(std::make_shared<SecureTokenStore::RequestContext>());
+	auto secret = SecureTokenStore::Load(KICK_CLIENT_CREDENTIAL_PLATFORM, registration.clientId, error);
+	if (!secret) {
+		if (error.empty()) {
+			error = "The saved Kick client credential is missing. Configure the local registration or token proxy.";
+		}
+		return false;
+	}
+	registration.clientSecret = std::move(*secret);
+	return true;
 }
 
 bool MultistreamAccountsDialog::RegistrationReadyForPlatform(StreamPlatform platform)
@@ -279,11 +294,12 @@ MultistreamAccountsDialog::MultistreamAccountsDialog(QWidget *parent, vector<Mul
 	instructions->setVisible(false);
 	layout->addWidget(instructions);
 
-	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
-	closeButton = buttons->button(QDialogButtonBox::Close);
+	auto *buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, this);
+	closeButton = buttons->button(QDialogButtonBox::Save);
 	cancelButton = buttons->addButton(QTStr("Multistream.Accounts.Cancel"), QDialogButtonBox::ResetRole);
 	cancelButton->setVisible(false);
 	connect(cancelButton, &QPushButton::clicked, this, &MultistreamAccountsDialog::CancelPendingConnection);
+	connect(buttons, &QDialogButtonBox::accepted, this, &MultistreamAccountsDialog::accept);
 	connect(buttons, &QDialogButtonBox::rejected, this, &MultistreamAccountsDialog::reject);
 	layout->addWidget(buttons);
 
@@ -563,19 +579,19 @@ void MultistreamAccountsDialog::ResolveChannelInBackground(int index)
 		return;
 
 	QPointer<MultistreamAccountsDialog> guard(this);
+	QObject *dispatcher = MultistreamGuiDispatcher();
 	const ConnectedStreamAccount account = row->account;
-	const auto registration = RegistrationFor(row->platform);
+	auto registration = RegistrationFor(row->platform);
 	const string redirectUri = RedirectUriFor(row->platform);
 	MultiStreamChannel pending = row->channel;
 
-	MultistreamTaskPool().start([guard, index, account, registration, redirectUri, pending]() mutable {
+	MultistreamTaskPool().start([dispatcher, guard, index, account, registration, redirectUri, pending]() mutable {
 		string error;
 		const bool resolved =
+			LoadRegistrationCredential(account.platform, registration, error) &&
 			ConnectedAccountManager::ResolveChannel(account, registration, redirectUri, pending, error);
-		if (!guard)
-			return;
 		QMetaObject::invokeMethod(
-			guard.data(),
+			dispatcher,
 			[guard, index, resolved, resolvedChannel = std::move(pending)]() mutable {
 				if (!guard || !resolved)
 					return;
@@ -616,11 +632,11 @@ vector<MultiStreamChannel> MultistreamAccountsDialog::Channels() const
 
 		/* A channel whose ingest credentials are still being resolved would
 		 * be rejected by MultiStreamManager::Configure and take every other
-		 * channel down with it, so hand it over disabled instead. */
+		 * channel down with it. Keep enabled intent here; the runtime copy is
+         * unavailable until credentials have resolved. */
 		if (!row->credentialsResolved) {
 			channel.server.clear();
 			channel.streamKey.clear();
-			channel.enabled = false;
 		}
 		channels.emplace_back(std::move(channel));
 	}
@@ -648,61 +664,141 @@ void MultistreamAccountsDialog::reject()
 	QDialog::reject();
 }
 
+MultistreamAccountsDialog::~MultistreamAccountsDialog()
+{
+	if (credentialRequest) {
+		credentialRequest->Cancel();
+	}
+	if (connectionCancellation) {
+		connectionCancellation->store(true);
+	}
+}
+
 void MultistreamAccountsDialog::ConfigureKickRegistration()
 {
-	config_t *config = App()->GetUserConfig();
+	if (busy || MultistreamChannelStore::IsBusy()) {
+		return;
+	}
 	const string section = StreamPlatformConfigSection(StreamPlatform::Kick);
 	auto registration = RegistrationFor(StreamPlatform::Kick);
-
-	bool ok = false;
-	const QString inputId =
-		QInputDialog::getText(this, QTStr("Multistream.Accounts.KickClientIdTitle"),
-				      QTStr("Multistream.Accounts.KickClientIdPrompt")
-					      .arg(FromStdString(KickRedirectUri())),
-				      QLineEdit::Normal, FromStdString(registration.clientId), &ok);
-	if (!ok)
-		return;
-	if (inputId.trimmed().isEmpty()) {
-		QMessageBox::warning(this, QTStr("Multistream.Accounts.ConfigurationRequired"),
-				     QTStr("Multistream.Accounts.RegistrationHelp"));
+	if (!App()->GetUserConfig()) {
 		return;
 	}
-
-	config_set_string(config, section.c_str(), "ClientId", inputId.trimmed().toUtf8().constData());
-	config_save_safe(config, "tmp", nullptr);
-	registration = RegistrationFor(StreamPlatform::Kick);
-
-	/* Only development builds without a token proxy need the secret locally,
-	 * and even then it goes to the credential store, never to the .ini. */
+	const auto metadataCurrent = MultistreamChannelStore::CaptureMetadataGuard();
+	const auto expectedRegistration = registration;
+	const auto expectedCallbackPort = KickCallbackPort();
+	const auto [hadId, previousId] = [&] {
+		auto *config = App()->GetUserConfig();
+		const char *value = config_get_string(config, section.c_str(), "ClientId");
+		return std::make_pair(config_has_user_value(config, section.c_str(), "ClientId"),
+				      string(value ? value : ""));
+	}();
+	const auto registrationCurrent = [metadataCurrent, expectedRegistration, expectedCallbackPort] {
+		if (!metadataCurrent()) {
+			return false;
+		}
+		const auto effective = RegistrationFor(StreamPlatform::Kick);
+		return effective.clientId == expectedRegistration.clientId &&
+		       effective.tokenExchangeEndpoint == expectedRegistration.tokenExchangeEndpoint &&
+		       KickCallbackPort() == expectedCallbackPort;
+	};
+	const quint64 registrationOperation = ++registrationDraftGeneration;
+	emit registrationChangeStarted(registrationOperation);
+	bool ok = false;
+	const QString inputId = QInputDialog::getText(
+		this, QTStr("Multistream.Accounts.KickClientIdTitle"),
+		QTStr("Multistream.Accounts.KickClientIdPrompt").arg(FromStdString(KickRedirectUri())),
+		QLineEdit::Normal, FromStdString(registration.clientId), &ok);
+	if (!ok) {
+		return;
+	}
+	if (registrationDraftGeneration != registrationOperation || !registrationCurrent()) {
+		QMessageBox::warning(this, windowTitle(), QTStr("Multistream.Credentials.StateChanged"));
+		return;
+	}
+	const string clientId = inputId.trimmed().toStdString();
+	if (clientId.empty()) {
+		QMessageBox::warning(this, windowTitle(), QTStr("Multistream.Accounts.RegistrationHelp"));
+		return;
+	}
+	QString secret;
 	if (registration.tokenExchangeEndpoint.empty()) {
-		const QString secret = QInputDialog::getText(this, QTStr("Multistream.Accounts.KickSecretTitle"),
-							     QTStr("Multistream.Accounts.KickSecretPrompt"),
-							     QLineEdit::Password, QString(), &ok);
-		if (ok) {
-			if (secret.trimmed().isEmpty()) {
-				QMessageBox::warning(this, QTStr("Multistream.Accounts.KickSecretTitle"),
-						     QTStr("Multistream.Accounts.KickSecretEmpty"));
-			} else {
-				string error;
-				const QByteArray secretUtf8 = secret.trimmed().toUtf8();
-				if (SecureTokenStore::Save(KICK_CLIENT_CREDENTIAL_PLATFORM, registration.clientId,
-							   string(secretUtf8.constData(), secretUtf8.size()), error)) {
-					QMessageBox::information(this, QTStr("Multistream.Accounts.KickSecretTitle"),
-								 QTStr("Multistream.Accounts.KickSecretSaved"));
-				} else {
-					QMessageBox::critical(
-						this, QTStr("Multistream.Accounts.KickSecretTitle"),
-						QTStr("Multistream.Accounts.KickSecretSaveFailed")
-							.arg(FromStdString(error)));
-				}
-			}
+		secret = QInputDialog::getText(this, QTStr("Multistream.Accounts.KickSecretTitle"),
+					       QTStr("Multistream.Accounts.KickSecretPrompt"), QLineEdit::Password, {},
+					       &ok);
+		if (!ok) {
+			return;
+		}
+		if (registrationDraftGeneration != registrationOperation || !registrationCurrent()) {
+			QMessageBox::warning(this, windowTitle(), QTStr("Multistream.Credentials.StateChanged"));
+			return;
+		}
+		if (secret.trimmed().isEmpty()) {
+			QMessageBox::warning(this, windowTitle(), QTStr("Multistream.Accounts.KickSecretEmpty"));
+			return;
 		}
 	}
-
-	for (auto &row : rows) {
-		if (row->platform == StreamPlatform::Kick)
-			UpdateRow(*row);
+	// Only values and a GUI guard cross the credential worker; no config pointer.
+	QPointer<MultistreamAccountsDialog> dialogGuard(this);
+	auto commit = [section, clientId, previousId, hadId, registrationCurrent, registrationOperation,
+		       dialogGuard](string &error) {
+		auto *current = App()->GetUserConfig();
+		const char *value = current ? config_get_string(current, section.c_str(), "ClientId") : nullptr;
+		if (!current || !dialogGuard || dialogGuard->registrationDraftGeneration != registrationOperation ||
+		    !registrationCurrent() ||
+		    config_has_user_value(current, section.c_str(), "ClientId") != hadId ||
+		    string(value ? value : "") != previousId) {
+			error = "Provider registration changed while credentials were pending.";
+			return false;
+		}
+		config_set_string(current, section.c_str(), "ClientId", clientId.c_str());
+		if (config_save_safe(current, "tmp", nullptr) != CONFIG_SUCCESS) {
+			if (hadId) {
+				config_set_string(current, section.c_str(), "ClientId", previousId.c_str());
+			} else {
+				config_remove_value(current, section.c_str(), "ClientId");
+			}
+			error = "Could not save the provider registration.";
+			return false;
+		}
+		return true;
+	};
+	if (!registration.tokenExchangeEndpoint.empty()) {
+		string error;
+		if (!commit(error)) {
+			QMessageBox::critical(this, windowTitle(), FromStdString(error));
+		} else {
+			emit registrationCommitted(registrationOperation);
+		}
+		for (auto &row : rows) {
+			if (row->platform == StreamPlatform::Kick) {
+				UpdateRow(*row);
+			}
+		}
+		return;
 	}
+	const uint64_t generation = SetBusy(-1, QTStr("Multistream.Credentials.SavingProvider"));
+	QPointer<MultistreamAccountsDialog> guard(this);
+	credentialRequest = MultistreamChannelStore::SaveSecretAsync(
+		KICK_CLIENT_CREDENTIAL_PLATFORM, clientId, secret.trimmed().toStdString(), this, std::move(commit),
+		[guard, generation, registrationOperation](MultistreamChannelStore::Result result) {
+			if (!guard || guard->connectionGeneration != generation ||
+			    guard->registrationDraftGeneration != registrationOperation) {
+				return;
+			}
+			guard->credentialRequest.reset();
+			guard->CancelPendingConnection();
+			if (!result.success) {
+				QMessageBox::critical(guard, guard->windowTitle(), FromStdString(result.error));
+			} else if (!result.deliveryCurrent) {
+				QMessageBox::warning(guard, guard->windowTitle(), FromStdString(result.warning));
+			} else {
+				emit guard->registrationCommitted(registrationOperation);
+				QMessageBox::information(guard, guard->windowTitle(),
+							 QTStr("Multistream.Accounts.KickSecretSaved"));
+			}
+		},
+		[guard, generation] { return guard && guard->IsCurrentOperation(-1, generation); });
 }
 
 void MultistreamAccountsDialog::ConnectAccount(int index)
@@ -716,7 +812,7 @@ void MultistreamAccountsDialog::ConnectAccount(int index)
 	if (registration.clientId.empty()) {
 		if (platform == StreamPlatform::Kick) {
 			ConfigureKickRegistration();
-			registration = RegistrationFor(platform);
+			return; // Saving credentials is asynchronous; Connect can be retried after completion.
 		}
 		if (registration.clientId.empty()) {
 			QMessageBox::warning(this, QTStr("Multistream.Accounts.ConfigurationRequired"),
@@ -746,22 +842,25 @@ void MultistreamAccountsDialog::RefreshConnectedAccount(int index, const OAuthCl
 	const uint64_t generation = SetBusy(index, QTStr("Multistream.Accounts.Refreshing"));
 	const auto cancellation = connectionCancellation;
 	QPointer<MultistreamAccountsDialog> guard(this);
-	MultistreamTaskPool().start([guard, index, account, registration, redirectUri, generation, cancellation]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	MultistreamTaskPool().start([dispatcher, guard, index, account,
+				     registration = OAuthClientRegistration(registration), redirectUri, generation,
+				     cancellation]() mutable {
 		if (cancellation->load()) {
 			return;
 		}
 		ConnectionResult result;
 		result.account = account;
 		string error;
-		result.success =
-			ConnectedAccountManager::ResolveChannel(account, registration, redirectUri, result.channel,
-								error);
+		result.success = LoadRegistrationCredential(account.platform, registration, error) &&
+				 ConnectedAccountManager::ResolveChannel(account, registration, redirectUri,
+									 result.channel, error);
 		result.error = FromStdString(error);
-		if (!guard || cancellation->load()) {
+		if (cancellation->load()) {
 			return;
 		}
 		QMetaObject::invokeMethod(
-			guard.data(),
+			dispatcher,
 			[guard, index, generation, cancellation, result = std::move(result)]() mutable {
 				if (guard && !cancellation->load() && guard->IsCurrentOperation(index, generation)) {
 					guard->FinishConnection(index, result.success, std::move(result.account),
@@ -814,7 +913,8 @@ void MultistreamAccountsDialog::StartPkceConnection(int index, const OAuthClient
 				 generation);
 	});
 	connect(loopback, &AuthListener::ok, this,
-		[this, index, platform, registration, session, generation, cancellation](const QString &code) mutable {
+		[this, index, platform, registration = OAuthClientRegistration(registration), session, generation,
+		 cancellation](const QString &code) mutable {
 			if (!IsCurrentOperation(index, generation) || cancellation->load()) {
 				return;
 			}
@@ -822,15 +922,17 @@ void MultistreamAccountsDialog::StartPkceConnection(int index, const OAuthClient
 			if (AccountRow *target = RowAt(index))
 				target->statusLabel->setText(QTStr("Multistream.Accounts.Finishing"));
 			QPointer<MultistreamAccountsDialog> guard(this);
-			MultistreamTaskPool().start([guard, index, platform, registration, session, generation,
-						     cancellation, code = code.toStdString()]() mutable {
+			QObject *dispatcher = MultistreamGuiDispatcher();
+			MultistreamTaskPool().start([dispatcher, guard, index, platform, registration, session,
+						     generation, cancellation, code = code.toStdString()]() mutable {
 				if (cancellation->load()) {
 					return;
 				}
 				ConnectionResult result;
 				OAuthTokenSet tokens;
 				string taskError;
-				if (PlatformOAuthClient::ExchangeAuthorizationCode(registration, session, code, tokens,
+				if (LoadRegistrationCredential(platform, registration, taskError) &&
+				    PlatformOAuthClient::ExchangeAuthorizationCode(registration, session, code, tokens,
 										   taskError) &&
 				    !cancellation->load()) {
 					result.success = ConnectedAccountManager::CompleteConnection(
@@ -838,11 +940,11 @@ void MultistreamAccountsDialog::StartPkceConnection(int index, const OAuthClient
 						taskError, cancellation.get());
 				}
 				result.error = FromStdString(taskError);
-				if (!guard || cancellation->load()) {
+				if (cancellation->load()) {
 					return;
 				}
 				QMetaObject::invokeMethod(
-					guard.data(),
+					dispatcher,
 					[guard, index, generation, cancellation, result = std::move(result)]() mutable {
 						if (guard && !cancellation->load() &&
 						    guard->IsCurrentOperation(index, generation)) {
@@ -867,7 +969,8 @@ void MultistreamAccountsDialog::StartTwitchConnection(int index, const OAuthClie
 	const uint64_t generation = SetBusy(index, QTStr("Multistream.Accounts.RequestingDeviceCode"));
 	const auto cancellation = connectionCancellation;
 	QPointer<MultistreamAccountsDialog> guard(this);
-	MultistreamTaskPool().start([guard, index, registration, generation, cancellation]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	MultistreamTaskPool().start([dispatcher, guard, index, registration, generation, cancellation]() {
 		if (cancellation->load()) {
 			return;
 		}
@@ -876,11 +979,11 @@ void MultistreamAccountsDialog::StartTwitchConnection(int index, const OAuthClie
 		result.success = PlatformOAuthClient::StartDeviceAuthorization(StreamPlatform::Twitch, registration,
 									      result.authorization, error);
 		result.error = FromStdString(error);
-		if (!guard || cancellation->load()) {
+		if (cancellation->load()) {
 			return;
 		}
 		QMetaObject::invokeMethod(
-			guard.data(),
+			dispatcher,
 			[guard, index, registration, generation, cancellation, result = std::move(result)]() mutable {
 				if (!guard || cancellation->load() || !guard->IsCurrentOperation(index, generation)) {
 					return;
@@ -925,7 +1028,9 @@ void MultistreamAccountsDialog::PollTwitch()
 	const uint64_t generation = connectionGeneration;
 	const auto cancellation = connectionCancellation;
 	QPointer<MultistreamAccountsDialog> guard(this);
-	MultistreamTaskPool().start([guard, index, authorization, registration, generation, cancellation]() {
+	QObject *dispatcher = MultistreamGuiDispatcher();
+	MultistreamTaskPool().start([dispatcher, guard, index, authorization, registration, generation,
+				     cancellation]() {
 		if (cancellation->load()) {
 			return;
 		}
@@ -941,11 +1046,11 @@ void MultistreamAccountsDialog::PollTwitch()
 			result.connection.error = FromStdString(error);
 		}
 		result.error = FromStdString(error);
-		if (!guard || cancellation->load()) {
+		if (cancellation->load()) {
 			return;
 		}
 		QMetaObject::invokeMethod(
-			guard.data(),
+			dispatcher,
 			[guard, index, generation, cancellation, result = std::move(result)]() mutable {
 				if (!guard || cancellation->load() || !guard->IsCurrentOperation(index, generation)) {
 					return;
@@ -985,14 +1090,10 @@ void MultistreamAccountsDialog::DisconnectAccount(int index)
 				  QTStr("Multistream.Accounts.ConfirmDisconnect").arg(name)) != QMessageBox::Yes)
 		return;
 
-	string error;
-	if (!ConnectedAccountManager::Disconnect(row->account, error)) {
-		QMessageBox::critical(this, QTStr("Multistream.Accounts.ConnectionFailed"), FromStdString(error));
-		return;
-	}
-
-	/* The row disappears from the dialog and, because its id stays in
-	 * ManagedChannelIds(), the caller drops exactly this channel. */
+	/* Draft only. SaveAsync removes an orphaned credential under its account
+     * lock before committing metadata; Cancel discards this local draft. */
+	instructions->setText(QTStr("Multistream.Credentials.DraftRemoval"));
+	instructions->setVisible(true);
 	row->removed = true;
 	row->connected = false;
 	row->credentialsResolved = false;
@@ -1047,6 +1148,10 @@ bool MultistreamAccountsDialog::IsCurrentOperation(int index, uint64_t generatio
 
 void MultistreamAccountsDialog::CancelPendingConnection()
 {
+	if (credentialRequest) {
+		credentialRequest->Cancel();
+		credentialRequest.reset();
+	}
 	if (!busy)
 		return;
 	if (connectionCancellation) {

@@ -46,6 +46,7 @@ public:
 	MultistreamAccountsDialog(QWidget *parent, std::vector<MultiStreamChannel> existingChannels,
 				  std::optional<StreamPlatform> focusedPlatform = std::nullopt);
 
+	~MultistreamAccountsDialog() override;
 	/* Channels this dialog produced, including edits. */
 	std::vector<MultiStreamChannel> Channels() const;
 
@@ -53,9 +54,18 @@ public:
 	 * the store, so a focused dialog never drops the other accounts. */
 	std::vector<std::string> ManagedChannelIds() const;
 
+	/* GUI-only metadata snapshot. Never reads the credential store. */
 	static OAuthClientRegistration RegistrationForPlatform(StreamPlatform platform);
+	/* Worker-only credential completion for a captured immutable registration. */
+	static bool LoadRegistrationCredential(StreamPlatform platform, OAuthClientRegistration &registration,
+					       std::string &error);
 	static bool RegistrationReadyForPlatform(StreamPlatform platform);
 	static quint16 KickCallbackPortForPlatform();
+
+signals:
+	/* Authorize only this dialog's own durable registration subtransaction. */
+	void registrationChangeStarted(quint64 operation);
+	void registrationCommitted(quint64 operation);
 
 protected:
 	void reject() override;
@@ -128,5 +138,7 @@ private:
 	 * superseded task may finish, but it can no longer mutate the dialog or
 	 * persist a newly obtained account credential. */
 	uint64_t connectionGeneration = 0;
+	quint64 registrationDraftGeneration = 0;
 	std::shared_ptr<std::atomic_bool> connectionCancellation;
+	std::shared_ptr<SecureTokenStore::RequestContext> credentialRequest;
 };

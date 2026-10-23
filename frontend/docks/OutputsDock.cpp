@@ -109,6 +109,11 @@ OutputsDock::OutputsDock(QWidget *parent) : OBSDock(parent)
 	WrapToAvailableWidth(summary);
 	headerLayout->addWidget(title);
 	headerLayout->addWidget(summary);
+	credentialStatus = new QLabel(header);
+	credentialStatus->setObjectName(QStringLiteral("outputsCredentialStatus"));
+	WrapToAvailableWidth(credentialStatus);
+	credentialStatus->hide();
+	headerLayout->addWidget(credentialStatus);
 	layout->addWidget(header);
 
 	auto *scroll = new QScrollArea(content);
@@ -327,4 +332,11 @@ void OutputsDock::RebuildSummary()
 	const int encoders = (mainCount > 0 ? 1 : 0) + (portraitCount > 0 ? 1 : 0);
 	summary->setText(channels.empty() ? QTStr("Outputs.HeaderBody")
 					  : QTStr("Outputs.Summary").arg(mainCount + portraitCount).arg(encoders));
+}
+
+void OutputsDock::SetCredentialStatus(const QString &status)
+{
+	credentialStatus->setText(status);
+	credentialStatus->setToolTip(status);
+	credentialStatus->setVisible(!status.isEmpty());
 }

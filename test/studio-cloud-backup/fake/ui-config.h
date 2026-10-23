@@ -1,0 +1,3 @@
+#pragma once
+#define PRODUCT_GOOGLE_DRIVE_CLIENT_ID ""
+#define PRODUCT_YOUTUBE_CLIENT_ID ""

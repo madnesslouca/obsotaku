@@ -12,6 +12,7 @@
 #include <oauth/GoogleDriveBackupClient.hpp>
 
 #include <QDialog>
+#include <functional>
 
 class AuthListener;
 class QCheckBox;
@@ -32,19 +33,23 @@ public:
 private:
 	void BuildUi();
 	void LoadSettings();
-	void SaveSettings();
+	bool SaveSettings();
 	void UpdateConnectionUi();
+	void CheckConnection(bool loadHistory, const QString &message = {});
+	void StartTask(std::function<void()> task);
 	void SetBusy(bool busy, const QString &message = {});
 	void ConnectGoogle();
 	void DisconnectGoogle();
 	void ConfigureClientId();
+	bool CurrentContext(const std::function<bool()> &metadataCurrent,
+		GoogleDriveBackupClient::SessionInfo session, bool history = false);
 	void RefreshHistory();
 	void BackupNow();
 	void RestoreSelected();
 	void DeleteSelected();
 	void ExportSelected();
 	void ImportLocal();
-	void HandleRestoreArchive(QByteArray archive, bool encryptedHint);
+	void HandleRestoreArchive(QByteArray archive, bool encryptedHint, std::function<bool()> contextCurrent = {});
 	GoogleDriveBackupItem SelectedItem() const;
 	void ClearLoopback();
 
@@ -71,4 +76,16 @@ private:
 	QTreeWidget *history = nullptr;
 	bool busy = false;
 	bool restartRequired = false;
+	bool connectionChecked = false;
+	bool connected = false;
+	QString connectionError;
+	std::function<bool()> settingsCurrent;
+	std::function<bool()> connectionMetadataCurrent;
+	std::function<bool()> historyMetadataCurrent;
+	GoogleDriveBackupClient::SessionInfo historySession;
+	GoogleDriveBackupClient::SessionInfo connectionSession;
+	uint64_t connectionGeneration = 0;
+	std::shared_ptr<SecureTokenStore::RequestContext> connectionRequest;
+	std::shared_ptr<std::atomic_bool> httpCancelled = std::make_shared<std::atomic_bool>(false);
+	std::shared_ptr<std::atomic_bool> alive = std::make_shared<std::atomic_bool>(true);
 };

@@ -30,6 +30,10 @@ struct OAuthTokenSet {
 	int64_t expiresAt = 0;
 	int64_t refreshExpiresAt = 0;
 
+	/* Same schema as the credential store; callers own and wipe serialized RAW. */
+	std::optional<std::string> Serialize(std::string &error) const;
+	static std::optional<OAuthTokenSet> Parse(const std::string &raw, std::string &error);
+
 	bool AccessTokenExpired(int64_t skewSeconds = 60) const;
 	void Clear();
 	bool Save(StreamPlatform platform, const std::string &accountId, std::string &error) const;

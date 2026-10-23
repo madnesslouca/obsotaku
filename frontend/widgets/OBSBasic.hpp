@@ -24,6 +24,7 @@
 #include <components/AccessibleAlignmentSelector.hpp>
 #include <oauth/Auth.hpp>
 #include <utility/BasicOutputHandler.hpp>
+#include <utility/MultistreamChannelStore.hpp>
 #include <utility/OBSCanvas.hpp>
 #include <utility/PreviewProgramSizeObserver.hpp>
 #include <utility/VCamConfig.hpp>
@@ -722,6 +723,8 @@ private:
 	uint64_t multistreamRestoreGeneration = 0;
 	void BindMultistreamManager();
 	void RestoreMultistreamAccounts();
+	void RestoreMultistreamAccountsLoaded(std::vector<MultiStreamChannel> storedChannels, uint64_t generation,
+					      QString credentialWarning);
 	/* Fills the main output with the first channel from the bar when Stream
 	 * settings has no service, so the multistream setup does not need the
 	 * classic configuration to go live. */
@@ -744,6 +747,8 @@ private:
 	void RemoveMultistreamChannel(const QString &channelId);
 	void ReconnectMultistreamChannel(const QString &channelId);
 	void ApplyMultistreamChannels(std::vector<MultiStreamChannel> channels);
+	void SaveMultistreamChannels(std::vector<MultiStreamChannel> channels, std::function<void()> afterCommit = {});
+	void UpsertMultistreamChannel(MultiStreamChannel channel);
 	void RefreshMultistreamPreflight();
 	std::optional<std::pair<uint32_t, uint32_t>> lastOutputResolution;
 

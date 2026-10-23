@@ -37,8 +37,9 @@ static optional<wstring> Utf8ToWide(const string &value)
 
 static optional<wstring> CredentialTarget(const string &platformId, const string &accountId, string &error)
 {
-	if (platformId.empty() || accountId.empty()) {
-		error = "A platform id and account id are required for secure credential storage.";
+	if (platformId.empty() || accountId.empty() || platformId.find('\0') != string::npos ||
+	    accountId.find('\0') != string::npos) {
+		error = "Nonempty platform and account identifiers without NUL bytes are required for secure credential storage.";
 		return nullopt;
 	}
 
@@ -57,16 +58,23 @@ static string WindowsError(const char *operation, DWORD code)
 
 bool SecureTokenStore::Save(const string &platformId, const string &accountId, const string &secret, string &error)
 {
-	auto target = CredentialTarget(platformId, accountId, error);
-	if (!target)
+	auto request = RequestForCurrentThread();
+	if (!RequestMayStart(request, error))
 		return false;
+	auto target = CredentialTarget(platformId, accountId, error);
+	if (!target) {
+		request->status.store(Status::InvalidInput, memory_order_relaxed);
+		return false;
+	}
 	if (secret.empty() || secret.size() > CRED_MAX_CREDENTIAL_BLOB_SIZE) {
+		request->status.store(Status::InvalidInput, memory_order_relaxed);
 		error = "The credential secret is empty or exceeds the Windows Credential Manager limit.";
 		return false;
 	}
 
 	auto userName = Utf8ToWide(accountId);
 	if (!userName) {
+		request->status.store(Status::InvalidInput, memory_order_relaxed);
 		error = "The account id is not valid UTF-8.";
 		return false;
 	}
@@ -80,51 +88,68 @@ bool SecureTokenStore::Save(const string &platformId, const string &accountId, c
 	credential.UserName = userName->data();
 
 	if (!CredWriteW(&credential, 0)) {
+		request->status.store(Status::Failed, memory_order_relaxed);
 		error = WindowsError("CredWriteW", GetLastError());
 		return false;
 	}
 
 	error.clear();
+	request->status.store(Status::Success, memory_order_relaxed);
 	return true;
 }
 
 optional<string> SecureTokenStore::Load(const string &platformId, const string &accountId, string &error)
 {
-	auto target = CredentialTarget(platformId, accountId, error);
-	if (!target)
+	auto request = RequestForCurrentThread();
+	if (!RequestMayStart(request, error))
 		return nullopt;
+	auto target = CredentialTarget(platformId, accountId, error);
+	if (!target) {
+		request->status.store(Status::InvalidInput, memory_order_relaxed);
+		return nullopt;
+	}
 
 	PCREDENTIALW credential = nullptr;
 	if (!CredReadW(target->c_str(), CRED_TYPE_GENERIC, 0, &credential)) {
 		const DWORD code = GetLastError();
 		if (code == ERROR_NOT_FOUND) {
+			request->status.store(Status::NotFound, memory_order_relaxed);
 			error.clear();
 			return nullopt;
 		}
 		error = WindowsError("CredReadW", code);
+		request->status.store(Status::Failed, memory_order_relaxed);
 		return nullopt;
 	}
 
 	string secret(reinterpret_cast<const char *>(credential->CredentialBlob), credential->CredentialBlobSize);
 	CredFree(credential);
 	error.clear();
+	request->status.store(Status::Success, memory_order_relaxed);
 	return secret;
 }
 
 bool SecureTokenStore::Remove(const string &platformId, const string &accountId, string &error)
 {
-	auto target = CredentialTarget(platformId, accountId, error);
-	if (!target)
+	auto request = RequestForCurrentThread();
+	if (!RequestMayStart(request, error))
 		return false;
+	auto target = CredentialTarget(platformId, accountId, error);
+	if (!target) {
+		request->status.store(Status::InvalidInput, memory_order_relaxed);
+		return false;
+	}
 
 	if (!CredDeleteW(target->c_str(), CRED_TYPE_GENERIC, 0)) {
 		const DWORD code = GetLastError();
 		if (code != ERROR_NOT_FOUND) {
+			request->status.store(Status::Failed, memory_order_relaxed);
 			error = WindowsError("CredDeleteW", code);
 			return false;
 		}
 	}
 
 	error.clear();
+	request->status.store(Status::Success, memory_order_relaxed);
 	return true;
 }

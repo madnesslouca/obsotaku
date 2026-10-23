@@ -37,6 +37,7 @@ public:
 	void SetEncoderGroups(const std::vector<MultiStreamManager::EncoderGroup> &groups);
 	/* While live the canvas of a destination cannot change. */
 	void SetLocked(bool locked);
+	void SetCredentialStatus(const QString &status);
 
 signals:
 	void canvasChangeRequested(const QString &channelId, MultiStreamVideoLayout layout);
@@ -58,6 +59,7 @@ private:
 
 	QVBoxLayout *rowsLayout = nullptr;
 	QLabel *summary = nullptr;
+	QLabel *credentialStatus = nullptr;
 	QLabel *emptyLabel = nullptr;
 	std::map<std::string, Row> rows;
 	std::vector<MultiStreamChannel> channels;

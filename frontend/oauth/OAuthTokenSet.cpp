@@ -58,9 +58,19 @@ bool OAuthTokenSet::Save(StreamPlatform platform, const string &accountId, strin
 
 bool OAuthTokenSet::SaveAs(const string &credentialNamespace, const string &accountId, string &error) const
 {
+	auto raw = Serialize(error);
+	if (!raw)
+		return false;
+	const bool saved = SecureTokenStore::Save(credentialNamespace, accountId, *raw, error);
+	ClearSecret(*raw);
+	return saved;
+}
+
+optional<string> OAuthTokenSet::Serialize(string &error) const
+{
 	if (accessToken.empty() && refreshToken.empty()) {
 		error = "An OAuth token set must contain an access or refresh token.";
-		return false;
+		return nullopt;
 	}
 
 	const Json json = Json::object{
@@ -71,7 +81,8 @@ bool OAuthTokenSet::SaveAs(const string &credentialNamespace, const string &acco
 		{"expires_at", static_cast<double>(expiresAt)},
 		{"refresh_expires_at", static_cast<double>(refreshExpiresAt)},
 	};
-	return SecureTokenStore::Save(credentialNamespace, accountId, json.dump(), error);
+	error.clear();
+	return json.dump();
 }
 
 optional<OAuthTokenSet> OAuthTokenSet::Load(StreamPlatform platform, const string &accountId, string &error)
@@ -86,9 +97,15 @@ optional<OAuthTokenSet> OAuthTokenSet::LoadAs(const string &credentialNamespace,
 	if (!secret)
 		return nullopt;
 
+	auto result = Parse(*secret, error);
+	ClearSecret(*secret);
+	return result;
+}
+
+optional<OAuthTokenSet> OAuthTokenSet::Parse(const string &raw, string &error)
+{
 	string parseError;
-	const Json json = Json::parse(*secret, parseError);
-	secret->assign(secret->size(), '\0');
+	const Json json = Json::parse(raw, parseError);
 	if (!parseError.empty() || !json.is_object()) {
 		error = "The stored OAuth credential is invalid.";
 		return nullopt;

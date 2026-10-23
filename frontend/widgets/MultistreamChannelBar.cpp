@@ -199,6 +199,13 @@ MultistreamChannelBar::MultistreamChannelBar(QWidget *parent) : QFrame(parent)
 	warningLayout->addWidget(warningText, 1);
 	warningRow->setVisible(false);
 	outer->addWidget(warningRow);
+	credentialStatus = new QLabel(this);
+	credentialStatus->setObjectName(QStringLiteral("channelCredentialStatus"));
+	credentialStatus->setWordWrap(true);
+	credentialStatus->setMinimumWidth(0);
+	credentialStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+	credentialStatus->hide();
+	outer->addWidget(credentialStatus);
 
 	healthTimer = new QTimer(this);
 	healthTimer->setInterval(HEALTH_REFRESH_MS);
@@ -411,6 +418,39 @@ void MultistreamChannelBar::ShowRestoreWarning(const QString &details)
 	warningText->setText(QTStr("Multistream.ChannelBar.RestorePartial"));
 	warningText->setToolTip(details);
 	warningRow->setVisible(true);
+}
+
+void MultistreamChannelBar::ShowCredentialPending()
+{
+	credentialStatus->setText(QTStr("Multistream.Credentials.Pending"));
+	credentialStatus->setToolTip(credentialStatus->text());
+	credentialStatus->show();
+	emit credentialStatusChanged(credentialStatus->text());
+}
+void MultistreamChannelBar::ShowCredentialFailure(const QString &details)
+{
+	credentialStatus->setText(QTStr("Multistream.Credentials.Failed").arg(details));
+	credentialStatus->setToolTip(credentialStatus->text());
+	credentialStatus->show();
+	emit credentialStatusChanged(credentialStatus->text());
+}
+void MultistreamChannelBar::ShowCredentialWarning(const QString &details)
+{
+	credentialStatus->setText(QTStr("Multistream.Credentials.Warning").arg(details));
+	credentialStatus->setToolTip(credentialStatus->text());
+	credentialStatus->show();
+	emit credentialStatusChanged(credentialStatus->text());
+}
+void MultistreamChannelBar::ClearCredentialStatus()
+{
+	credentialStatus->clear();
+	credentialStatus->hide();
+	emit credentialStatusChanged({});
+}
+
+QString MultistreamChannelBar::CredentialStatusText() const
+{
+	return credentialStatus->text();
 }
 
 void MultistreamChannelBar::SetPrimaryChannel(const QString &channelId, bool live)

@@ -46,6 +46,8 @@
 #include <utility/MultistreamChannelStore.hpp>
 #include <utility/MultistreamPreflight.hpp>
 #include <widgets/MultistreamChannelBar.hpp>
+#include <QProgressDialog>
+#include <QPointer>
 #ifdef _WIN32
 #include <utility/AutoUpdateThread.hpp>
 #endif
@@ -692,6 +694,85 @@ void OBSBasic::ReconnectMultistreamChannel(const QString &channelId)
 	BindMultistreamManager();
 }
 
+void OBSBasic::SaveMultistreamChannels(std::vector<MultiStreamChannel> channels, std::function<void()> afterCommit)
+{
+	if (!outputHandler || StreamingActive() || outputHandler->multiStreamManager->IsActive() ||
+	    MultistreamChannelStore::IsBusy()) {
+		QMessageBox::information(this, QTStr("Multistream.ChannelBar.UpdateFailed"),
+					 QTStr("Multistream.Credentials.Busy"));
+		return;
+	}
+	auto *progress = new QProgressDialog(QTStr("Multistream.Credentials.Saving"), QTStr("Cancel"), 0, 0, this);
+	progress->setObjectName(QStringLiteral("multistreamCredentialProgress"));
+	progress->setWindowModality(Qt::NonModal);
+	progress->setMinimumDuration(0);
+	progress->setAutoClose(false);
+	progress->setAutoReset(false);
+	progress->show();
+	QPointer<OBSBasic> guard(this);
+	QPointer<QProgressDialog> pending(progress);
+	auto request = MultistreamChannelStore::SaveAsync(
+		std::move(channels), this,
+		[guard, pending, afterCommit = std::move(afterCommit)](MultistreamChannelStore::Result result) mutable {
+			if (pending) {
+				pending->blockSignals(true);
+				pending->hide();
+				pending->deleteLater();
+			}
+			if (!guard) {
+				return;
+			}
+			if (!result.success) {
+				QMessageBox::warning(guard, QTStr("Multistream.ChannelBar.UpdateFailed"),
+						     QString::fromStdString(result.error));
+				return;
+			}
+			if (!result.deliveryCurrent) {
+				guard->multistreamChannelBar->ShowCredentialWarning(
+					QString::fromStdString(result.warning));
+				return;
+			}
+			guard->ApplyMultistreamChannels(std::move(result.channels));
+			if (afterCommit) {
+				afterCommit();
+			}
+			if (!result.warning.empty()) {
+				guard->multistreamChannelBar->ShowRestoreWarning(
+					QString::fromStdString(result.warning));
+			}
+		},
+		[guard] {
+			return guard && guard->outputHandler && !guard->isClosing() && !guard->StreamingActive() &&
+			       !guard->outputHandler->multiStreamManager->IsActive();
+		});
+	connect(progress, &QProgressDialog::canceled, this, [request, pending] {
+		request->Cancel();
+		if (pending) {
+			pending->setLabelText(QTStr("Multistream.Credentials.Cancelling"));
+		}
+	});
+}
+
+void OBSBasic::UpsertMultistreamChannel(MultiStreamChannel channel)
+{
+	auto channels = MultistreamChannelStore::Load();
+	if (channel.videoLayout == MultiStreamVideoLayout::Portrait) {
+		for (auto &c : channels) {
+			if (c.videoLayout == MultiStreamVideoLayout::Portrait) {
+				c.portraitFit = channel.portraitFit;
+			}
+		}
+	}
+	auto existing =
+		std::find_if(channels.begin(), channels.end(), [&](const auto &c) { return c.id == channel.id; });
+	if (existing == channels.end()) {
+		channels.emplace_back(std::move(channel));
+	} else {
+		*existing = std::move(channel);
+	}
+	SaveMultistreamChannels(std::move(channels));
+}
+
 void OBSBasic::ApplyMultistreamChannels(std::vector<MultiStreamChannel> channels)
 {
 	if (!outputHandler)
@@ -738,8 +819,28 @@ void OBSBasic::OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedCh
 					 QTStr("Multistream.ChannelBar.BusyWhileLive"));
 		return;
 	}
+	auto draftCurrent = MultistreamChannelStore::CaptureMetadataGuard();
+	quint64 authorizedRegistration = 0;
 	MultistreamAccountsDialog dialog(this, std::move(managedChannels), focusedPlatform);
-	dialog.exec();
+	connect(&dialog, &MultistreamAccountsDialog::registrationChangeStarted, &dialog, [&](quint64 operation) {
+		authorizedRegistration = draftCurrent() ? operation : 0;
+	});
+	connect(&dialog, &MultistreamAccountsDialog::registrationCommitted, &dialog, [&](quint64 operation) {
+		if (operation && authorizedRegistration == operation) {
+			// The subtransaction already checked the original scope/metadata and
+			// completed its own durable CAS. Accept only this authorized revision.
+			draftCurrent = MultistreamChannelStore::CaptureMetadataGuard();
+			authorizedRegistration = 0;
+		}
+	});
+	if (dialog.exec() != QDialog::Accepted) {
+		return;
+	}
+	if (!draftCurrent()) {
+		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"),
+				     QTStr("Multistream.Credentials.StateChanged"));
+		return;
+	}
 	if (!outputHandler)
 		return;
 	if (StreamingActive() || outputHandler->multiStreamManager->IsActive()) {
@@ -761,10 +862,7 @@ void OBSBasic::OpenMultistreamAccounts(std::vector<MultiStreamChannel> managedCh
 	for (auto &oauthChannel : dialog.Channels())
 		channels.emplace_back(std::move(oauthChannel));
 
-	std::string storeError;
-	if (!MultistreamChannelStore::Save(channels, storeError))
-		blog(LOG_WARNING, "Could not store the multistream channels: %s", storeError.c_str());
-	ApplyMultistreamChannels(std::move(channels));
+	SaveMultistreamChannels(std::move(channels));
 }
 
 void OBSBasic::on_multistreamAccounts_triggered()
@@ -833,9 +931,16 @@ void OBSBasic::AddMultistreamChannel()
 		return;
 	}
 
+	const auto draftCurrent = MultistreamChannelStore::CaptureMetadataGuard();
 	AddChannelDialog picker(this);
 	if (picker.exec() != QDialog::Accepted || !picker.SelectedPlatform())
 		return;
+
+	if (!draftCurrent()) {
+		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"),
+				     QTStr("Multistream.Credentials.StateChanged"));
+		return;
+	}
 
 	const StreamPlatform platform = *picker.SelectedPlatform();
 	if (GetStreamPlatformInfo(platform).ingestMode == StreamIngestMode::ResolvedByApi) {
@@ -856,39 +961,72 @@ void OBSBasic::AddMultistreamChannel()
 	if (form.exec() != QDialog::Accepted)
 		return;
 
-	std::string error;
-	if (!MultistreamChannelStore::Upsert(form.Channel(), error)) {
-		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"), QString::fromStdString(error));
+	if (!draftCurrent()) {
+		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"),
+				     QTStr("Multistream.Credentials.StateChanged"));
 		return;
 	}
-	ApplyMultistreamChannels(MultistreamChannelStore::Load());
+
+	UpsertMultistreamChannel(form.Channel());
 }
 
 void OBSBasic::EditMultistreamChannel(const QString &channelId)
 {
-	if (outputHandler && (StreamingActive() || outputHandler->multiStreamManager->IsActive())) {
+	if (!outputHandler || StreamingActive() || outputHandler->multiStreamManager->IsActive() ||
+	    MultistreamChannelStore::IsBusy()) {
 		QMessageBox::information(this, QTStr("Multistream.AddChannel.Title"),
-					 QTStr("Multistream.ChannelBar.BusyWhileLive"));
+					 tr("A destination update is pending or streaming is active."));
 		return;
 	}
-
-	const auto channels = MultistreamChannelStore::Load();
-	const auto existing = std::find_if(channels.begin(), channels.end(), [&](const MultiStreamChannel &channel) {
-		return channel.id == channelId.toStdString();
-	});
-	if (existing == channels.end())
-		return;
-
-	ManualChannelDialog form(this, existing->platform, *existing);
-	if (form.exec() != QDialog::Accepted)
-		return;
-
-	std::string error;
-	if (!MultistreamChannelStore::Upsert(form.Channel(), error)) {
-		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"), QString::fromStdString(error));
-		return;
-	}
-	ApplyMultistreamChannels(MultistreamChannelStore::Load());
+	auto *progress = new QProgressDialog(QTStr("Multistream.Credentials.Reading"), QTStr("Cancel"), 0, 0, this);
+	progress->setObjectName(QStringLiteral("multistreamCredentialProgress"));
+	progress->setWindowModality(Qt::NonModal);
+	progress->setMinimumDuration(0);
+	progress->show();
+	QPointer<OBSBasic> guard(this);
+	QPointer<QProgressDialog> pending(progress);
+	auto request = MultistreamChannelStore::LoadAsync(
+		this,
+		[guard, pending, channelId](MultistreamChannelStore::Result result) {
+			if (pending) {
+				pending->blockSignals(true);
+				pending->hide();
+				pending->deleteLater();
+			}
+			if (!guard) {
+				return;
+			}
+			if (!result.success) {
+				QMessageBox::warning(guard, QTStr("Multistream.ChannelBar.UpdateFailed"),
+						     QString::fromStdString(result.error));
+				return;
+			}
+			if (!result.deliveryCurrent) {
+				QMessageBox::warning(guard, QTStr("Multistream.ChannelBar.UpdateFailed"),
+						     QString::fromStdString(result.warning));
+				return;
+			}
+			auto existing = std::find_if(result.channels.begin(), result.channels.end(),
+						     [&](const auto &c) { return c.id == channelId.toStdString(); });
+			if (existing == result.channels.end()) {
+				return;
+			}
+			auto metadataCurrent = MultistreamChannelStore::CaptureMetadataGuard();
+			ManualChannelDialog form(guard, existing->platform, *existing);
+			if (form.exec() == QDialog::Accepted) {
+				if (!metadataCurrent()) {
+					QMessageBox::warning(guard, QTStr("Multistream.ChannelBar.UpdateFailed"),
+							     QTStr("Multistream.Credentials.StateChanged"));
+					return;
+				}
+				guard->UpsertMultistreamChannel(form.Channel());
+			}
+		},
+		[guard] {
+			return guard && guard->outputHandler && !guard->isClosing() && !guard->StreamingActive() &&
+			       !guard->outputHandler->multiStreamManager->IsActive();
+		});
+	connect(progress, &QProgressDialog::canceled, this, [request] { request->Cancel(); });
 }
 
 void OBSBasic::RemoveMultistreamChannel(const QString &channelId)
@@ -899,6 +1037,7 @@ void OBSBasic::RemoveMultistreamChannel(const QString &channelId)
 		return;
 	}
 
+	const auto draftCurrent = MultistreamChannelStore::CaptureMetadataGuard();
 	const auto channels = MultistreamChannelStore::Load();
 	const auto existing = std::find_if(channels.begin(), channels.end(), [&](const MultiStreamChannel &channel) {
 		return channel.id == channelId.toStdString();
@@ -911,26 +1050,19 @@ void OBSBasic::RemoveMultistreamChannel(const QString &channelId)
 					  .arg(QString::fromStdString(existing->displayName))) != QMessageBox::Yes)
 		return;
 
-	std::string error;
-	if (!MultistreamChannelStore::Remove(channelId.toStdString(), error)) {
-		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"), QString::fromStdString(error));
+	if (!draftCurrent()) {
+		QMessageBox::warning(this, QTStr("Multistream.ChannelBar.UpdateFailed"),
+				     QTStr("Multistream.Credentials.StateChanged"));
 		return;
 	}
 
-	/* Commit the channel removal before deleting its OAuth credential. If the
-	 * config write fails, the account remains fully recoverable. */
-	if (GetStreamPlatformInfo(existing->platform).ingestMode == StreamIngestMode::ResolvedByApi) {
-		std::string disconnectError;
-		ConnectedStreamAccount account{existing->platform, existing->accountId, existing->displayName, false};
-		if (!ConnectedAccountManager::Disconnect(account, disconnectError))
-			blog(LOG_WARNING, "Could not remove the stored credential: %s", disconnectError.c_str());
-		config_t *config = App()->GetUserConfig();
-		const std::string section = StreamPlatformConfigSection(existing->platform);
-		config_remove_value(config, section.c_str(), "AccountId");
-		config_remove_value(config, section.c_str(), "DisplayName");
-		config_save_safe(config, "tmp", nullptr);
-	}
-	ApplyMultistreamChannels(MultistreamChannelStore::Load());
+	auto remaining = channels;
+	remaining.erase(std::remove_if(remaining.begin(), remaining.end(),
+				       [&](const auto &channel) { return channel.id == channelId.toStdString(); }),
+			remaining.end());
+	// The worker backs up and removes both manual and orphaned OAuth credentials
+	// under the appropriate account locks before committing channel metadata.
+	SaveMultistreamChannels(std::move(remaining));
 }
 
 void OBSBasic::on_stats_triggered()

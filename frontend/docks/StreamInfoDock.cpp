@@ -431,28 +431,29 @@ void StreamInfoDock::SearchCategories(int index, const QString &query)
 	RefreshStyle(row->categoryStatusLabel);
 
 	const MultiStreamChannel channel = row->channel;
-	const auto registration = MultistreamAccountsDialog::RegistrationForPlatform(channel.platform);
+	auto registration = MultistreamAccountsDialog::RegistrationForPlatform(channel.platform);
 	const uint64_t rowSet = rowsGeneration;
 	const uint64_t searchGeneration = ++row->categorySearchGeneration;
 	const QString requestedText = query.trimmed();
 	QPointer<StreamInfoDock> guard(this);
+	QObject *dispatcher = MultistreamGuiDispatcher();
 
-	MultistreamTaskPool().start([guard, index, channel, registration, rowSet, searchGeneration, requestedText,
-				     text = requestedText.toStdString()]() {
+	MultistreamTaskPool().start([dispatcher, guard, index, channel, registration, rowSet, searchGeneration,
+				     requestedText, text = requestedText.toStdString()]() mutable {
 		OAuthTokenSet tokens;
 		std::string error;
 		std::vector<StreamCategory> results;
-		bool success = LoadUsableTokens(channel, registration, tokens, error);
+		bool success =
+			MultistreamAccountsDialog::LoadRegistrationCredential(channel.platform, registration, error) &&
+			LoadUsableTokens(channel, registration, tokens, error);
 		if (success)
 			success = PlatformMetadataClient::SearchCategories(channel.platform, registration, tokens, text,
 									    results, error);
 		const QString message = QString::fromUtf8(error.data(), static_cast<qsizetype>(error.size()));
-		if (!guard || guard->shuttingDown.load())
-			return;
 		QMetaObject::invokeMethod(
-			guard.data(),
-			[guard, index, channelId = channel.id, rowSet, searchGeneration, requestedText,
-			 success, message, results = std::move(results)]() {
+			dispatcher,
+			[guard, index, channelId = channel.id, rowSet, searchGeneration, requestedText, success,
+			 message, results = std::move(results)]() {
 				if (!guard || guard->shuttingDown.load())
 					return;
 				ChannelRow *target = guard->RowAt(index);
@@ -624,22 +625,23 @@ void StreamInfoDock::ApplyRow(int index, const QString &sharedTitle)
 	metadata.categoryName = row->channel.categoryName;
 
 	const MultiStreamChannel channel = row->channel;
-	const auto registration = MultistreamAccountsDialog::RegistrationForPlatform(channel.platform);
+	auto registration = MultistreamAccountsDialog::RegistrationForPlatform(channel.platform);
 	QPointer<StreamInfoDock> guard(this);
+	QObject *dispatcher = MultistreamGuiDispatcher();
 
-	MultistreamTaskPool().start([guard, index, channel, registration, metadata]() {
+	MultistreamTaskPool().start([dispatcher, guard, index, channel, registration, metadata]() mutable {
 		OAuthTokenSet tokens;
 		std::string error;
-		bool success = LoadUsableTokens(channel, registration, tokens, error);
+		bool success =
+			MultistreamAccountsDialog::LoadRegistrationCredential(channel.platform, registration, error) &&
+			LoadUsableTokens(channel, registration, tokens, error);
 		if (success) {
 			success = PlatformMetadataClient::Update(channel.platform, registration, tokens,
 								 channel.accountId, metadata, error);
 		}
 		const QString message = QString::fromUtf8(error.data(), static_cast<qsizetype>(error.size()));
-		if (!guard || guard->shuttingDown.load())
-			return;
 		QMetaObject::invokeMethod(
-			guard.data(),
+			dispatcher,
 			[guard, index, success, message]() {
 				if (guard && !guard->shuttingDown.load())
 					guard->ReportResult(index, success, message);
