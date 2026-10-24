@@ -496,3 +496,20 @@ These short synthetic tests do not certify physical capture, sustained60 fps,
 public services or a Windows distribution. The earlier Windows Main RTMP
 movement failure remains open pending a separate clean-runtime media acceptance.
 Other begin callers and the complete RAW startup transaction remain pending.
+
+
+## File-output startup failure
+
+Null and FLV outputs now report capture refusal instead of reporting a successful
+start. FLV closes only its provisional file and clears its file pointer after
+normal termination, preventing a second close during refusal cleanup. An
+independent active output keeps its file and remains writable.
+
+Portable Linux and native Windows checks exercise real plugin sources, native
+files and threads, with baseline and intermediate negative controls. Each
+candidate scenario passes 31 criteria. Capture admission and notifications are
+injected; these tests do not certify the entire output lifetime protocol.
+
+The installed Linux regression also passed six simultaneous local outputs, nine
+files with moving video and audio, 96 timestamp checks and 27 initial-keyframe/A/V
+checks at 15 fps. Physical devices, 60 fps and public services remain separate.

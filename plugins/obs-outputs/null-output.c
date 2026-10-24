@@ -59,7 +59,10 @@ static bool null_output_start(void *data)
 	if (context->stop_thread_active)
 		pthread_join(context->stop_thread, NULL);
 
-	obs_output_begin_data_capture(context->output, 0);
+	if (!obs_output_begin_data_capture(context->output, 0)) {
+		obs_output_set_last_error(context->output, "Unable to begin data capture");
+		return false;
+	}
 	return true;
 }
 

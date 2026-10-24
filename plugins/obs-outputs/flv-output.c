@@ -491,7 +491,18 @@ static bool flv_output_start(void *data)
 
 	/* write headers and start capture */
 	os_atomic_set_bool(&stream->active, true);
-	obs_output_begin_data_capture(stream->output, 0);
+	if (!obs_output_begin_data_capture(stream->output, 0)) {
+		pthread_mutex_lock(&stream->mutex);
+		os_atomic_set_bool(&stream->active, false);
+		os_atomic_set_bool(&stream->stopping, false);
+		if (stream->file) {
+			fclose(stream->file);
+			stream->file = NULL;
+		}
+		pthread_mutex_unlock(&stream->mutex);
+		obs_output_set_last_error(stream->output, "Unable to begin data capture");
+		return false;
+	}
 
 	info("Writing FLV file '%s'...", stream->path.array);
 	return true;
@@ -513,6 +524,7 @@ static void flv_output_actual_stop(struct flv_output *stream, int code)
 		write_file_info(stream->file, stream->last_packet_ts, os_ftelli64(stream->file));
 
 		fclose(stream->file);
+		stream->file = NULL;
 	}
 	if (code) {
 		obs_output_signal_stop(stream->output, code);
