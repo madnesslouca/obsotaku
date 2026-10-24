@@ -513,3 +513,29 @@ injected; these tests do not certify the entire output lifetime protocol.
 The installed Linux regression also passed six simultaneous local outputs, nine
 files with moving video and audio, 96 timestamp checks and 27 initial-keyframe/A/V
 checks at 15 fps. Physical devices, 60 fps and public services remain separate.
+
+
+## MPEGTS startup and transport retirement
+
+MPEGTS outputs now report capture refusal, preserve a user Stop requested during
+retirement, and release heavy codec/transport resources outside the data mutex.
+Buffered AVIO keeps its transport storage alive through the final flush.
+
+The final portable harness passed native Linux and Windows checks, preserving
+its negative controls for slow disposal and AVIO lifetime. It verifies the exact
+failed-check names, counts and a single final result row. Matching SDK, core and
+source roots remain explicit; injected unit checks are distinct from live media.
+
+A Linux loopback test exercised two captures using the same SRT output with a
+normal Stop/restart. Two RTMP destinations, a recording and a replay buffer
+continued alongside it. The seven files fully decoded with moving video and
+997 Hz audio; all sampled windows had22 distinct frames and the initial A/V
+difference stayed within21.334ms. The fixed window and85% movement criterion
+were retained. Decoder-side seeking was used to extract the intended TS window
+after input-side seeking produced no frame rows. These are synthetic640x360,
+15fps tests, not physical capture,60fps, Windows SRT or public-service acceptance.
+
+The production frontend, core and other output module remain unchanged for this
+MPEGTS increment. The complete RAW startup transaction and other callers remain
+separate work. No global shutdown, arbitrary concurrent control or plugin
+lifetime guarantee follows from this bounded output contract.

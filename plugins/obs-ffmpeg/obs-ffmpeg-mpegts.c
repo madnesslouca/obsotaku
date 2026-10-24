@@ -293,7 +293,9 @@ static inline int connect_mpegts_url(struct ffmpeg_output *stream, bool is_rist)
 		goto fail;
 	}
 
-	uc->url = (char *)url;
+	/* URLContext already reserves this tail; own the bytes through close. */
+	uc->url = (char *)(uc + 1);
+	memcpy(uc->url, url, strlen(url) + 1);
 	uc->max_packet_size = is_rist ? RIST_MAX_PAYLOAD_SIZE : SRT_LIVE_DEFAULT_PAYLOAD_SIZE;
 
 	if (stream->ff_data.config.srt_pkt_size)
@@ -542,70 +544,98 @@ static void close_audio(struct ffmpeg_data *data)
 	}
 }
 
-static void close_mpegts_url(struct ffmpeg_output *stream, bool is_rist)
-{
-	int err = 0;
-	URLContext *h = stream->h;
-	if (!h)
-		return; /* can happen when opening the url fails */
+/* A disposal capsule owns only AV/transport storage and copied log strings.
+ * No output, service, live-stream or mutex pointer is retained. Native AVIO
+ * callbacks retain the owned transport context. */
+struct mpegts_retired_data {
+	struct ffmpeg_data data;
+	URLContext *h;
+	AVIOContext *s;
+	bool has_connected;
+	char *output_name;
+	char *url;
+};
 
-	/* close rist or srt URLs ; free URLContext */
-	if (is_rist) {
-		err = librist_close(h);
-	} else {
-		err = libsrt_close(h);
-	}
+static void close_mpegts_url(struct mpegts_retired_data *retired, bool is_rist)
+{
+	URLContext *h = retired->h;
+	AVIOContext *s = retired->s;
+	if (!h)
+		return;
+	/* Buffered AVIO writes use opaque=h. Flush before closing its protocol and
+  * freeing URLContext/priv_data; trailer has already run with both alive. */
+	if (s)
+		avio_flush(s);
+	int err = is_rist ? librist_close(h) : libsrt_close(h);
 	av_freep(&h->priv_data);
 	av_freep(&h);
-	h = NULL;
-
-	/* close custom avio_context for srt or rist */
-	AVIOContext *s = stream->s;
-	if (!s)
-		return;
-
-	avio_flush(s);
-	s->opaque = NULL;
-	av_freep(&s->buffer);
-	avio_context_free(&s);
-	s = NULL;
-
+	retired->h = NULL;
+	if (s) {
+		s->opaque = NULL;
+		av_freep(&s->buffer);
+		avio_context_free(&s);
+		retired->s = NULL;
+	}
 	if (err)
-		info("[ffmpeg mpegts muxer]: Error closing URL %s", stream->ff_data.config.url);
+		blog(LOG_INFO, "[obs-ffmpeg mpegts muxer: '%s']: Error closing URL %s", retired->output_name,
+		     retired->url);
 }
 
-void ffmpeg_mpegts_data_free(struct ffmpeg_output *stream, struct ffmpeg_data *data)
+static void mpegts_dispose_data(struct mpegts_retired_data *retired)
 {
+	struct ffmpeg_data *data = &retired->data;
 	if (data->initialized)
 		av_write_trailer(data->output);
-
 	if (data->video)
 		close_video(data);
 	if (data->audio_infos) {
 		close_audio(data);
 		free(data->audio_infos);
 	}
-
 	if (data->output) {
 		if (data->config.is_rist || data->config.is_srt) {
-			if (stream->has_connected) {
-				close_mpegts_url(stream, data->config.is_rist);
-				stream->has_connected = false;
-			}
-		} else {
+			if (retired->has_connected)
+				close_mpegts_url(retired, data->config.is_rist);
+		} else
 			avio_close(data->output->pb);
-		}
 		avformat_free_context(data->output);
-		data->video = NULL;
-		data->audio_infos = NULL;
-		data->output = NULL;
-		data->num_audio_streams = 0;
 	}
-
 	if (data->last_error)
 		bfree(data->last_error);
+	bfree(retired->output_name);
+	bfree(retired->url);
+	memset(retired, 0, sizeof(*retired));
+}
 
-	memset(data, 0, sizeof(struct ffmpeg_data));
+/* One serial control owner, after writer join and admitted data callback drain.
+ * Borrowed settings/service strings must be stable until this controlled copy;
+ * disposal reads only the copied log URL, flags and owned AV/transport fields. */
+static void mpegts_take_data(struct ffmpeg_output *stream, struct ffmpeg_data *data,
+			     struct mpegts_retired_data *retired)
+{
+	memset(retired, 0, sizeof(*retired));
+	retired->data = *data;
+	retired->h = stream->h;
+	retired->s = stream->s;
+	retired->has_connected = stream->has_connected;
+	retired->output_name = bstrdup(obs_output_get_name(stream->output));
+	retired->url = bstrdup(data->config.url ? data->config.url : "");
+	retired->data.config = (struct ffmpeg_cfg){.url = retired->url,
+						   .is_rist = data->config.is_rist,
+						   .is_srt = data->config.is_srt};
+	memset(data, 0, sizeof(*data));
+	stream->h = NULL;
+	stream->s = NULL;
+	stream->has_connected = false;
+	stream->got_headers = false;
+}
+
+/* Existing private helper callers also require exclusive, quiesced ownership. */
+void ffmpeg_mpegts_data_free(struct ffmpeg_output *stream, struct ffmpeg_data *data)
+{
+	struct mpegts_retired_data retired;
+	mpegts_take_data(stream, data, &retired);
+	mpegts_dispose_data(&retired);
 }
 
 bool ffmpeg_mpegts_data_init(struct ffmpeg_output *stream, struct ffmpeg_data *data, struct ffmpeg_cfg *config)
@@ -670,9 +700,12 @@ static void *ffmpeg_mpegts_create(obs_data_t *settings, obs_output_t *output)
 {
 	struct ffmpeg_output *data = bzalloc(sizeof(struct ffmpeg_output));
 	pthread_mutex_init_value(&data->write_mutex);
+	pthread_mutex_init_value(&data->data_mutex);
 	data->output = output;
 
 	if (pthread_mutex_init(&data->write_mutex, NULL) != 0)
+		goto fail;
+	if (pthread_mutex_init(&data->data_mutex, NULL) != 0)
 		goto fail;
 	if (os_event_init(&data->stop_event, OS_EVENT_TYPE_AUTO) != 0)
 		goto fail;
@@ -688,6 +721,7 @@ static void *ffmpeg_mpegts_create(obs_data_t *settings, obs_output_t *output)
 
 fail:
 	pthread_mutex_destroy(&data->write_mutex);
+	pthread_mutex_destroy(&data->data_mutex);
 	os_event_destroy(data->stop_event);
 	pthread_mutex_destroy(&data->start_stop_mutex);
 	bfree(data);
@@ -703,6 +737,92 @@ static inline bool active(void *data)
 static void ffmpeg_mpegts_full_stop(void *data);
 static void ffmpeg_mpegts_deactivate(struct ffmpeg_output *stream);
 static void ffmpeg_mpegts_stop(void *data, uint64_t ts);
+
+/* A precommit worker/data callback can retire, but cannot clean the parent's AV
+ * state or notify core while begin is still executing. No worker waits for it. */
+enum mpegts_capture_start_state {
+	MPEGTS_START_IDLE,
+	MPEGTS_STARTING,
+	MPEGTS_COMMITTED,
+	MPEGTS_REFUSED,
+	MPEGTS_RETIRING,
+	MPEGTS_PENDING_STOP,
+	MPEGTS_PENDING_ERROR,
+	MPEGTS_PENDING_ENCODE,
+	MPEGTS_PENDING_INVALID_STREAM,
+	MPEGTS_PENDING_DISCONNECTED,
+};
+static long mpegts_pending_state(int code)
+{
+	switch (code) {
+	case OBS_OUTPUT_SUCCESS:
+		return MPEGTS_PENDING_STOP;
+	case OBS_OUTPUT_ENCODE_ERROR:
+		return MPEGTS_PENDING_ENCODE;
+	case OBS_OUTPUT_INVALID_STREAM:
+		return MPEGTS_PENDING_INVALID_STREAM;
+	case OBS_OUTPUT_DISCONNECTED:
+		return MPEGTS_PENDING_DISCONNECTED;
+	default:
+		return MPEGTS_PENDING_ERROR;
+	}
+}
+static int mpegts_pending_code(long state)
+{
+	switch (state) {
+	case MPEGTS_PENDING_STOP:
+		return OBS_OUTPUT_SUCCESS;
+	case MPEGTS_PENDING_ENCODE:
+		return OBS_OUTPUT_ENCODE_ERROR;
+	case MPEGTS_PENDING_INVALID_STREAM:
+		return OBS_OUTPUT_INVALID_STREAM;
+	case MPEGTS_PENDING_DISCONNECTED:
+		return OBS_OUTPUT_DISCONNECTED;
+	default:
+		return OBS_OUTPUT_ERROR;
+	}
+}
+static bool mpegts_defer_start_terminal(struct ffmpeg_output *stream, int code, bool user_stop)
+{
+	long state = os_atomic_load_long(&stream->capture_start_state);
+	if (state == MPEGTS_STARTING) {
+		long expected = MPEGTS_STARTING;
+		if (os_atomic_compare_exchange_long(&stream->capture_start_state, &expected,
+						    mpegts_pending_state(code))) {
+			os_atomic_set_bool(&stream->stopping, true);
+			os_event_signal(stream->stop_event);
+			os_sem_post(stream->write_sem);
+			return true;
+		}
+		state = expected;
+	}
+	/* RETIRING closes packet/error admission, but cannot consume a user Stop.
+  * A non-signalling reconnect retirement preserves running; serialize this
+  * Stop behind its existing control owner, even when STARTING CAS lost to it. */
+	return state != MPEGTS_START_IDLE && state != MPEGTS_COMMITTED && !(user_stop && state == MPEGTS_RETIRING);
+}
+static void mpegts_release_data(struct ffmpeg_output *stream)
+{
+	struct mpegts_retired_data retired;
+	pthread_mutex_lock(&stream->data_mutex);
+	mpegts_take_data(stream, &stream->ff_data, &retired);
+	pthread_mutex_unlock(&stream->data_mutex);
+	/* No live-stream accesses in native disposal: callbacks that acquire the
+  * mutex now see REFUSED/RETIRING and cannot use the detached AV resources. */
+	mpegts_dispose_data(&retired);
+}
+static void mpegts_retire_start(struct ffmpeg_output *stream)
+{
+	long expected = MPEGTS_STARTING;
+	os_atomic_compare_exchange_long(&stream->capture_start_state, &expected, MPEGTS_REFUSED);
+	os_atomic_set_bool(&stream->running, false);
+	os_atomic_set_bool(&stream->stopping, true);
+	/* Joinability is independent of running: this worker may predate commit. */
+	ffmpeg_mpegts_deactivate(stream);
+	mpegts_release_data(stream);
+	os_event_reset(stream->stop_event);
+	/* Keep the terminal custody state through set_config's public notification. */
+}
 
 static void ffmpeg_mpegts_destroy(void *data)
 {
@@ -720,6 +840,7 @@ static void ffmpeg_mpegts_destroy(void *data)
 
 		/* Clean up resources */
 		pthread_mutex_destroy(&stream->write_mutex);
+		pthread_mutex_destroy(&stream->data_mutex);
 		os_sem_destroy(stream->write_sem);
 		os_event_destroy(stream->stop_event);
 		pthread_mutex_destroy(&stream->start_stop_mutex);
@@ -799,30 +920,32 @@ static void ffmpeg_mpegts_stop_internal(void *data, uint64_t ts, bool signal);
 static void *write_thread(void *data)
 {
 	struct ffmpeg_output *stream = data;
-
-	while (os_sem_wait(stream->write_sem) == 0) {
-		/* check to see if shutting down */
+	int code = OBS_OUTPUT_SUCCESS, wait_result = 0;
+	bool report_error = false;
+	while ((wait_result = os_sem_wait(stream->write_sem)) == 0) {
 		if (os_event_try(stream->stop_event) == 0)
 			break;
-
 		int ret = mpegts_process_packet(stream);
 		if (ret != 0) {
+			code = OBS_OUTPUT_ERROR;
 			if (stream->ff_data.config.is_srt) {
-				SRTContext *s = (SRTContext *)stream->h->priv_data;
-				SRT_SOCKSTATUS srt_sock_state = srt_getsockstate(s->fd);
-				if (srt_sock_state == SRTS_BROKEN || srt_sock_state == SRTS_NONEXIST)
-					obs_output_signal_stop(stream->output, OBS_OUTPUT_DISCONNECTED);
-				else
-					obs_output_signal_stop(stream->output, OBS_OUTPUT_ERROR);
-			} else if (stream->ff_data.config.is_rist) {
-				obs_output_signal_stop(stream->output, OBS_OUTPUT_DISCONNECTED);
-			} else {
-				obs_output_signal_stop(stream->output, OBS_OUTPUT_ERROR);
-			}
+				SRTContext *context = (SRTContext *)stream->h->priv_data;
+				SRT_SOCKSTATUS socket_state = srt_getsockstate(context->fd);
+				if (socket_state == SRTS_BROKEN || socket_state == SRTS_NONEXIST)
+					code = OBS_OUTPUT_DISCONNECTED;
+			} else if (stream->ff_data.config.is_rist)
+				code = OBS_OUTPUT_DISCONNECTED;
+			report_error = true;
 			break;
 		}
 	}
+	if (wait_result != 0) {
+		code = OBS_OUTPUT_ERROR;
+		report_error = true;
+	}
 	os_atomic_set_bool(&stream->stopping, true);
+	if (!mpegts_defer_start_terminal(stream, code, false) && report_error)
+		obs_output_signal_stop(stream->output, code);
 	return NULL;
 }
 
@@ -989,28 +1112,28 @@ static bool setup_muxer_settings(struct ffmpeg_output *stream, struct ffmpeg_cfg
 
 static bool ffmpeg_mpegts_finalize(struct ffmpeg_output *stream, struct ffmpeg_cfg *config, int *code)
 {
-	bool success = ffmpeg_mpegts_data_init(stream, &stream->ff_data, config);
-	if (!success) {
-		if (stream->ff_data.last_error) {
-			obs_output_set_last_error(stream->output, stream->ff_data.last_error);
-		}
-		ffmpeg_mpegts_data_free(stream, &stream->ff_data);
+	if (os_atomic_load_long(&stream->capture_start_state) != MPEGTS_STARTING) {
+		*code = mpegts_pending_code(os_atomic_load_long(&stream->capture_start_state));
+		goto fail;
+	}
+	if (!ffmpeg_mpegts_data_init(stream, &stream->ff_data, config)) {
 		*code = OBS_OUTPUT_ERROR;
-		return false;
+		goto fail;
 	}
 	struct ffmpeg_data *ff_data = &stream->ff_data;
 	if (!stream->got_headers) {
 		if (!init_streams(stream, ff_data)) {
-			error("mpegts avstream failed to be created");
 			*code = OBS_OUTPUT_ERROR;
-			return false;
+			goto fail;
 		}
 		*code = open_output_file(stream, ff_data);
-		if (*code != OBS_OUTPUT_SUCCESS) {
-			error("Failed to open the url");
-			return false;
-		}
+		if (*code != OBS_OUTPUT_SUCCESS)
+			goto fail;
 		av_dump_format(ff_data->output, 0, NULL, 1);
+	}
+	if (os_atomic_load_long(&stream->capture_start_state) != MPEGTS_STARTING) {
+		*code = mpegts_pending_code(os_atomic_load_long(&stream->capture_start_state));
+		goto fail;
 	}
 	os_event_reset(stream->stop_event);
 	int ret = pthread_create(&stream->write_thread, NULL, write_thread, stream);
@@ -1018,13 +1141,34 @@ static bool ffmpeg_mpegts_finalize(struct ffmpeg_output *stream, struct ffmpeg_c
 		ffmpeg_mpegts_log_error(LOG_WARNING, &stream->ff_data,
 					"ffmpeg_output_start: Failed to create write thread.");
 		*code = OBS_OUTPUT_ERROR;
-		return false;
+		goto fail;
 	}
 	stream->write_thread_active = true;
 	stream->total_bytes = 0;
-	obs_output_begin_data_capture(stream->output, 0);
+	if (os_atomic_load_long(&stream->capture_start_state) != MPEGTS_STARTING) {
+		*code = mpegts_pending_code(os_atomic_load_long(&stream->capture_start_state));
+		goto fail;
+	}
+	if (!obs_output_begin_data_capture(stream->output, 0)) {
+		obs_output_set_last_error(stream->output, "Failed to begin MPEGTS data capture.");
+		*code = OBS_OUTPUT_ERROR;
+		goto fail;
+	}
+	/* Never resurrect running/stopping after the worker owns an early terminal. */
+	os_atomic_set_bool(&stream->running, true);
+	long expected = MPEGTS_STARTING;
+	if (!os_atomic_compare_exchange_long(&stream->capture_start_state, &expected, MPEGTS_COMMITTED)) {
+		*code = mpegts_pending_code(expected);
+		goto fail;
+	}
 	return true;
+fail:
+	if (stream->ff_data.last_error)
+		obs_output_set_last_error(stream->output, stream->ff_data.last_error);
+	/* set_config owns the one refusal retirement after this return. */
+	return false;
 }
+
 static void stop(void *data, bool signal, uint64_t ts);
 static bool set_config(struct ffmpeg_output *stream)
 {
@@ -1048,19 +1192,23 @@ static bool set_config(struct ffmpeg_output *stream)
 
 	return true;
 fail:
+	mpegts_retire_start(stream);
 	obs_output_signal_stop(stream->output, code);
 	stop(stream, false, 0);
+	os_atomic_set_long(&stream->capture_start_state, MPEGTS_START_IDLE);
+	os_atomic_set_bool(&stream->stopping, false);
 	return false;
 }
 
 static bool start(void *data)
 {
 	struct ffmpeg_output *stream = data;
+	os_atomic_set_long(&stream->capture_start_state, MPEGTS_STARTING);
+	os_atomic_set_bool(&stream->running, false);
+	os_atomic_set_bool(&stream->stopping, false);
 	if (!set_config(stream))
 		return false;
 
-	os_atomic_set_bool(&stream->running, true);
-	os_atomic_set_bool(&stream->stopping, false);
 	return true;
 }
 
@@ -1068,10 +1216,13 @@ static void ffmpeg_mpegts_full_stop(void *data)
 {
 	struct ffmpeg_output *stream = data;
 
-	if (active(stream)) {
+	/* Close packet admission before joining/draining. A callback already inside
+	 * data_mutex completes before release_data retires its AV state. */
+	os_atomic_set_long(&stream->capture_start_state, MPEGTS_RETIRING);
+	if (stream->write_thread_active || stream->packets.num)
 		ffmpeg_mpegts_deactivate(stream);
-	}
-	ffmpeg_mpegts_data_free(stream, &stream->ff_data);
+	mpegts_release_data(stream);
+	os_atomic_set_long(&stream->capture_start_state, MPEGTS_START_IDLE);
 }
 
 static void stop(void *data, bool signal, uint64_t ts)
@@ -1121,6 +1272,8 @@ void *start_stop_thread_fn(void *data)
 static void ffmpeg_mpegts_stop_internal(void *data, uint64_t ts, bool signal)
 {
 	struct ffmpeg_output *stream = data;
+	if (mpegts_defer_start_terminal(stream, OBS_OUTPUT_SUCCESS, signal))
+		return;
 	struct mpegts_cmd *cmd = bzalloc(sizeof(struct mpegts_cmd));
 	cmd->type = MPEGTS_CMD_STOP;
 	cmd->signal_stop = signal;
@@ -1205,6 +1358,7 @@ static void ffmpeg_mpegts_deactivate(struct ffmpeg_output *stream)
 		stream->write_thread_active = false;
 	}
 
+	pthread_mutex_lock(&stream->data_mutex);
 	pthread_mutex_lock(&stream->write_mutex);
 
 	for (size_t i = 0; i < stream->packets.num; i++)
@@ -1213,6 +1367,7 @@ static void ffmpeg_mpegts_deactivate(struct ffmpeg_output *stream)
 	da_free(stream->packets);
 
 	pthread_mutex_unlock(&stream->write_mutex);
+	pthread_mutex_unlock(&stream->data_mutex);
 }
 
 static uint64_t ffmpeg_mpegts_total_bytes(void *data)
@@ -1323,46 +1478,48 @@ static void ffmpeg_mpegts_data(void *data, struct encoder_packet *packet)
 {
 	struct ffmpeg_output *stream = data;
 	struct ffmpeg_data *ff_data = &stream->ff_data;
-	int code;
+	int code = OBS_OUTPUT_SUCCESS;
+	bool request_stop = false, deferred = false;
+	pthread_mutex_lock(&stream->data_mutex);
+	long state = os_atomic_load_long(&stream->capture_start_state);
+	if (state != MPEGTS_STARTING && state != MPEGTS_COMMITTED)
+		goto unlock;
 	if (!stream->got_headers) {
-		if (get_extradata(stream)) {
-			stream->got_headers = true;
-		} else {
-			warn("Failed to retrieve headers");
+		if (!get_extradata(stream)) {
 			code = OBS_OUTPUT_INVALID_STREAM;
 			goto fail;
 		}
+		stream->got_headers = true;
 		if (!write_header(stream, ff_data)) {
-			error("Failed to write headers");
 			code = OBS_OUTPUT_INVALID_STREAM;
 			goto fail;
 		}
 		av_dump_format(ff_data->output, 0, NULL, 1);
 		ff_data->initialized = true;
 	}
-
 	if (!active(stream))
-		return;
-
-	/* encoder failure */
+		goto unlock;
 	if (!packet) {
-		obs_output_signal_stop(stream->output, OBS_OUTPUT_ENCODE_ERROR);
-		ffmpeg_mpegts_stop_internal(stream, 0, false);
-		return;
+		code = OBS_OUTPUT_ENCODE_ERROR;
+		goto fail;
 	}
-
-	if (stopping(stream)) {
-		if (packet->sys_dts_usec >= (int64_t)stream->stop_ts) {
-			ffmpeg_mpegts_stop_internal(stream, 0, false);
-			return;
-		}
+	if (stopping(stream) && packet->sys_dts_usec >= (int64_t)stream->stop_ts) {
+		request_stop = true;
+		goto unlock;
 	}
-
 	mpegts_write_packet(stream, packet);
-	return;
+	goto unlock;
 fail:
-	obs_output_signal_stop(stream->output, code);
-	ffmpeg_mpegts_stop_internal(stream, 0, false);
+	request_stop = true;
+	deferred = mpegts_defer_start_terminal(stream, code, false);
+unlock:
+	pthread_mutex_unlock(&stream->data_mutex);
+	/* Public/core notification and control scheduling may reenter this output. */
+	if (request_stop && !deferred) {
+		if (code != OBS_OUTPUT_SUCCESS)
+			obs_output_signal_stop(stream->output, code);
+		ffmpeg_mpegts_stop_internal(stream, 0, false);
+	}
 }
 
 static obs_properties_t *ffmpeg_mpegts_properties(void *unused)

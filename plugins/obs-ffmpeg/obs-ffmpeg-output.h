@@ -111,6 +111,10 @@ struct ffmpeg_output {
 
 	DARRAY(AVPacket *) packets;
 #ifdef NEW_MPEGTS_OUTPUT
+	/* MPEGTS startup custody; not used by the plain FFmpeg output. */
+	volatile long capture_start_state;
+	pthread_mutex_t data_mutex;
+
 	/* used for SRT & RIST */
 	URLContext *h;
 	AVIOContext *s;
